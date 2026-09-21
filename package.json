@@ -1,0 +1,33 @@
+{
+  "name": "simple-timeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "server": "node --no-warnings=ExperimentalWarning server/index.ts",
+    "build": "vite build",
+    "start": "NODE_ENV=production node --no-warnings=ExperimentalWarning server/index.ts",
+    "seed": "node --no-warnings=ExperimentalWarning server/seed.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "pack": "node scripts/pack.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^5.7.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
+  }
+}
