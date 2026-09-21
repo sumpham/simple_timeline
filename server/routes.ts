@@ -66,6 +66,22 @@ const STATUSES = ['planned', 'in_progress', 'on_hold', 'done', 'cancelled'] as c
 const PRIORITIES = ['low', 'normal', 'high', 'critical'] as const;
 const CONFIDENCES = ['committed', 'tentative'] as const;
 
+// ---------------------------------------------------------------- health
+
+/** Liveness: the process is up. Deliberately touches nothing else. */
+router.get('/healthz', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
+/**
+ * Readiness: the database answers. A pod that cannot read its own data should
+ * not receive traffic, so this query is the point of the endpoint.
+ */
+router.get('/readyz', handle((_req, res) => {
+  const row = get<{ n: number }>('SELECT COUNT(*) AS n FROM team');
+  res.json({ status: 'ready', teams: row?.n ?? 0 });
+}));
+
 // ---------------------------------------------------------------- bootstrap
 
 router.get('/bootstrap', handle((_req, res) => {

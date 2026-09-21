@@ -1,0 +1,128 @@
+// Build & deploy pipeline for simple_timeline on the in-cluster Jenkins.
+//
+// Same shape as secure_media: the Jenkins pod has no docker daemon, so the
+// pipeline builds against minikube's TLS-protected daemon
+// (tcp://192.168.49.2:2376). That is exactly where the cluster pulls local
+// images from (imagePullPolicy: IfNotPresent), so `docker build` doubles as the
+// image load — no registry, no tar files.
+//
+// Client certs live in jenkins_home and are copied there by setup-jenkins-job.sh.
+// >>> Re-run that script after every `minikube delete` — the certs rotate. <<<
+//
+// Deploy uses the pod's ServiceAccount token; RBAC is limited to rollout-restarting
+// the one deployment in the simple-timeline namespace
+// (deploy/jenkins-simple-timeline-rbac.yaml).
+
+pipeline {
+  agent any
+
+  options {
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '15'))
+    timeout(time: 30, unit: 'MINUTES')
+  }
+
+  parameters {
+    string(name: 'GIT_URL', defaultValue: 'https://github.com/sumpham/simple_timeline.git',
+           description: 'Repository URL (cloned with the github-token credential)')
+    string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Branch to build')
+    booleanParam(name: 'DEPLOY', defaultValue: true,
+                 description: 'Rollout-restart simple-timeline in the cluster after building')
+  }
+
+  environment {
+    DOCKER_HOST       = 'tcp://192.168.49.2:2376'
+    DOCKER_TLS_VERIFY = '1'
+    DOCKER_CERT_PATH  = '/var/jenkins_home/minikube-docker-certs'
+    TOOLS             = '/var/jenkins_home/tools/simple-timeline'
+    PATH              = "/var/jenkins_home/tools/simple-timeline/bin:${env.PATH}"
+    IMAGE             = 'simple-timeline'
+    NAMESPACE         = 'simple-timeline'
+    DEPLOYMENT        = 'simple-timeline'
+    PUBLIC_URL        = 'https://timeline.kisimita.xyz'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        git url: params.GIT_URL, branch: params.GIT_BRANCH, credentialsId: 'github-token'
+      }
+    }
+
+    stage('Tools') {
+      steps {
+        sh '''#!/bin/bash -e
+          mkdir -p "$TOOLS/bin"
+          if [ ! -x "$TOOLS/bin/docker" ]; then
+            echo "Installing docker CLI..."
+            curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
+              | tar -xzO docker/docker > "$TOOLS/bin/docker"
+            chmod +x "$TOOLS/bin/docker"
+          fi
+          if [ ! -x "$TOOLS/bin/kubectl" ]; then
+            echo "Installing kubectl..."
+            KVER=$(curl -fsSL https://dl.k8s.io/release/stable.txt)
+            curl -fsSL -o "$TOOLS/bin/kubectl" "https://dl.k8s.io/release/${KVER}/bin/linux/amd64/kubectl"
+            chmod +x "$TOOLS/bin/kubectl"
+          fi
+          docker version
+          kubectl version --client
+        '''
+      }
+    }
+
+    // Typecheck, tests and the client build all run inside the image build, so a
+    // broken commit fails here and never reaches the cluster. Keeping them in the
+    // Dockerfile means the same checks run locally and in CI, against one node version.
+    stage('Build image') {
+      steps {
+        sh '''#!/bin/bash -e
+          docker build -t "${IMAGE}:latest" -t "${IMAGE}:build-${BUILD_NUMBER}" .
+          docker image ls "${IMAGE}"
+        '''
+      }
+    }
+
+    stage('Deploy') {
+      when { expression { params.DEPLOY } }
+      steps {
+        sh '''#!/bin/bash -e
+          SA=/run/secrets/kubernetes.io/serviceaccount
+          export KUBECONFIG="$WORKSPACE/.kubeconfig"
+          kubectl config set-cluster mk --server=https://kubernetes.default.svc \
+            --certificate-authority=$SA/ca.crt
+          kubectl config set-credentials sa --token="$(cat $SA/token)"
+          kubectl config set-context mk --cluster=mk --user=sa && kubectl config use-context mk
+          kubectl -n "$NAMESPACE" rollout restart "deployment/$DEPLOYMENT"
+          kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT" --timeout=300s
+          rm -f "$KUBECONFIG"
+        '''
+      }
+    }
+
+    stage('Smoke') {
+      when { expression { params.DEPLOY } }
+      steps {
+        sh '''#!/bin/bash
+          READY=$(curl -sf -m 15 "${PUBLIC_URL}/api/readyz" || true)
+          if [ -n "$READY" ]; then
+            echo "public /api/readyz: $READY"
+          else
+            echo "WARNING: ${PUBLIC_URL}/api/readyz unreachable (Cloudflare Tunnel hostname configured?)"
+          fi
+        '''
+      }
+    }
+  }
+
+  post {
+    cleanup {
+      // keep only the 3 newest build-N tags on the minikube daemon
+      sh '''#!/bin/bash
+        docker image ls --format '{{.Tag}}' "${IMAGE}" 2>/dev/null \
+          | grep '^build-' | sort -t- -k2 -rn | tail -n +4 \
+          | xargs -r -I{} docker rmi "${IMAGE}:{}" || true
+      '''
+    }
+  }
+}

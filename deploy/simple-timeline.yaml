@@ -1,0 +1,141 @@
+# simple timeline — namespace, storage, deployment, service, ingress.
+# Follows ~/Documents/Projects/k8s/k8s-deployment-standards.md.
+#
+# Storage: a PVC, not hostPath. The whole application state is one SQLite file,
+# so losing it on `minikube delete` would lose everything (standards §7).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: simple-timeline
+  labels:
+    kubernetes.io/metadata.name: simple-timeline
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: simple-timeline-data
+  namespace: simple-timeline
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-timeline
+  namespace: simple-timeline
+  labels:
+    app: simple-timeline
+spec:
+  replicas: 1
+  # SQLite is a single writer on one file. A second replica would corrupt it,
+  # and Recreate stops two pods holding the RWO volume during a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: simple-timeline
+  template:
+    metadata:
+      labels:
+        app: simple-timeline
+    spec:
+      securityContext:
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: simple-timeline
+          image: simple-timeline:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: PORT
+              value: "8080"
+            - name: TIMELINE_DB
+              value: /app/data/timeline.db
+            - name: NODE_ENV
+              value: production
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+          readinessProbe:
+            # Queries the database, so a pod that cannot read its own data
+            # is taken out of the service rather than serving errors.
+            httpGet:
+              path: /api/readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: simple-timeline-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simple-timeline-svc
+  namespace: simple-timeline
+spec:
+  selector:
+    app: simple-timeline
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  type: ClusterIP
+---
+# Routing lives with the service rather than in manifests/routing/routing.yaml,
+# which the standards reserve for the default namespace (n8n, petro). This
+# mirrors wc-service, grafana and secure-media, which each own their ingress.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: simple-timeline-ingress
+  namespace: simple-timeline
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: timeline.kisimita.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: simple-timeline-svc
+                port:
+                  number: 8080

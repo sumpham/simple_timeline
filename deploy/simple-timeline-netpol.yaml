@@ -1,0 +1,52 @@
+# NetworkPolicies for simple-timeline (standards §5).
+#
+# The app is deliberately closed in: it stores everything in a local SQLite file,
+# calls no external service, and never talks to the kube-apiserver. So the only
+# hole is ingress-nginx reaching port 8080, plus DNS egress.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: simple-timeline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: simple-timeline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-simple-timeline
+  namespace: simple-timeline
+spec:
+  podSelector:
+    matchLabels:
+      app: simple-timeline
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+          protocol: TCP
