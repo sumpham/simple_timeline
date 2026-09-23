@@ -1,7 +1,8 @@
 import { useMemo, type CSSProperties, type RefObject } from 'react';
 import { addDays, diffDays, toUTC, workingDays as countWorkingDays } from '../../shared/dates.ts';
 import type { BookingView, Conflict, EnvKind, Environment, Holiday, ISODate, Marker, Project } from '../../shared/types.ts';
-import { formatRange, laneCount, majorTicks, minorTicks, packLanes, type Scale } from '../layout.ts';
+import { nextBookingAfter, occupancyOn } from '../../shared/conflicts.ts';
+import { formatDate, formatRange, laneCount, majorTicks, minorTicks, packLanes, type Scale } from '../layout.ts';
 import type { DragMode } from '../dragMath.ts';
 import type { DragSession } from '../useBookingDrag.ts';
 
@@ -43,14 +44,34 @@ export type Row = {
   occupancy?: { booked: number; capacity: number };
   /** A project that has never been booked; shown so it can still be reached. */
   empty?: boolean;
+  /**
+   * Who holds an environment today, or who is next. On a phone there is no room
+   * for the occupancy strip, so each lane header says it instead.
+   */
+  status?: { text: string; clash: boolean };
 };
 
 const ROW_PAD = 7;
 const BAR_H = 22;
 const BAR_GAP = 4;
+/** The band above each lane that names it when there is no rail beside it. */
+export const LANE_HEAD_H = 26;
 
 function rowHeight(lanes: number): number {
   return ROW_PAD * 2 + lanes * BAR_H + (lanes - 1) * BAR_GAP;
+}
+
+function laneStatus(bookings: BookingView[], env: Environment, today: ISODate): Row['status'] {
+  const holders = occupancyOn(bookings, env.id, today);
+  if (holders.length > env.capacity) {
+    return { text: `${holders.length} projects, room for ${env.capacity}`, clash: true };
+  }
+  if (holders.length === 1) {
+    return { text: `${holders[0].project_name} until ${formatDate(holders[0].end_date)}`, clash: false };
+  }
+  if (holders.length > 1) return { text: `${holders.length} of ${env.capacity} booked`, clash: false };
+  const next = nextBookingAfter(bookings, env.id, today);
+  return { text: next ? `Free, next ${next.project_name} ${formatDate(next.start_date)}` : 'Free', clash: false };
 }
 
 /** Bookings grouped into the rows the current mode calls for. */
@@ -78,6 +99,7 @@ export function buildRows(
           bookings,
           conflicts,
           occupancy: { booked, capacity: env.capacity },
+          status: laneStatus(data.bookings, env, today),
         };
       });
   }
@@ -131,11 +153,16 @@ type BoardProps = {
   onNudge: (booking: BookingView, mode: DragMode, days: number) => void;
   drag: DragSession | null;
   animate: boolean;
+  /** Phone layout: no rail, so each lane carries its own header. */
+  compact?: boolean;
+  /** A bar picked up by a long press, showing its resize tabs. */
+  picked?: number | null;
+  onEditRow?: (row: Row) => void;
 };
 
 export function Board({
   rows, scale, holidays, today, mode, gridRef, onScroll, onSelectBooking,
-  onDragStart, onNudge, drag, animate,
+  onDragStart, onNudge, drag, animate, compact = false, picked = null, onEditRow,
 }: BoardProps) {
   const major = useMemo(() => majorTicks(scale), [scale]);
   const minor = useMemo(() => minorTicks(scale), [scale]);
@@ -201,6 +228,9 @@ export function Board({
               onDragStart={onDragStart}
               onNudge={onNudge}
               dragId={drag?.booking.id ?? null}
+              compact={compact}
+              picked={picked}
+              onEditRow={onEditRow}
             />
           ))}
         </div>
@@ -210,7 +240,7 @@ export function Board({
 }
 
 function BoardRow({
-  row, scale, mode, onSelectBooking, onDragStart, onNudge, dragId,
+  row, scale, mode, onSelectBooking, onDragStart, onNudge, dragId, compact, picked, onEditRow,
 }: {
   row: Row;
   scale: Scale;
@@ -219,10 +249,15 @@ function BoardRow({
   onDragStart: (b: BookingView, mode: DragMode, e: React.PointerEvent) => void;
   onNudge: (b: BookingView, mode: DragMode, days: number) => void;
   dragId: number | null;
+  compact: boolean;
+  picked: number | null;
+  onEditRow?: (row: Row) => void;
 }) {
   const placed = useMemo(() => packLanes(row.bookings, scale.dayWidth), [row.bookings, scale.dayWidth]);
   const lanes = laneCount(placed);
-  const height = rowHeight(lanes);
+  const head = compact ? LANE_HEAD_H : 0;
+  const height = rowHeight(lanes) + head;
+  const over = row.occupancy && row.occupancy.booked > row.occupancy.capacity;
   const conflictedIds = useMemo(
     () => new Set(row.conflicts.flatMap((c) => c.booking_ids)),
     [row.conflicts],
@@ -234,6 +269,24 @@ function BoardRow({
       style={{ height }}
       data-row={row.key}
     >
+      {compact && (
+        <div className="lane-head">
+          <button type="button" className="lane-head-label" onClick={() => onEditRow?.(row)}>
+            {mode === 'environment' && (
+              <span className="env-dot" style={{ ['--env-color' as string]: ENV_COLOR[row.kind] }} />
+            )}
+            <span className="lane-head-name">{row.name}</span>
+            {row.occupancy && (
+              <span className={`occupancy${over ? ' over' : ''}`}>
+                {row.occupancy.booked}/{row.occupancy.capacity}
+              </span>
+            )}
+            <span className={`lane-head-status${row.status?.clash ? ' clash' : ''}`}>
+              {row.status?.text ?? row.meta}
+            </span>
+          </button>
+        </div>
+      )}
       {/* In environment mode the whole lane is over capacity for these days, so the
           hatch spans the row. In project mode it would double-count, so it is omitted. */}
       {mode === 'environment' &&
@@ -242,6 +295,7 @@ function BoardRow({
             key={`hatch-${c.start_date}`}
             className="conflict-span"
             style={{
+              top: head,
               left: scale.x(c.start_date),
               width: scale.spanWidth(c.start_date, c.end_date),
             }}
@@ -256,6 +310,7 @@ function BoardRow({
             className="conflict-frame"
             data-days={scale.spanWidth(c.start_date, c.end_date) >= 30 ? `${c.overlap_days}d` : undefined}
             style={{
+              top: head,
               left: scale.x(c.start_date),
               width: scale.spanWidth(c.start_date, c.end_date),
             }}
@@ -267,6 +322,7 @@ function BoardRow({
           key={booking.id}
           booking={booking}
           lane={lane}
+          top={head}
           scale={scale}
           mode={mode}
           inConflict={conflictedIds.has(booking.id)}
@@ -274,6 +330,7 @@ function BoardRow({
           onDragStart={onDragStart}
           onNudge={onNudge}
           dragging={dragId === booking.id}
+          picked={picked === booking.id}
         />
       ))}
     </div>
@@ -281,10 +338,11 @@ function BoardRow({
 }
 
 function Bar({
-  booking, lane, scale, mode, inConflict, onSelect, onDragStart, onNudge, dragging,
+  booking, lane, top: offset, scale, mode, inConflict, onSelect, onDragStart, onNudge, dragging, picked,
 }: {
   booking: BookingView;
   lane: number;
+  top: number;
   scale: Scale;
   mode: Mode;
   inConflict: boolean;
@@ -292,9 +350,10 @@ function Bar({
   onDragStart: (b: BookingView, mode: DragMode, e: React.PointerEvent) => void;
   onNudge: (b: BookingView, mode: DragMode, days: number) => void;
   dragging: boolean;
+  picked: boolean;
 }) {
   const left = scale.x(booking.start_date);
-  const top = ROW_PAD + lane * (BAR_H + BAR_GAP);
+  const top = offset + ROW_PAD + lane * (BAR_H + BAR_GAP);
   const color = ENV_COLOR[booking.env_kind] ?? ENV_COLOR.OTHER;
 
   // In environment mode the lane already names the environment, so the bar names
@@ -315,7 +374,8 @@ function Bar({
 
   // Resize handles need room to be grabbable; on a short bar they would leave
   // nothing to drag by, so only the move gesture is offered there.
-  const resizable = !booking.is_milestone && width >= 26;
+  // A picked-up bar's tabs sit outside it, so even a short one can be resized.
+  const resizable = !booking.is_milestone && (width >= 26 || picked);
 
   const classes = [
     'bar',
@@ -324,6 +384,7 @@ function Bar({
     booking.confidence === 'tentative' ? 'tentative' : '',
     inConflict && !booking.is_milestone ? 'in-conflict' : '',
     dragging ? 'is-dragging' : '',
+    picked ? 'is-picked' : '',
   ].filter(Boolean).join(' ');
 
   /**
@@ -356,6 +417,8 @@ function Bar({
       title={`${description}\nDrag to move${resizable ? ', drag an edge to resize' : ''}`}
       aria-label={description}
       onPointerDown={(e) => onDragStart(booking, 'move', e)}
+      // A long press is how a phone picks a bar up; the system menu must not answer it.
+      onContextMenu={(e) => e.preventDefault()}
       onKeyDown={onKeyDown}
       // Only a keyboard produces a click with no pointer detail; pointer clicks
       // are resolved by the drag hook so a drag never also opens the dialog.
@@ -392,12 +455,25 @@ function Bar({
 }
 
 /** Follows the pointer during a drag, stating exactly what will be saved. */
-export function DragReadout({ drag, clashes }: { drag: DragSession; clashes: boolean }) {
+export function DragReadout({
+  drag, clashes, holidays,
+}: {
+  drag: DragSession;
+  clashes: boolean;
+  holidays: ReadonlySet<ISODate>;
+}) {
   const { span, booking } = drag;
-  const days = countWorkingDays(span.start, span.end);
+  // Holidays count here too, or the readout disagrees with the saved booking.
+  const days = countWorkingDays(span.start, span.end, holidays);
 
   return (
-    <div className="drag-readout" style={{ left: drag.x, top: drag.y }} role="status" aria-live="polite">
+    <div
+      className={`drag-readout${drag.touch ? ' pinned' : ''}`}
+      // Under a finger the readout would be hidden by the finger itself, so it pins to the top.
+      style={drag.touch ? undefined : { left: drag.x, top: drag.y }}
+      role="status"
+      aria-live="polite"
+    >
       <div className="drag-readout-dates">{formatRange(span.start, span.end)}</div>
       <div className="drag-readout-meta">
         {booking.is_milestone

@@ -1128,3 +1128,514 @@ label.stack.narrow { flex: 0 0 88px; }
   }
   .strip-cell { min-width: 148px; }
 }
+
+/* ---------------------------------------------------------------- touch */
+
+/* A finger on a bar is usually a swipe. Bars let the board scroll until a long
+   press picks one up (useBookingDrag); only then does the bar own the gesture. */
+@media (pointer: coarse) {
+  .grid {
+    /* Pinch is taken by usePinchZoom to step the time grain, not to zoom the page. */
+    touch-action: pan-x pan-y;
+    overscroll-behavior: contain;
+  }
+
+  .bar {
+    touch-action: pan-x pan-y;
+    -webkit-touch-callout: none;
+  }
+
+  .bar.is-picked {
+    touch-action: none;
+    overflow: visible;
+    z-index: 5;
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+  }
+
+  .bar.milestone.is-picked { outline-offset: 4px; }
+}
+
+/* Hover never ends on a touch screen, so handles only show on a picked-up bar. */
+@media (hover: none) {
+  .bar:hover .bar-handle { opacity: 0; }
+  .bar:hover { filter: none; }
+}
+
+/* Resize tabs sit just outside a picked-up bar, big enough for a thumb, and reach
+   above and below it so the 22px bar height is not the target. */
+.bar.is-picked .bar-handle {
+  opacity: 1;
+  width: 24px;
+  top: -11px;
+  bottom: -11px;
+  touch-action: none;
+}
+
+.bar.is-picked .bar-handle.start { left: -18px; }
+.bar.is-picked .bar-handle.end { right: -18px; }
+
+.bar.is-picked .bar-handle::after {
+  top: 11px;
+  bottom: 11px;
+  left: 8px;
+  width: 8px;
+  background: var(--ink);
+  border: 2px solid var(--lane);
+  border-radius: 2px;
+}
+
+/* ---------------------------------------------------------------- lane headers */
+
+/* On a phone there is no rail, so each lane names itself in a band across its
+   top. The label is sticky, so it stays in view however far the board scrolls. */
+.lane-head {
+  position: relative;
+  z-index: 3;
+  height: 26px;
+  background: var(--lane-alt);
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.lane-head-label {
+  position: sticky;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 100%;
+  max-width: 100vw;
+  padding: 0 12px;
+  background: inherit;
+  border: 0;
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.lane-head-name { font-size: 13px; font-weight: 600; }
+
+.lane-head-label .occupancy { padding-top: 0; }
+
+.lane-head-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'Archivo Narrow', 'Archivo', sans-serif;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.lane-head-status.clash { color: var(--alarm); font-weight: 600; }
+
+/* The rail's heavy left rule, carried by the sticky header instead. */
+.row.is-conflicted .lane-head-label { box-shadow: inset 3px 0 0 var(--alarm); }
+
+/* Where a double-booking picked from the list lands. */
+.row.is-flashed { animation: row-flash 1400ms ease-out; }
+
+@keyframes row-flash {
+  from { box-shadow: inset 0 0 0 2px var(--alarm); }
+  to   { box-shadow: inset 0 0 0 2px transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row.is-flashed { animation: none; }
+}
+
+/* ---------------------------------------------------------------- drag readout, pinned */
+
+.drag-readout.pinned {
+  top: calc(env(safe-area-inset-top) + 104px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* ---------------------------------------------------------------- sheets */
+
+.sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(10, 18, 26, 0.36);
+}
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  max-height: 70dvh;
+  background: var(--lane);
+  border-top: 1px solid var(--rule);
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 -10px 30px rgba(10, 18, 26, 0.18);
+  padding-bottom: env(safe-area-inset-bottom);
+  animation: sheet-in 220ms cubic-bezier(0.22, 0.7, 0.3, 1);
+}
+
+.sheet:focus { outline: none; }
+
+@keyframes sheet-in {
+  from { transform: translateY(24px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet { animation: none; }
+}
+
+.sheet-grip {
+  flex: 0 0 auto;
+  height: 22px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+
+.sheet-grip::before {
+  content: '';
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--rule);
+}
+
+.sheet-body {
+  overflow: auto;
+  min-height: 0;
+  padding: 2px 16px 14px;
+}
+
+.sheet-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.sheet-foot .btn { min-height: 44px; padding: 0 18px; font-size: 15px; }
+.sheet-foot.manage .btn { flex: 1 1 0; padding: 0 8px; }
+
+.sheet-section {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.sheet-section:first-child { margin-top: 4px; }
+
+/* The double-bookings list rises from the bar that counts them, so it stops
+   above that bar instead of covering it. */
+.conflict-sheet { overflow: auto; }
+
+.conflict-sheet .conflict-card { padding: 13px 16px; }
+
+/* ---------------------------------------------------------------- booking sheet */
+
+.booking-sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.booking-sheet-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.3;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.booking-sheet-marker { width: 16px; height: 16px; flex: 0 0 auto; }
+
+.clash-badge {
+  flex: 0 0 auto;
+  background: var(--alarm);
+  color: #fff;
+  font-family: 'Archivo Narrow', 'Archivo', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 2px;
+  margin-top: 2px;
+}
+
+.booking-sheet-meta {
+  margin: 4px 0 0;
+  font-size: 13.5px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 6px;
+}
+
+.booking-sheet-note {
+  margin: 10px 0 0;
+  font-size: 14px;
+  border-left: 2px solid var(--rule);
+  padding-left: 10px;
+  max-width: 60ch;
+  white-space: pre-wrap;
+}
+
+.steppers { display: grid; gap: 8px; margin-top: 14px; }
+
+.stepper {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 44px 44px;
+  align-items: center;
+  gap: 8px;
+}
+
+.stepper-label { font-size: 13px; color: var(--muted); }
+
+.stepper-value {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stepper-btn {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.stepper-btn:active { background: var(--rule-soft); }
+
+.stepper-btn svg,
+.m-team-chevron,
+.m-peek-chevron {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ---------------------------------------------------------------- board sheet */
+
+.team-picker { display: grid; gap: 4px; }
+
+.team-picker button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--paper);
+  border: 1px solid var(--rule-soft);
+  border-left: 3px solid transparent;
+  border-radius: 3px;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.team-picker button[aria-pressed='true'] { border-left-color: var(--ink); font-weight: 600; }
+
+.team-picker-code {
+  font-family: 'Archivo Narrow', 'Archivo', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.board-sheet .filter-list { padding: 0; gap: 0; }
+.board-sheet .filter-item { min-height: 44px; font-size: 15px; gap: 10px; }
+.board-sheet .filter-item input { width: 18px; height: 18px; }
+
+/* ---------------------------------------------------------------- phone layout */
+
+.m-topbar,
+.m-modebar,
+.m-bottombar { display: none; }
+
+@media (max-width: 640px) {
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+  }
+
+  /* Sheets rise from the top of the bottom bar, so the bar and its count stay in reach. */
+  .sheet,
+  .sheet-scrim { bottom: var(--m-bar-h); }
+  .sheet { padding-bottom: 0; }
+
+  .body { flex: 1 1 auto; }
+
+  .m-topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: calc(env(safe-area-inset-top) + 6px) 12px 6px;
+    background: var(--lane);
+    border-bottom: 1px solid var(--rule-soft);
+  }
+
+  /* The team is the page's title: it names whose board this is. */
+  .m-team {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .m-team-mark {
+    width: 9px;
+    height: 9px;
+    flex: 0 0 auto;
+    background: var(--env-sit);
+  }
+
+  .m-team-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .m-team-chevron { flex: 0 0 auto; color: var(--muted); }
+
+  /* The team name gives way on a narrow phone; the zoom labels never clip. */
+  .m-topbar .segmented { flex: 0 0 auto; }
+  .m-topbar .segmented button { min-height: 40px; padding: 0 8px; font-size: 13px; }
+
+  /* Mode sits under the title as two tabs, the rail's switch turned on its side. */
+  .m-modebar {
+    display: block;
+    background: var(--lane);
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .m-modebar .mode-switch { flex-direction: row; gap: 0; }
+
+  .m-modebar .mode-switch button {
+    flex: 1 1 0;
+    min-height: 40px;
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    text-align: center;
+    font-size: 14px;
+  }
+
+  .m-modebar .mode-switch button[aria-pressed='true'] { border-bottom-color: var(--ink); }
+
+  .board-wrap.compact { grid-template-columns: minmax(0, 1fr); }
+
+  :root { --m-bar-h: calc(61px + env(safe-area-inset-bottom)); }
+
+  .m-bottombar {
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+    background: var(--lane);
+    border-top: 1px solid var(--rule);
+    position: relative;
+    z-index: 42;
+  }
+
+  /* The double-booking count is the product's verdict, so it keeps the widest
+     slot on the bar and opens the list it counts. */
+  .m-peek {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 44px;
+    padding: 0 14px;
+    background: transparent;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    color: var(--muted);
+    font-size: 15px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .m-peek span:not(.marker) { flex: 1 1 auto; }
+
+  .m-peek.has-conflicts {
+    border-color: var(--alarm);
+    background: var(--alarm-soft);
+    color: var(--alarm);
+    font-weight: 600;
+  }
+
+  .m-peek .marker {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    background: var(--alarm);
+    transform: rotate(45deg);
+  }
+
+  .m-peek[aria-expanded='true'] .m-peek-chevron { transform: rotate(180deg); }
+
+  .m-book { min-height: 44px; padding: 0 20px; font-size: 15px; }
+
+  .error-bar { font-size: 14px; }
+
+  /* Editors take the whole screen; a centred box leaves no room for a keyboard. */
+  dialog {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    padding-top: env(safe-area-inset-top);
+    animation: sheet-in 220ms cubic-bezier(0.22, 0.7, 0.3, 1);
+  }
+
+  .dialog-body { flex: 1 1 auto; align-content: start; }
+
+  .dialog-foot { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .dialog-foot .btn { min-height: 44px; font-size: 15px; }
+
+  /* Anything under 16px makes iOS zoom the page on focus. */
+  label.stack input,
+  label.stack select,
+  label.stack textarea,
+  .field select,
+  .field input { font-size: 16px; }
+}
