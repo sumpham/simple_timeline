@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type BoardData, type Bootstrap } from './api.ts';
-import { addWorkingDays, snapToWorkingDay, today as todayISO } from '../shared/dates.ts';
+import { addDays, addWorkingDays, snapToWorkingDay, today as todayISO } from '../shared/dates.ts';
 import type { BookingView, Conflict, Environment, ISODate } from '../shared/types.ts';
 import { makeScale, ZOOM, type Zoom } from './layout.ts';
 import { Board, buildRows, DragReadout, ENV_COLOR, rowHeights, type Mode } from './components/Board.tsx';
@@ -8,7 +8,9 @@ import { useBookingDrag } from './useBookingDrag.ts';
 import { applyDrag, withSpan, type DragMode, type Span } from './dragMath.ts';
 import { detectConflicts } from '../shared/conflicts.ts';
 import { OccupancyStrip } from './components/OccupancyStrip.tsx';
-import { ConflictDrawer } from './components/ConflictDrawer.tsx';
+import { ConflictDrawer, ConflictList } from './components/ConflictDrawer.tsx';
+import { BoardSheet, BookingSheet, EnvFilter } from './components/Sheets.tsx';
+import { PHONE_QUERY, useMediaQuery, usePinchZoom } from './touch.ts';
 import {
   BookingDialog, EnvironmentDialog, ProjectsDialog, TeamsDialog, type BookingDraft,
 } from './components/Dialogs.tsx';
@@ -20,8 +22,19 @@ type DialogState =
   | { kind: 'environments' }
   | { kind: 'teams' };
 
+/** The phone's bottom sheets. Only one is up at a time. */
+type SheetState =
+  | { kind: 'none' }
+  | { kind: 'conflicts' }
+  | { kind: 'board' }
+  | { kind: 'booking'; id: number };
+
+/** Coarse to fine, which is the direction a spreading pinch travels. */
+const ZOOM_ORDER: Zoom[] = ['quarter', 'month', 'week'];
+
 export function App() {
   const today = useMemo(() => todayISO(), []);
+  const isPhone = useMediaQuery(PHONE_QUERY);
 
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [teamId, setTeamId] = useState<number | null>(null);
@@ -36,6 +49,7 @@ export function App() {
   const [animate, setAnimate] = useState(true);
   /** Optimistic date overrides, by booking id, while an edit is in flight. */
   const [pendingSpans, setPendingSpans] = useState<Map<number, Span>>(new Map());
+  const [sheet, setSheet] = useState<SheetState>({ kind: 'none' });
 
   const railRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null!);
@@ -135,10 +149,36 @@ export function App() {
     el.scrollTo({ left: Math.max(0, scale.x(date) - el.clientWidth / 3), behavior: 'smooth' });
   }, [scale]);
 
-  // Open on today rather than on the start of the window.
+  /** The date a pinch was centred on, and where on screen, so a zoom keeps it in place. */
+  const zoomAnchor = useRef<{ date: ISODate; offset: number } | null>(null);
+  const scrolledFor = useRef<string | null>(null);
+
+  // Open on today rather than on the start of the window -- once per team and zoom.
+  // Refreshes after an edit must not move the board, or every save yanks it back.
   useEffect(() => {
-    if (data) scrollTo(today);
-  }, [data, zoom, scrollTo, today]);
+    const key = `${teamId}:${zoom}`;
+    if (!data || scrolledFor.current === key) return;
+    scrolledFor.current = key;
+    const anchor = zoomAnchor.current;
+    zoomAnchor.current = null;
+    if (anchor && gridRef.current) {
+      gridRef.current.scrollLeft = Math.max(0, scale.x(anchor.date) - anchor.offset);
+    } else {
+      scrollTo(today);
+    }
+  }, [data, zoom, teamId, scale, scrollTo, today]);
+
+  usePinchZoom(gridRef, (step, clientX) => {
+    const next = ZOOM_ORDER[ZOOM_ORDER.indexOf(zoom) + step];
+    const el = gridRef.current;
+    if (!next || !el) return;
+    const offset = clientX - el.getBoundingClientRect().left;
+    zoomAnchor.current = {
+      date: addDays(scale.from, Math.floor((el.scrollLeft + offset) / scale.dayWidth)),
+      offset,
+    };
+    setZoom(next);
+  });
 
   const openBooking = useCallback((b: BookingView) => {
     setDialog({
@@ -163,6 +203,12 @@ export function App() {
     setDialog({ kind: 'none' });
     setDialogError(undefined);
   }, []);
+
+  /** A phone opens a sheet over a live board; a desktop opens the full editor. */
+  const selectBooking = useCallback((b: BookingView) => {
+    if (isPhone) setSheet({ kind: 'booking', id: b.id });
+    else openBooking(b);
+  }, [isPhone, openBooking]);
 
   const switchTeam = useCallback((id: number | null) => {
     setTeamId(id);
@@ -237,13 +283,24 @@ export function App() {
     }
   }, [refresh, setPending]);
 
-  const { session: drag, begin: beginDrag } = useBookingDrag({
+  const { session: drag, begin: beginDrag, picked, drop } = useBookingDrag({
     dayWidth: scale.dayWidth,
     holidays: holidaySet,
     onCommit: commitSpan,
-    onSelect: (booking) => openBooking(booking),
+    onSelect: selectBooking,
     onPreview: setPending,
   });
+
+  // Touching anything but a bar puts a picked-up bar back down.
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el || picked == null) return;
+    const onDown = (e: PointerEvent) => {
+      if (!(e.target instanceof Element && e.target.closest('.bar'))) drop();
+    };
+    el.addEventListener('pointerdown', onDown);
+    return () => el.removeEventListener('pointerdown', onDown);
+  }, [picked, drop, data]);
 
   // Keyboard nudges arrive one key at a time; hold them on screen and write once
   // the user stops, so a run of arrow presses is a single save.
@@ -292,8 +349,63 @@ export function App() {
       next.delete(c.environment_id);
       return next;
     });
-    scrollTo(c.start_date);
+    setSheet({ kind: 'none' });
+    // Wait a frame for the mode switch and filter change to render the lane, then
+    // scroll both ways in one call: a second smooth scroll would cancel the first.
+    requestAnimationFrame(() => {
+      const el = gridRef.current;
+      const row = el?.querySelector<HTMLElement>(`[data-row="env-${c.environment_id}"]`);
+      if (!el || !row) return scrollTo(c.start_date);
+      el.scrollTo({
+        left: Math.max(0, scale.x(c.start_date) - el.clientWidth / 3),
+        top: Math.max(0, row.offsetTop - 8),
+        behavior: 'smooth',
+      });
+      row.classList.remove('is-flashed');
+      void row.offsetWidth;
+      row.classList.add('is-flashed');
+    });
   };
+
+  const toggleEnv = (id: number) => setHiddenEnvs((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const editRow = (row: { id: number }) => setDialog(mode === 'environment'
+    ? { kind: 'environments' }
+    : { kind: 'projects', editingId: row.id });
+
+  const conflictLabel = conflicts.length
+    ? `${conflicts.length} double-booking${conflicts.length === 1 ? '' : 's'}`
+    : 'No double-bookings';
+
+  const modeSwitch = (
+    <div className="mode-switch" role="group" aria-label="Group rows by">
+      <button type="button" aria-pressed={mode === 'environment'} onClick={() => setMode('environment')}>
+        By environment
+      </button>
+      <button type="button" aria-pressed={mode === 'project'} onClick={() => setMode('project')}>
+        By project
+      </button>
+    </div>
+  );
+
+  const zoomSwitch = (
+    <div className="segmented" role="group" aria-label="Time grain">
+      {(Object.keys(ZOOM) as Zoom[]).map((z) => (
+        <button
+          key={z}
+          type="button"
+          aria-pressed={zoom === z}
+          onClick={() => setZoom(z)}
+        >
+          {ZOOM[z].label}
+        </button>
+      ))}
+    </div>
+  );
 
   if (!boot) {
     return <div className="empty"><p>Loading the board…</p></div>;
@@ -303,6 +415,21 @@ export function App() {
 
   return (
     <div className="app">
+      {isPhone ? (
+        <header className="m-topbar">
+          <button
+            type="button"
+            className="m-team"
+            aria-haspopup="dialog"
+            onClick={() => setSheet({ kind: 'board' })}
+          >
+            <span className="m-team-mark" aria-hidden="true" />
+            <span className="m-team-name">{team?.name ?? 'Choose a team'}</span>
+            <svg className="m-team-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+          </button>
+          {zoomSwitch}
+        </header>
+      ) : (
       <header className="topbar">
         <h1 className="wordmark"><span />simple timeline</h1>
 
@@ -316,18 +443,7 @@ export function App() {
           </select>
         </label>
 
-        <div className="segmented" role="group" aria-label="Time grain">
-          {(Object.keys(ZOOM) as Zoom[]).map((z) => (
-            <button
-              key={z}
-              type="button"
-              aria-pressed={zoom === z}
-              onClick={() => setZoom(z)}
-            >
-              {ZOOM[z].label}
-            </button>
-          ))}
-        </div>
+        {zoomSwitch}
 
         <span className="topbar-spacer" />
 
@@ -355,15 +471,16 @@ export function App() {
           onClick={() => setDrawerOpen((v) => !v)}
         >
           {conflicts.length > 0 && <span className="marker" aria-hidden="true" />}
-          {conflicts.length
-            ? `${conflicts.length} double-booking${conflicts.length === 1 ? '' : 's'}`
-            : 'No double-bookings'}
+          {conflictLabel}
         </button>
       </header>
+      )}
+
+      {isPhone && team && data && rows.length > 0 && <div className="m-modebar">{modeSwitch}</div>}
 
       {error && <div className="error-bar">{error}</div>}
 
-      {data && (
+      {data && !isPhone && (
         <OccupancyStrip
           environments={environments.filter((e) => visibleEnvIds.has(e.id))}
           bookings={data.bookings}
@@ -399,18 +516,10 @@ export function App() {
             </div>
           </div>
         ) : (
-          <div className="board-wrap">
+          <div className={`board-wrap${isPhone ? ' compact' : ''}`}>
+            {!isPhone && (
             <div className="rail">
-              <div className="rail-head">
-                <div className="mode-switch" role="group" aria-label="Group rows by">
-                  <button type="button" aria-pressed={mode === 'environment'} onClick={() => setMode('environment')}>
-                    By environment
-                  </button>
-                  <button type="button" aria-pressed={mode === 'project'} onClick={() => setMode('project')}>
-                    By project
-                  </button>
-                </div>
-              </div>
+              <div className="rail-head">{modeSwitch}</div>
 
               <div className="rail-rows" ref={railRef}>
               <div>
@@ -424,9 +533,7 @@ export function App() {
                     type="button"
                     className="rail-main"
                     title={mode === 'environment' ? `Edit ${row.name}` : `Edit ${row.name}`}
-                    onClick={() => setDialog(mode === 'environment'
-                      ? { kind: 'environments' }
-                      : { kind: 'projects', editingId: row.id })}
+                    onClick={() => editRow(row)}
                   >
                     <div className="rail-name">
                       {mode === 'environment' && (
@@ -451,29 +558,15 @@ export function App() {
 
               <div className="rail-foot">
               <div className="filter-head">Show environments</div>
-              <div className="filter-list">
-                {environments.map((env) => {
-                  const count = data.conflicts.filter((c) => c.environment_id === env.id).length;
-                  return (
-                    <label key={env.id} className="filter-item">
-                      <input
-                        type="checkbox"
-                        checked={!hiddenEnvs.has(env.id)}
-                        onChange={() => setHiddenEnvs((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(env.id)) next.delete(env.id); else next.add(env.id);
-                          return next;
-                        })}
-                      />
-                      <span className="env-dot" style={{ ['--env-color' as string]: ENV_COLOR[env.kind] }} />
-                      {env.name}
-                      {count > 0 && <span className="count over">{count}</span>}
-                    </label>
-                  );
-                })}
-              </div>
+              <EnvFilter
+                environments={environments}
+                hidden={hiddenEnvs}
+                conflicts={data.conflicts}
+                onToggle={toggleEnv}
+              />
               </div>
             </div>
+            )}
 
             <Board
               rows={rows}
@@ -483,16 +576,19 @@ export function App() {
               mode={mode}
               gridRef={gridRef}
               onScroll={syncRail}
-              onSelectBooking={openBooking}
+              onSelectBooking={selectBooking}
               onDragStart={beginDrag}
               onNudge={nudge}
               drag={drag}
               animate={animate}
+              compact={isPhone}
+              picked={picked}
+              onEditRow={editRow}
             />
           </div>
         )}
 
-        {drawerOpen && (
+        {drawerOpen && !isPhone && (
           <ConflictDrawer
             conflicts={conflicts}
             onSelect={selectConflict}
@@ -501,9 +597,70 @@ export function App() {
         )}
       </div>
 
+      {isPhone && team && (
+        <nav className="m-bottombar" aria-label="Board actions">
+          <button
+            type="button"
+            className={`m-peek${conflicts.length ? ' has-conflicts' : ''}`}
+            aria-expanded={sheet.kind === 'conflicts'}
+            onClick={() => setSheet((s) => (s.kind === 'conflicts' ? { kind: 'none' } : { kind: 'conflicts' }))}
+          >
+            {conflicts.length > 0 && <span className="marker" aria-hidden="true" />}
+            <span>{conflictLabel}</span>
+            {conflicts.length > 0 && (
+              <svg className="m-peek-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 10 4-4 4 4" /></svg>
+            )}
+          </button>
+          {data?.projects.length ? (
+            <button type="button" className="btn m-book" onClick={() => { setSheet({ kind: 'none' }); openNewBooking(); }}>
+              Book
+            </button>
+          ) : null}
+        </nav>
+      )}
+
+      {isPhone && sheet.kind === 'conflicts' && conflicts.length > 0 && (
+        <>
+          <div className="sheet-scrim" onClick={() => setSheet({ kind: 'none' })} aria-hidden="true" />
+          <section className="sheet conflict-sheet" role="dialog" aria-label="Double-bookings">
+            <ConflictList conflicts={conflicts} onSelect={selectConflict} />
+          </section>
+        </>
+      )}
+
+      {isPhone && sheet.kind === 'booking' && preview && (() => {
+        const live = preview.bookings.find((b) => b.id === sheet.id);
+        const saved = data?.bookings.find((b) => b.id === sheet.id);
+        if (!live || !saved) return null;
+        return (
+          <BookingSheet
+            booking={live}
+            inConflict={conflicts.some((c) => c.booking_ids.includes(live.id))}
+            onNudge={(m, d) => nudge(saved, m, d)}
+            onEdit={() => { setSheet({ kind: 'none' }); openBooking(saved); }}
+            onClose={() => setSheet({ kind: 'none' })}
+          />
+        );
+      })()}
+
+      {isPhone && sheet.kind === 'board' && (
+        <BoardSheet
+          teams={boot.teams}
+          teamId={teamId}
+          environments={environments}
+          hidden={hiddenEnvs}
+          conflicts={data?.conflicts ?? []}
+          onSelectTeam={(id) => { switchTeam(id); setSheet({ kind: 'none' }); }}
+          onToggleEnv={toggleEnv}
+          onManage={(what) => { setSheet({ kind: 'none' }); setDialog({ kind: what }); }}
+          onClose={() => setSheet({ kind: 'none' })}
+        />
+      )}
+
       {drag && (
         <DragReadout
           drag={drag}
+          holidays={holidaySet}
           clashes={conflicts.some((c) => c.booking_ids.includes(drag.booking.id))}
         />
       )}

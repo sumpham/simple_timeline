@@ -318,3 +318,56 @@ requirement (§5) a dead letter.
 
 **The readout** states the outcome rather than decorating the gesture: new dates,
 working-day length, and a red `double-booked` badge when the drop would clash.
+
+## 15. Phone layout
+
+At 640px and below the board keeps the real timeline rather than turning into a list: two
+projects stacked in one lane is how a double-booking reads, and a list would lose it. Every
+change serves one goal, giving the timeline the full width and most of the height.
+
+```
+┌──────────────────────────────┐
+│ ■ Payments Platform ▾  W|M|Q │  team is the title; opens team, filter, managers
+│   By environment | By project│
+├──────────────────────────────┤
+│  14 Sep   21 Sep   28 Sep    │  ruler, sticky
+┃ SIT 2/1 Card tok. until 1 Oct│  lane header, sticky to the left edge
+┃ ▬▬▬▬Card tokenisation▬▬▬     │
+┃       ▬▬▬Settlement▬▬▬▬▬     │
+│ UAT 0/1 Free, next …         │
+├──────────────────────────────┤
+│ ◆ 3 double-bookings  ⌃ │ Book│  bottom bar, in thumb reach
+└──────────────────────────────┘
+```
+
+- **Lane headers replace the rail.** Each lane names itself in a band whose label is
+  `position: sticky; left: 0`, so it stays readable however far the board scrolls. The band
+  carries the occupancy (`booked/capacity`) and who holds the environment today or next, which
+  is the occupancy strip's job, so the strip is not shown. A conflicted lane keeps the rail's
+  red left rule on its header.
+- **The double-booking count owns the bottom bar** and opens the list as a sheet that rises
+  from it. Picking one scrolls the board to it in both directions with a single `scrollTo`
+  (two smooth scrolls cancel each other) and flashes the lane.
+- **Team, environment filter and the three managers** fold into one sheet behind the title.
+- **Editors are full screen**, with inputs at 16px so iOS does not zoom on focus.
+
+### Touch
+
+A finger on a bar is usually the start of a swipe, so bars use `touch-action: pan-x pan-y`
+and the board scrolls freely over them. `classifyTouch` in `client/touch.ts` decides: movement
+past 8px is a scroll, a still 400ms press picks the bar up (a short vibration confirms it),
+and a quick still release is a tap. Once picked up, the bar takes `touch-action: none`, a
+non-passive `touchmove` stops the board scrolling under it, and 24px resize tabs appear just
+outside both ends. It stays picked up until something else is touched.
+
+A tap opens a **booking sheet**, not the full editor. It is non-modal, so the board stays live
+above it. Its −1/+1 day steppers call the same `nudge` as the arrow keys, which means the
+conflict preview follows each tap and a run of taps saves once. The drag readout is pinned
+to the top of the board on touch, since under a finger it would be hidden by the finger.
+
+**Pinch steps the zoom** one grain per gesture (`pinchStep`), anchored on the date under the
+pinch. It never scales continuously: the ruler only runs at its three tested scales (see the
+bounded-loop rule in `CLAUDE.md`).
+
+The board opens on today once per team and zoom, not on every data change. It used to
+re-scroll after every refresh, which made each save throw the view back to today.
