@@ -153,6 +153,8 @@ export function App() {
         end_date: b.end_date,
         confidence: b.confidence,
         optional: !!b.optional,
+        note: b.note ?? '',
+        marker: b.marker,
       },
     });
   }, []);
@@ -277,6 +279,8 @@ export function App() {
         end_date: addWorkingDays(start, 4),
         confidence: 'committed',
         optional: false,
+        note: '',
+        marker: null,
       },
     });
   };
@@ -524,6 +528,8 @@ export function App() {
               end_date: d.end_date,
               confidence: d.confidence as BookingView['confidence'],
               optional: d.optional ? 1 : 0,
+              note: d.note.trim() || null,
+              marker: d.kind === 'CUSTOM' ? d.marker : null,
             };
             return d.id ? api.updateBooking(d.id, body) : api.createBooking(body);
           })}

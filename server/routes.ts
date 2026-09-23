@@ -4,7 +4,7 @@ import { listBookings, listEnvironments, listHolidays, listProjects, listTeams }
 import { detectConflicts } from '../shared/conflicts.ts';
 import { isValidISODate, isWorkingDay, snapToWorkingDay } from '../shared/dates.ts';
 import { holidaySet } from './queries.ts';
-import type { Booking, Environment, ISODate, Project } from '../shared/types.ts';
+import { MARKERS, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project } from '../shared/types.ts';
 
 export const router = Router();
 
@@ -293,6 +293,23 @@ function snapRange(start: ISODate, end: ISODate) {
   return { start: snappedStart, end: snappedEnd, adjusted: snappedStart !== start || snappedEnd !== end };
 }
 
+const NOTE_MAX = 2000;
+
+/** A blank note is no note: store null rather than an empty string. */
+function noteValue(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw bad('note must be text');
+  const trimmed = value.trim();
+  if (trimmed.length > NOTE_MAX) throw bad(`A note can be at most ${NOTE_MAX} characters`);
+  return trimmed || null;
+}
+
+/** Markers belong to CUSTOM bookings only; any other kind drops one rather than erroring. */
+function markerValue(value: unknown, kind: BookingKind): Marker | null {
+  if (kind !== 'CUSTOM' || value == null || value === '') return null;
+  return oneOf(value, MARKERS, 'marker');
+}
+
 router.post('/bookings', handle((req, res) => {
   const projectId = intParam(req.body?.project_id);
   const project = projectId != null ? get<Project>('SELECT * FROM project WHERE id = ?', projectId) : undefined;
@@ -311,11 +328,13 @@ router.post('/bookings', handle((req, res) => {
 
   const { start, end, adjusted } = snapRange(rawStart, rawEnd);
   const { lastInsertRowid } = run(
-    `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence, optional)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence, optional, note, marker)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     projectId, envId, kind, start, end,
     oneOf(req.body?.confidence, CONFIDENCES, 'confidence', 'committed'),
     req.body?.optional ? 1 : 0,
+    noteValue(req.body?.note),
+    markerValue(req.body?.marker, kind),
   );
 
   res.status(201).json({ ...get('SELECT * FROM booking WHERE id = ?', Number(lastInsertRowid)), adjusted });
@@ -346,6 +365,9 @@ router.patch('/bookings/:id', handle((req, res) => {
   const { start, end, adjusted } = snapRange(rawStart, rawEnd);
   const confidence = req.body?.confidence != null ? oneOf(req.body.confidence, CONFIDENCES, 'confidence') : existing.confidence;
   const optional = req.body?.optional != null ? (req.body.optional ? 1 : 0) : existing.optional;
+  // undefined leaves a field alone; null clears it.
+  const note = req.body?.note !== undefined ? noteValue(req.body.note) : existing.note;
+  const marker = markerValue(req.body?.marker !== undefined ? req.body.marker : existing.marker, kind);
 
   // Dates are what people argue about, so every change to one is recorded.
   if (start !== existing.start_date) audit('booking', id, 'start_date', existing.start_date, start);
@@ -353,9 +375,10 @@ router.patch('/bookings/:id', handle((req, res) => {
   if (envId !== existing.environment_id) audit('booking', id, 'environment_id', existing.environment_id, envId);
 
   run(
-    `UPDATE booking SET environment_id = ?, kind = ?, start_date = ?, end_date = ?, confidence = ?, optional = ?
+    `UPDATE booking SET environment_id = ?, kind = ?, start_date = ?, end_date = ?, confidence = ?, optional = ?,
+                        note = ?, marker = ?
       WHERE id = ?`,
-    envId, kind, start, end, confidence, optional, id,
+    envId, kind, start, end, confidence, optional, note, marker, id,
   );
   res.json({ ...get('SELECT * FROM booking WHERE id = ?', id), adjusted });
 }));

@@ -6,6 +6,9 @@ export type BookingKind = 'SIT' | 'UAT' | 'NFT' | 'PENTEST' | 'RELEASE' | 'CUSTO
 export type Confidence = 'committed' | 'tentative';
 export type Status = 'planned' | 'in_progress' | 'on_hold' | 'done' | 'cancelled';
 export type Priority = 'low' | 'normal' | 'high' | 'critical';
+/** The glyph a CUSTOM booking shows on the timeline. */
+export type Marker = 'star' | 'flag' | 'pin';
+export const MARKERS: readonly Marker[] = ['star', 'flag', 'pin'];
 
 export const PRIORITY_RANK: Record<Priority, number> = {
   low: 1, normal: 2, high: 3, critical: 4,
@@ -55,6 +58,9 @@ export type Booking = {
   end_date: ISODate;
   confidence: Confidence;
   optional: number;
+  note: string | null;
+  /** Always null unless kind is CUSTOM. */
+  marker: Marker | null;
 };
 
 export type Holiday = { date: ISODate; name: string };

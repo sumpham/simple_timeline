@@ -7,7 +7,7 @@ const NONE = new Set<string>();
 
 // 2026-03-02 is a Monday; 03-07/03-08 are the weekend.
 const booking = (p: Partial<BookingView> & { start_date: string; end_date: string }): BookingView => ({
-  id: 1, project_id: 1, environment_id: 1, kind: 'SIT', confidence: 'committed', optional: 0,
+  id: 1, project_id: 1, environment_id: 1, kind: 'SIT', confidence: 'committed', optional: 0, note: null, marker: null,
   project_name: 'P', team_id: 1, priority: 'normal', env_name: 'SIT', env_kind: 'SIT',
   capacity: 1, calendar_days: 1, working_days: 1, is_milestone: false, ...p,
 });

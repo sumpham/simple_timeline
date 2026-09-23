@@ -12,6 +12,16 @@ export const db = new DatabaseSync(DB_PATH);
 
 db.exec(readFileSync(join(here, 'schema.sql'), 'utf8'));
 
+// schema.sql only creates missing tables, so columns added later are backfilled
+// here for databases made before them.
+const bookingColumns = new Set(
+  db.prepare('PRAGMA table_info(booking)').all().map((c) => (c as { name: string }).name),
+);
+if (!bookingColumns.has('note')) db.exec('ALTER TABLE booking ADD COLUMN note TEXT');
+if (!bookingColumns.has('marker')) {
+  db.exec("ALTER TABLE booking ADD COLUMN marker TEXT CHECK (marker IN ('star','flag','pin'))");
+}
+
 /** node:sqlite returns null-prototype rows; spread them so JSON and spread operators behave. */
 export function all<T>(sql: string, ...params: unknown[]): T[] {
   return db.prepare(sql).all(...(params as never[])).map((r) => ({ ...r })) as T[];

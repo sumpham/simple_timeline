@@ -23,8 +23,9 @@ const TEAMS = [
       {
         name: 'Card tokenisation R2', priority: 'critical', owner: 'Mai', status: 'in_progress',
         bookings: [
-          { env: 'SIT', kind: 'SIT', start: -6, end: 6 },
+          { env: 'SIT', kind: 'SIT', start: -6, end: 6, note: 'Needs the HSM stub deployed before day one.' },
           { env: 'UAT', kind: 'UAT', start: 8, end: 18 },
+          { env: 'PROD', kind: 'CUSTOM', start: 20, end: 20, marker: 'flag', note: 'Go / no-go with ops.' },
           { env: 'NFT', kind: 'NFT', start: 14, end: 19 },
           { env: 'PROD', kind: 'RELEASE', start: 22, end: 22 },
         ],
@@ -36,6 +37,7 @@ const TEAMS = [
           { env: 'SIT', kind: 'SIT', start: 2, end: 12 },
           { env: 'UAT', kind: 'UAT', start: 15, end: 24 },
           { env: 'PROD', kind: 'RELEASE', start: 28, end: 28 },
+          { env: 'NFT', kind: 'CUSTOM', start: 25, end: 27, marker: 'star', note: 'Soak test with the bank simulator.' },
         ],
       },
       {
@@ -159,10 +161,12 @@ transaction(() => {
           envIds.set(b.env, envId);
         }
         run(
-          `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence, note, marker)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           projectId, envId, b.kind, d(b.start), d(b.end),
           'confidence' in b ? b.confidence : 'committed',
+          'note' in b ? b.note : null,
+          'marker' in b ? b.marker : null,
         );
       }
     }

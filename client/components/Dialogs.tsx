@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { calendarDays, isWeekend, workingDays } from '../../shared/dates.ts';
-import type { BookingView, Environment, ISODate, Project, Team } from '../../shared/types.ts';
+import { MARKERS, type BookingView, type Environment, type ISODate, type Marker, type Project, type Team } from '../../shared/types.ts';
+import { MarkerIcon } from './Board.tsx';
 
 /** A dialog that traps focus and closes on Escape, via the native element. */
 export function Modal({
@@ -72,7 +73,12 @@ export type BookingDraft = {
   end_date: ISODate;
   confidence: string;
   optional: boolean;
+  note: string;
+  /** Only meaningful when kind is CUSTOM. */
+  marker: Marker | null;
 };
+
+const MARKER_LABEL: Record<Marker, string> = { star: 'Star', flag: 'Flag', pin: 'Pin' };
 
 export function BookingDialog({
   draft, projects, environments, holidays, onSave, onDelete, onClose, error,
@@ -89,6 +95,7 @@ export function BookingDialog({
   const [form, setForm] = useState(draft);
   const holidaySet = new Set(holidays);
   const isMilestone = form.kind === 'RELEASE';
+  const isCustom = form.kind === 'CUSTOM';
   const end = isMilestone ? form.start_date : form.end_date;
 
   const valid = form.start_date && end && end >= form.start_date;
@@ -115,7 +122,7 @@ export function BookingDialog({
             type="button"
             className="btn"
             disabled={!valid}
-            onClick={() => onSave({ ...form, end_date: end })}
+            onClick={() => onSave({ ...form, end_date: end, marker: isCustom ? form.marker : null })}
           >
             {draft.id ? 'Save changes' : 'Book environment'}
           </button>
@@ -187,6 +194,43 @@ export function BookingDialog({
             <option value="committed">Committed — counts towards double-bookings</option>
             <option value="tentative">Tentative — shown hatched, not counted</option>
           </select>
+        </label>
+
+        {isCustom && (
+          <div className="stack">
+            <span id="marker-label">Marker on the timeline</span>
+            <div className="segmented marker-picker" role="group" aria-labelledby="marker-label">
+              <button
+                type="button"
+                aria-pressed={form.marker == null}
+                onClick={() => setForm({ ...form, marker: null })}
+              >
+                None
+              </button>
+              {MARKERS.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  aria-pressed={form.marker === m}
+                  onClick={() => setForm({ ...form, marker: m })}
+                >
+                  <MarkerIcon marker={m} className="marker-picker-icon" />
+                  {MARKER_LABEL[m]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <label className="stack">
+          Note
+          <textarea
+            rows={3}
+            maxLength={2000}
+            value={form.note}
+            placeholder="Anything the next person looking at this booking should know"
+            onChange={(e) => setForm({ ...form, note: e.target.value })}
+          />
         </label>
 
         {valid && !isMilestone && (

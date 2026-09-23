@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS booking (
   confidence     TEXT    NOT NULL DEFAULT 'committed'
                          CHECK (confidence IN ('committed','tentative')),
   optional       INTEGER NOT NULL DEFAULT 0,
+  note           TEXT,
+  -- Only a CUSTOM booking carries a marker; the API clears it for every other kind.
+  marker         TEXT    CHECK (marker IN ('star','flag','pin')),
   CHECK (end_date >= start_date)
 );
 
