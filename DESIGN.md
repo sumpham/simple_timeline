@@ -69,7 +69,7 @@ from the identical code.
 team(id, name, code, active, created_at)
 environment(id, team_id, name, kind, capacity DEFAULT 1, sort_order)
 project(id, team_id, parent_id, name, status, priority, owner, description, external_link)
-booking(id, project_id, environment_id, kind, start_date, end_date, confidence, optional)
+booking(id, project_id, environment_id, kind, start_date, end_date, confidence, optional, note, marker)
 holiday(date PRIMARY KEY, name)
 audit_log(id, entity, entity_id, field, old_value, new_value, actor, at)
 
@@ -78,6 +78,12 @@ CREATE INDEX idx_booking_env_range ON booking(environment_id, start_date, end_da
 
 `phase` is renamed **`booking`** throughout, code and UI alike. The thing a project does to an
 environment is reserve it, and naming it so makes the whole feature explain itself.
+
+Any booking may carry a free-text `note`, shown in the bar's tooltip and edited in the booking
+dialog. A `CUSTOM` booking may also carry a `marker` (`star`, `flag` or `pin`), drawn at the
+start of its bar, or in place of the diamond when it is a single day. The marker takes the
+environment hue, like the diamond, so `--alarm` stays the only red. The API clears `marker` for
+any other kind. Databases created before these columns are backfilled by `server/db.ts`.
 
 Dropped from the sketch for MVP: `conflict_ack` (V2), `environment.shared` (answer 3),
 `project.tags` (no use yet).

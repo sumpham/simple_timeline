@@ -7,7 +7,7 @@ import type { BookingView, Environment, Project } from '../shared/types.ts';
 
 let nextId = 1;
 const booking = (p: Partial<BookingView> & { start_date: string; end_date: string }): BookingView => ({
-  id: nextId++, project_id: 1, environment_id: 1, kind: 'SIT', confidence: 'committed', optional: 0,
+  id: nextId++, project_id: 1, environment_id: 1, kind: 'SIT', confidence: 'committed', optional: 0, note: null, marker: null,
   project_name: 'Project', team_id: 1, priority: 'normal', env_name: 'SIT', env_kind: 'SIT',
   capacity: 1, calendar_days: 1, working_days: 1, is_milestone: false, ...p,
 });

@@ -12,6 +12,8 @@ function booking(partial: Partial<BookingView> & { start_date: string; end_date:
     kind: 'SIT',
     confidence: 'committed',
     optional: 0,
+    note: null,
+    marker: null,
     project_name: 'Project',
     team_id: 1,
     priority: 'normal',

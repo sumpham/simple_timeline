@@ -1,6 +1,6 @@
 import { useMemo, type CSSProperties, type RefObject } from 'react';
 import { addDays, diffDays, toUTC, workingDays as countWorkingDays } from '../../shared/dates.ts';
-import type { BookingView, Conflict, EnvKind, Environment, Holiday, ISODate, Project } from '../../shared/types.ts';
+import type { BookingView, Conflict, EnvKind, Environment, Holiday, ISODate, Marker, Project } from '../../shared/types.ts';
 import { formatRange, laneCount, majorTicks, minorTicks, packLanes, type Scale } from '../layout.ts';
 import type { DragMode } from '../dragMath.ts';
 import type { DragSession } from '../useBookingDrag.ts';
@@ -15,6 +15,21 @@ export const ENV_COLOR: Record<EnvKind, string> = {
   PROD: 'var(--env-prod)',
   OTHER: 'var(--env-other)',
 };
+
+const MARKER_PATHS: Record<Marker, string> = {
+  star: 'M12 2.5l2.9 6.1 6.6.8-4.9 4.6 1.3 6.6L12 17.3l-5.9 3.3 1.3-6.6-4.9-4.6 6.6-.8z',
+  flag: 'M5 2h2.2v20H5zM8.2 3H19l-2.6 4.6L19 12.2H8.2z',
+  pin: 'M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.6a2.6 2.6 0 1 1 0-5.2 2.6 2.6 0 0 1 0 5.2z',
+};
+
+/** The glyph a CUSTOM booking carries. Filled with currentColor, so the caller sets the hue. */
+export function MarkerIcon({ marker, className }: { marker: Marker; className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d={MARKER_PATHS[marker]} fill="currentColor" fillRule="evenodd" />
+    </svg>
+  );
+}
 
 export type Row = {
   key: string;
@@ -289,9 +304,14 @@ function Bar({
 
   const span = `${formatRange(booking.start_date, booking.end_date)}, ` +
     `${booking.working_days} working day${booking.working_days === 1 ? '' : 's'}`;
-  const description = booking.is_milestone
-    ? `${booking.project_name} releases to ${booking.env_name} on ${formatRange(booking.start_date, booking.end_date)}`
+  const what = booking.is_milestone
+    ? (booking.kind === 'RELEASE'
+      ? `${booking.project_name} releases to ${booking.env_name} on ${formatRange(booking.start_date, booking.end_date)}`
+      : `${booking.project_name} marks ${booking.env_name} on ${formatRange(booking.start_date, booking.end_date)}`)
     : `${booking.project_name} books ${booking.env_name}, ${span}${inConflict ? ' — double-booked' : ''}`;
+  const description = booking.note ? `${what}. Note: ${booking.note}` : what;
+  // Belt and braces: the server already clears markers on other kinds.
+  const marker = booking.kind === 'CUSTOM' ? booking.marker : null;
 
   // Resize handles need room to be grabbable; on a short bar they would leave
   // nothing to drag by, so only the move gesture is offered there.
@@ -300,6 +320,7 @@ function Bar({
   const classes = [
     'bar',
     booking.is_milestone ? 'milestone' : '',
+    marker ? 'has-marker' : '',
     booking.confidence === 'tentative' ? 'tentative' : '',
     inConflict && !booking.is_milestone ? 'in-conflict' : '',
     dragging ? 'is-dragging' : '',
@@ -325,7 +346,8 @@ function Bar({
       type="button"
       className={classes}
       style={{
-        left: booking.is_milestone ? left + scale.dayWidth / 2 - 6.5 : left,
+        // Centre the glyph on its day: the diamond is 13px wide, a marker 16px.
+        left: booking.is_milestone ? left + scale.dayWidth / 2 - (marker ? 8 : 6.5) : left,
         top,
         width: booking.is_milestone ? undefined : width,
         '--env-color': color,
@@ -341,11 +363,14 @@ function Bar({
     >
       {booking.is_milestone ? (
         <>
-          <span className="diamond" />
+          {marker ? <MarkerIcon marker={marker} className="milestone-marker" /> : <span className="diamond" />}
           {scale.dayWidth >= 6 && <span className="milestone-label">{label}</span>}
         </>
       ) : (
-        width >= 34 && <span className="bar-clip">{label}</span>
+        <>
+          {marker && width >= 18 && <MarkerIcon marker={marker} className="bar-marker" />}
+          {width >= 34 && <span className="bar-clip">{label}</span>}
+        </>
       )}
 
       {resizable && (
