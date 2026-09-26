@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties, type RefObject } from 'react';
+import { useMemo, useRef, type CSSProperties, type RefObject } from 'react';
 import { addDays, diffDays, toUTC, workingDays as countWorkingDays } from '../../shared/dates.ts';
 import type { BookingView, Conflict, EnvKind, Environment, Holiday, ISODate, Marker, Project } from '../../shared/types.ts';
 import { nextBookingAfter, occupancyOn } from '../../shared/conflicts.ts';
@@ -56,6 +56,9 @@ const BAR_H = 22;
 const BAR_GAP = 4;
 /** The band above each lane that names it when there is no rail beside it. */
 export const LANE_HEAD_H = 26;
+
+/** Matches the drag hook: a press that moves less than this is a click. */
+const CLICK_SLOP_PX = 4;
 
 function rowHeight(lanes: number): number {
   return ROW_PAD * 2 + lanes * BAR_H + (lanes - 1) * BAR_GAP;
@@ -158,6 +161,8 @@ type BoardProps = {
   /** A bar picked up by a long press, showing its resize tabs. */
   picked?: number | null;
   onEditRow?: (row: Row) => void;
+  /** A click on empty lane space: book this row from the clicked day. */
+  onCreateAt?: (row: Row, date: ISODate) => void;
 };
 
 /**
@@ -175,7 +180,7 @@ export function noteTag(note: string | null | undefined): string | null {
 
 export function Board({
   rows, scale, holidays, today, mode, gridRef, onScroll, onSelectBooking,
-  onDragStart, onNudge, drag, animate, compact = false, picked = null, onEditRow,
+  onDragStart, onNudge, drag, animate, compact = false, picked = null, onEditRow, onCreateAt,
 }: BoardProps) {
   const major = useMemo(() => majorTicks(scale), [scale]);
   const minor = useMemo(() => minorTicks(scale), [scale]);
@@ -244,6 +249,7 @@ export function Board({
               compact={compact}
               picked={picked}
               onEditRow={onEditRow}
+              onCreateAt={onCreateAt}
             />
           ))}
         </div>
@@ -253,7 +259,7 @@ export function Board({
 }
 
 function BoardRow({
-  row, scale, mode, onSelectBooking, onDragStart, onNudge, dragId, compact, picked, onEditRow,
+  row, scale, mode, onSelectBooking, onDragStart, onNudge, dragId, compact, picked, onEditRow, onCreateAt,
 }: {
   row: Row;
   scale: Scale;
@@ -265,6 +271,7 @@ function BoardRow({
   compact: boolean;
   picked: number | null;
   onEditRow?: (row: Row) => void;
+  onCreateAt?: (row: Row, date: ISODate) => void;
 }) {
   const placed = useMemo(() => packLanes(row.bookings, scale.dayWidth), [row.bookings, scale.dayWidth]);
   const lanes = laneCount(placed);
@@ -276,11 +283,37 @@ function BoardRow({
     [row.conflicts],
   );
 
+  /**
+   * Where a press on empty lane space began, and whether a bar was picked up at
+   * the time. A press that travelled is a pan or a text selection, and a tap that
+   * puts a picked-up bar down is not a request for a new booking.
+   */
+  const press = useRef<{ x: number; y: number; hadPick: boolean } | null>(null);
+
+  // Capture phase: a bar stops its own pointerdown from bubbling, and a drag that
+  // starts on a bar and ends on empty space must not leave a stale press behind.
+  const onPointerDownCapture = (e: React.PointerEvent) => {
+    const onBar = e.target instanceof Element && e.target.closest('.bar, .lane-head');
+    press.current = onBar ? null : { x: e.clientX, y: e.clientY, hadPick: picked != null };
+  };
+
+  const onClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const p = press.current;
+    press.current = null;
+    if (!onCreateAt || !p || p.hadPick) return;
+    if (e.target instanceof Element && e.target.closest('.bar, .lane-head')) return;
+    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > CLICK_SLOP_PX) return;
+    const offset = e.clientX - e.currentTarget.getBoundingClientRect().left;
+    onCreateAt(row, addDays(scale.from, Math.floor(offset / scale.dayWidth)));
+  };
+
   return (
     <div
-      className={`row${row.conflicts.length ? ' is-conflicted' : ''}`}
+      className={`row${row.conflicts.length ? ' is-conflicted' : ''}${onCreateAt ? ' can-book' : ''}`}
       style={{ height }}
       data-row={row.key}
+      onPointerDownCapture={onPointerDownCapture}
+      onClick={onClick}
     >
       {compact && (
         <div className="lane-head">
@@ -421,6 +454,7 @@ function Bar({
     <button
       type="button"
       className={classes}
+      data-booking={booking.id}
       style={{
         // Centre the glyph on its day: the diamond is 13px wide, a marker 16px.
         left: booking.is_milestone ? left + scale.dayWidth / 2 - (marker ? 8 : 6.5) : left,

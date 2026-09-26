@@ -1250,6 +1250,79 @@ label.stack.narrow { flex: 0 0 88px; }
   .row.is-flashed { animation: none; }
 }
 
+/* Empty lane space books on click. The crosshair says so without adding colour. */
+.row.can-book { cursor: cell; }
+
+/* Offers back a booking a lane click just made. Ink on paper-inverse: it is news,
+   not a warning, so it stays out of the alarm red. */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+  transform: translateX(-50%);
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100vw - 32px);
+  padding: 9px 10px 9px 16px;
+  background: var(--ink);
+  color: var(--lane);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(22, 32, 43, 0.25);
+  font-size: 13px;
+  animation: toast-in 160ms ease-out;
+}
+
+.toast-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast-action {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toast-action:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* On a phone the bottom is taken by the action bar and the booking sheet. */
+@media (max-width: 640px) {
+  .toast {
+    top: calc(env(safe-area-inset-top, 0px) + 58px);
+    bottom: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}
+
+/* A bar just made by a click on the lane. Ink, not --alarm: nothing is wrong. */
+.bar.is-fresh { animation: bar-fresh 1400ms ease-out; }
+
+@keyframes bar-fresh {
+  from { outline: 2px solid var(--ink); outline-offset: 2px; }
+  to   { outline: 2px solid transparent; outline-offset: 2px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar.is-fresh { animation: none; }
+}
+
 /* ---------------------------------------------------------------- drag readout, pinned */
 
 .drag-readout.pinned {

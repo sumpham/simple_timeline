@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type BoardData, type Bootstrap } from './api.ts';
 import { addDays, addWorkingDays, snapToWorkingDay, today as todayISO } from '../shared/dates.ts';
 import type { BookingView, Conflict, Environment, ISODate } from '../shared/types.ts';
-import { makeScale, ZOOM, type Zoom } from './layout.ts';
-import { Board, buildRows, DragReadout, ENV_COLOR, rowHeights, type Mode } from './components/Board.tsx';
+import { formatRange, makeScale, ZOOM, type Zoom } from './layout.ts';
+import { Board, buildRows, DragReadout, ENV_COLOR, rowHeights, type Mode, type Row } from './components/Board.tsx';
 import { useBookingDrag } from './useBookingDrag.ts';
-import { applyDrag, withSpan, type DragMode, type Span } from './dragMath.ts';
+import { applyDrag, bookingKindFor, quickSpan, withSpan, type DragMode, type Span } from './dragMath.ts';
 import { detectConflicts } from '../shared/conflicts.ts';
 import { OccupancyStrip } from './components/OccupancyStrip.tsx';
 import { ConflictDrawer, ConflictList } from './components/ConflictDrawer.tsx';
@@ -50,6 +50,9 @@ export function App() {
   /** Optimistic date overrides, by booking id, while an edit is in flight. */
   const [pendingSpans, setPendingSpans] = useState<Map<number, Span>>(new Map());
   const [sheet, setSheet] = useState<SheetState>({ kind: 'none' });
+  /** The booking a lane click just made, offered back for a few seconds. */
+  const [undo, setUndo] = useState<{ id: number; text: string } | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const railRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null!);
@@ -180,7 +183,18 @@ export function App() {
     setZoom(next);
   });
 
+  /**
+   * The project and environment last worked with. A click on an environment lane
+   * says where but not who, and a click on a project lane says who but not where;
+   * the missing half comes from here.
+   */
+  const lastUsed = useRef<{ project?: number; env?: number }>({});
+  const remember = (projectId: number, envId: number) => {
+    lastUsed.current = { project: projectId, env: envId };
+  };
+
   const openBooking = useCallback((b: BookingView) => {
+    remember(b.project_id, b.environment_id);
     setDialog({
       kind: 'booking',
       existing: b,
@@ -331,7 +345,7 @@ export function App() {
       draft: {
         project_id: projectId ?? data.projects[0].id,
         environment_id: environments[0].id,
-        kind: environments[0].kind === 'PROD' ? 'RELEASE' : environments[0].kind,
+        kind: bookingKindFor(environments[0].kind),
         start_date: start,
         end_date: addWorkingDays(start, 4),
         confidence: 'committed',
@@ -340,6 +354,84 @@ export function App() {
         marker: null,
       },
     });
+  };
+
+  /**
+   * A click is cheap to make by accident, so every lane-click booking can be taken
+   * back for a few seconds. Undo deletes it outright, whatever was done to it since.
+   */
+  const UNDO_MS = 6000;
+  const offerUndo = (id: number, text: string) => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndo({ id, text });
+    undoTimer.current = setTimeout(() => setUndo(null), UNDO_MS);
+  };
+
+  const undoCreate = async () => {
+    if (!undo) return;
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    const { id } = undo;
+    setUndo(null);
+    setSheet((s) => (s.kind === 'booking' && s.id === id ? { kind: 'none' } : s));
+    setDialog((d) => (d.kind === 'booking' && d.draft.id === id ? { kind: 'none' } : d));
+    try {
+      await api.deleteBooking(id);
+      await refresh();
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not undo that booking');
+    }
+  };
+
+  useEffect(() => () => { if (undoTimer.current) clearTimeout(undoTimer.current); }, []);
+
+  /**
+   * A click on empty lane space books it straight away, from the clicked day to
+   * that week's Friday. The new bar is then adjusted by dragging its edges like
+   * any other, and a click on it opens the full editor.
+   */
+  const createAt = async (row: Row, date: ISODate) => {
+    if (!data?.projects.length) return;
+    const pick = <T extends { id: number }>(list: T[], id?: number) => list.find((x) => x.id === id) ?? list[0];
+    const visible = environments.filter((e) => visibleEnvIds.has(e.id));
+    const project = mode === 'project'
+      ? data.projects.find((p) => p.id === row.id)
+      : pick(data.projects, lastUsed.current.project);
+    const env = mode === 'environment'
+      ? environments.find((e) => e.id === row.id)
+      : pick(visible.length ? visible : environments, lastUsed.current.env);
+    if (!project || !env) return;
+
+    const kind = bookingKindFor(env.kind);
+    const span = quickSpan(date, holidaySet);
+    try {
+      const created = await api.createBooking({
+        project_id: project.id,
+        environment_id: env.id,
+        kind,
+        start_date: span.start,
+        end_date: kind === 'RELEASE' ? span.start : span.end,
+        confidence: 'committed',
+      });
+      remember(project.id, env.id);
+      await refresh();
+      setError(null);
+      offerUndo(created.id, `Booked ${project.name} on ${env.name}, ${formatRange(created.start_date, created.end_date)}`);
+      if (isPhone) {
+        setSheet({ kind: 'booking', id: created.id });
+      } else {
+        // Focused, so the arrow keys adjust it at once; flashed, so the eye finds it.
+        requestAnimationFrame(() => {
+          const bar = gridRef.current?.querySelector<HTMLElement>(`[data-booking="${created.id}"]`);
+          if (!bar) return;
+          bar.focus({ preventScroll: true });
+          bar.classList.add('is-fresh');
+          setTimeout(() => bar.classList.remove('is-fresh'), 1400);
+        });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create that booking');
+    }
   };
 
   const selectConflict = (c: Conflict) => {
@@ -584,6 +676,7 @@ export function App() {
               compact={isPhone}
               picked={picked}
               onEditRow={editRow}
+              onCreateAt={data.projects.length ? createAt : undefined}
             />
           </div>
         )}
@@ -657,6 +750,13 @@ export function App() {
         />
       )}
 
+      {undo && (
+        <div className="toast" role="status">
+          <span className="toast-text">{undo.text}</span>
+          <button type="button" className="toast-action" onClick={() => void undoCreate()}>Undo</button>
+        </div>
+      )}
+
       {drag && (
         <DragReadout
           drag={drag}
@@ -677,6 +777,7 @@ export function App() {
             ? () => run(() => api.deleteBooking(dialog.draft.id!))
             : undefined}
           onSave={(d) => run(() => {
+            remember(d.project_id, d.environment_id);
             const body = {
               project_id: d.project_id,
               environment_id: d.environment_id,

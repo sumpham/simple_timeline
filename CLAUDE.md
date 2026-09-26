@@ -77,6 +77,13 @@ point, silently missing.
 **Click versus drag is decided in the hook** (4px slop), never by a click handler. The bar's
 `onClick` only fires for keyboard activation, detected with `event.detail === 0`.
 
+**Click-to-book** on empty lane space (`createAt` in `App.tsx`) saves at once, from the
+clicked working day to that week's Friday (`quickSpan` in `dragMath.ts`). The lane supplies
+one half — environment or project — and the last-used project/environment supplies the
+other. The row decides click versus pan with the same 4px slop, in the capture phase, so a
+bar drag that ends on empty space or a tap that drops a picked-up bar never creates one.
+Every lane-click booking gets a 6s Undo toast, which deletes it outright.
+
 Arrow keys mirror the gestures and debounce into one write. Do not drop the keyboard path:
 drag-only editing would break the accessibility requirement in `DESIGN.md` §5.
 
