@@ -49,6 +49,8 @@ export function App() {
   const [dialog, setDialog] = useState<DialogState>({ kind: 'none' });
   const [error, setError] = useState<string | null>(null);
   const [dialogError, setDialogError] = useState<string | undefined>();
+  /** A dialog's mutation is in flight; the managers show it as a bar along the top. */
+  const [busy, setBusy] = useState(false);
   const [animate, setAnimate] = useState(true);
   /** Optimistic date overrides, by booking id, while an edit is in flight. */
   const [pendingSpans, setPendingSpans] = useState<Map<number, Span>>(new Map());
@@ -245,6 +247,7 @@ export function App() {
 
   /** Run a mutation, refresh, and report failure inside the dialog that caused it. */
   const run = async (fn: () => Promise<unknown>, alsoClose = true) => {
+    setBusy(true);
     try {
       setDialogError(undefined);
       await fn();
@@ -252,6 +255,8 @@ export function App() {
       if (alsoClose) setDialog({ kind: 'none' });
     } catch (err) {
       setDialogError(err instanceof Error ? err.message : 'That did not work');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -260,6 +265,7 @@ export function App() {
    * to point somewhere else, and `refresh` would otherwise query a team that is gone.
    */
   const addTeam = async (t: { name: string; code: string }) => {
+    setBusy(true);
     try {
       setDialogError(undefined);
       const created = await api.createTeam(t);
@@ -267,10 +273,13 @@ export function App() {
       switchTeam(created.id);
     } catch (err) {
       setDialogError(err instanceof Error ? err.message : 'Could not add that team');
+    } finally {
+      setBusy(false);
     }
   };
 
   const removeTeam = async (id: number) => {
+    setBusy(true);
     try {
       setDialogError(undefined);
       await api.deleteTeam(id);
@@ -280,6 +289,8 @@ export function App() {
       else await refresh();
     } catch (err) {
       setDialogError(err instanceof Error ? err.message : 'Could not remove that team');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -827,6 +838,7 @@ export function App() {
           teamName={team.name}
           initialEditingId={dialog.editingId ?? null}
           error={dialogError}
+          busy={busy}
           onClose={closeDialog}
           onCreate={(p) => run(() => api.createProject({ ...p, team_id: teamId }), false)}
           onUpdate={(id, p) => run(() => api.updateProject(id, p), false)}
@@ -840,6 +852,7 @@ export function App() {
           environments={environments}
           teamName={team.name}
           error={dialogError}
+          busy={busy}
           onClose={closeDialog}
           onCreate={(e) => run(() => api.createEnvironment({ ...e, team_id: teamId } as Parameters<typeof api.createEnvironment>[0]), false)}
           onUpdate={(id, e) => run(() => api.updateEnvironment(id, e), false)}
@@ -852,6 +865,7 @@ export function App() {
           teams={boot.teams}
           currentId={teamId}
           error={dialogError}
+          busy={busy}
           onClose={closeDialog}
           onSelect={(id) => { switchTeam(id); setDialogError(undefined); }}
           onCreate={addTeam}

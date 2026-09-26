@@ -891,6 +891,34 @@ body {
 
 .btn:hover { filter: brightness(1.2); }
 
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: none;
+}
+
+/* A button whose own action is in flight: dimmed like a disabled one, but busy,
+   so it reads as working rather than unavailable. */
+.btn:disabled:has(.btn-spinner) {
+  opacity: 0.85;
+  cursor: progress;
+}
+
+.btn:has(.btn-spinner) {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.btn-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
 .btn.quiet {
   background: transparent;
   color: var(--muted);
@@ -928,6 +956,41 @@ dialog {
 }
 
 dialog:not([open]) { display: none; }
+
+/* The booking form is a fieldset so one attribute locks every field mid-save. */
+fieldset.dialog-body {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+/* Runs along the top edge while a save is in flight. Ink, not a hue: it is
+   progress, not news. */
+.dialog-progress {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  overflow: hidden;
+  background: var(--rule-soft);
+}
+
+.dialog-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  background: var(--ink);
+  animation: dialog-progress 1100ms ease-in-out infinite;
+}
+
+@keyframes dialog-progress {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(290%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog-progress::after { animation: none; width: 100%; opacity: 0.5; }
+}
 
 .dialog-body { overflow: auto; min-height: 0; }
 

@@ -5,13 +5,15 @@ import { MarkerIcon } from './Board.tsx';
 
 /** A dialog that traps focus and closes on Escape, via the native element. */
 export function Modal({
-  title, subtitle, children, footer, onClose,
+  title, subtitle, children, footer, onClose, busy = false,
 }: {
   title: string;
   subtitle?: string;
   children: ReactNode;
   footer: ReactNode;
   onClose: () => void;
+  /** A save is in flight: a bar runs along the top so the wait never looks like nothing. */
+  busy?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -21,7 +23,13 @@ export function Modal({
   }, []);
 
   return (
-    <dialog ref={ref} onCancel={(e) => { e.preventDefault(); onClose(); }} onClose={onClose}>
+    <dialog
+      ref={ref}
+      aria-busy={busy || undefined}
+      onCancel={(e) => { e.preventDefault(); onClose(); }}
+      onClose={onClose}
+    >
+      {busy && <div className="dialog-progress" role="progressbar" aria-label="Saving" />}
       <div className="dialog-head">
         <h2>{title}</h2>
         {subtitle && <p>{subtitle}</p>}
@@ -38,11 +46,12 @@ export function Modal({
  * Two taps in place, rather than a blocking confirm() or a second stacked dialog.
  */
 export function DangerButton({
-  label, confirmLabel, onConfirm,
+  label, confirmLabel, onConfirm, disabled = false,
 }: {
   label: string;
   confirmLabel: string;
   onConfirm: () => void;
+  disabled?: boolean;
 }) {
   const [armed, setArmed] = useState(false);
 
@@ -57,10 +66,21 @@ export function DangerButton({
     <button
       type="button"
       className={`btn danger${armed ? ' armed' : ''}`}
+      disabled={disabled}
       onClick={() => { if (armed) { onConfirm(); setArmed(false); } else setArmed(true); }}
     >
       {armed ? confirmLabel : label}
     </button>
+  );
+}
+
+/** The label a button shows while its own action is in flight, with a spinner. */
+function Working({ label }: { label: string }) {
+  return (
+    <>
+      <span className="btn-spinner" aria-hidden="true" />
+      {label}
+    </>
   );
 }
 
@@ -87,12 +107,29 @@ export function BookingDialog({
   projects: Project[];
   environments: Environment[];
   holidays: ISODate[];
-  onSave: (d: BookingDraft) => void;
-  onDelete?: () => void;
+  /** Resolves once the save, and the board refresh after it, are done. */
+  onSave: (d: BookingDraft) => Promise<unknown> | void;
+  onDelete?: () => Promise<unknown> | void;
   onClose: () => void;
   error?: string;
 }) {
   const [form, setForm] = useState(draft);
+  /**
+   * Which action is in flight. A save waits on the server and then on the board
+   * refresh, which together can take seconds; without this the dialog just sat
+   * there and a save looked like it had not happened.
+   */
+  const [pending, setPending] = useState<'save' | 'delete' | null>(null);
+  const perform = async (which: 'save' | 'delete', action: () => Promise<unknown> | void) => {
+    if (pending) return;
+    setPending(which);
+    try {
+      await action();
+    } finally {
+      // On success the dialog has usually closed by now; on failure it stays, with the error.
+      setPending(null);
+    }
+  };
   const holidaySet = new Set(holidays);
   const isMilestone = form.kind === 'RELEASE';
   const isCustom = form.kind === 'CUSTOM';
@@ -110,26 +147,37 @@ export function BookingDialog({
     <Modal
       title={draft.id ? 'Edit booking' : 'Book an environment'}
       subtitle={draft.id ? undefined : 'Pick the project, the environment, and the dates it is held.'}
-      onClose={onClose}
+      busy={pending != null}
+      // Closing mid-save would hide the outcome; the save closes the dialog itself.
+      onClose={() => { if (!pending) onClose(); }}
       footer={
         <>
-          {onDelete && (
-            <DangerButton label="Remove booking" confirmLabel="Remove it?" onConfirm={onDelete} />
-          )}
+          {onDelete && (pending === 'delete' ? (
+            <button type="button" className="btn danger" disabled><Working label="Removing…" /></button>
+          ) : (
+            <DangerButton
+              label="Remove booking"
+              confirmLabel="Remove it?"
+              disabled={pending != null}
+              onConfirm={() => void perform('delete', onDelete)}
+            />
+          ))}
           <span className="spacer" />
-          <button type="button" className="btn quiet" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn quiet" disabled={pending != null} onClick={onClose}>Cancel</button>
           <button
             type="button"
             className="btn"
-            disabled={!valid}
-            onClick={() => onSave({ ...form, end_date: end, marker: isCustom ? form.marker : null })}
+            disabled={!valid || pending != null}
+            onClick={() => void perform('save', () => onSave({ ...form, end_date: end, marker: isCustom ? form.marker : null }))}
           >
-            {draft.id ? 'Save changes' : 'Book environment'}
+            {pending === 'save'
+              ? <Working label={draft.id ? 'Saving…' : 'Booking…'} />
+              : (draft.id ? 'Save changes' : 'Book environment')}
           </button>
         </>
       }
     >
-      <div className="dialog-body">
+      <fieldset className="dialog-body" disabled={pending != null}>
         {error && <p className="note warn">{error}</p>}
 
         <label className="stack">
@@ -245,7 +293,7 @@ export function BookingDialog({
             Bookings start and end on working days. These dates will move to the nearest one.
           </p>
         )}
-      </div>
+      </fieldset>
     </Modal>
   );
 }
@@ -308,7 +356,7 @@ function ProjectForm({
 }
 
 export function ProjectsDialog({
-  projects, teamName, initialEditingId, onCreate, onUpdate, onDelete, onBook, onClose, error,
+  projects, teamName, initialEditingId, onCreate, onUpdate, onDelete, onBook, onClose, error, busy,
 }: {
   projects: Project[];
   teamName: string;
@@ -319,6 +367,7 @@ export function ProjectsDialog({
   onBook: (projectId: number) => void;
   onClose: () => void;
   error?: string;
+  busy?: boolean;
 }) {
   const [editing, setEditing] = useState<number | null>(initialEditingId ?? null);
   const [adding, setAdding] = useState(false);
@@ -326,6 +375,7 @@ export function ProjectsDialog({
   return (
     <Modal
       title="Projects"
+      busy={busy}
       subtitle={`${projects.length || 'No'} project${projects.length === 1 ? '' : 's'} in ${teamName}. Projects book environments.`}
       onClose={onClose}
       footer={
@@ -390,7 +440,7 @@ export function ProjectsDialog({
 }
 
 export function EnvironmentDialog({
-  environments, teamName, onCreate, onUpdate, onDelete, onClose, error,
+  environments, teamName, onCreate, onUpdate, onDelete, onClose, error, busy,
 }: {
   environments: Environment[];
   teamName: string;
@@ -399,6 +449,7 @@ export function EnvironmentDialog({
   onDelete: (id: number) => void;
   onClose: () => void;
   error?: string;
+  busy?: boolean;
 }) {
   const [name, setName] = useState('');
   const [kind, setKind] = useState('SIT');
@@ -407,6 +458,7 @@ export function EnvironmentDialog({
   return (
     <Modal
       title="Environments"
+      busy={busy}
       subtitle={`${teamName} owns these. Capacity is how many projects may hold one at once — anything above it is a double-booking.`}
       onClose={onClose}
       footer={
@@ -508,7 +560,7 @@ export function EnvironmentDialog({
 }
 
 export function TeamsDialog({
-  teams, currentId, onCreate, onUpdate, onDelete, onSelect, onClose, error,
+  teams, currentId, onCreate, onUpdate, onDelete, onSelect, onClose, error, busy,
 }: {
   teams: Team[];
   currentId: number | null;
@@ -518,6 +570,7 @@ export function TeamsDialog({
   onSelect: (id: number) => void;
   onClose: () => void;
   error?: string;
+  busy?: boolean;
 }) {
   const [adding, setAdding] = useState(teams.length === 0);
   const [name, setName] = useState('');
@@ -532,6 +585,7 @@ export function TeamsDialog({
   return (
     <Modal
       title="Teams"
+      busy={busy}
       subtitle="A team owns its environments and the projects that book them. New teams start with SIT, UAT and PROD."
       onClose={onClose}
       footer={
