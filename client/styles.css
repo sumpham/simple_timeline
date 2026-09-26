@@ -20,6 +20,7 @@
      rather than competing with it; still visible, because the clash is real. */
   --resolved:      #3f9a5c;
   --resolved-soft: #e7f5ec;
+  --today: var(--alarm);
 
   --env-sit:     #2e8c8c;
   --env-uat:     #3a62c4;
@@ -531,10 +532,12 @@ body {
 
 .holiday-col { background: var(--shade-holiday); }
 
+/* Today is red by request. It shares the alarm's hue, so it stays a thin line
+   and a small flag: a hairline does not read as a hatched, framed clash. */
 .today-line {
   width: 2px;
-  background: var(--ink);
-  opacity: 0.55;
+  background: var(--today);
+  opacity: 0.85;
   z-index: 2;
 }
 
@@ -542,7 +545,7 @@ body {
   position: absolute;
   top: 0;
   transform: translateX(-50%);
-  background: var(--ink);
+  background: var(--today);
   color: var(--lane);
   font-family: 'Archivo Narrow', 'Archivo', sans-serif;
   font-size: 11px;

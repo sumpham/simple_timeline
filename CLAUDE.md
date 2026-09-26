@@ -53,7 +53,8 @@ in a component or a route.
 **Colour is spent on one thing.** `--alarm` is for double-bookings and nothing else;
 environment hues deliberately avoid the red family so the alarm stays pre-attentive. Before
 adding a new coloured element, check `DESIGN.md` §6 and §11. The one addition is
-`--resolved` (pale green), for a double-booking someone has accepted.
+`--resolved` (pale green), for a double-booking someone has accepted. The today line and
+flag are red too (`--today`, by request); keep them thin so they never read as a clash.
 
 **Resolved double-bookings still exist; they just stop alarming.** A resolution is keyed by
 `conflictKey` (environment + exact booking ids, no dates), stored in `conflict_resolution`,
