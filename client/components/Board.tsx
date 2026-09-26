@@ -160,6 +160,19 @@ type BoardProps = {
   onEditRow?: (row: Row) => void;
 };
 
+/**
+ * The first ten characters of a booking's note, for the bar itself. One project
+ * often books the same environment several times for different work (NFT, SIT
+ * rerun, …); the tag is what tells those bars apart at a glance.
+ */
+export const NOTE_TAG_LEN = 10;
+export function noteTag(note: string | null | undefined): string | null {
+  const flat = (note ?? '').replace(/\s+/g, ' ').trim();
+  if (!flat) return null;
+  const chars = Array.from(flat);
+  return chars.length > NOTE_TAG_LEN ? `${chars.slice(0, NOTE_TAG_LEN).join('').trimEnd()}…` : flat;
+}
+
 export function Board({
   rows, scale, holidays, today, mode, gridRef, onScroll, onSelectBooking,
   onDragStart, onNudge, drag, animate, compact = false, picked = null, onEditRow,
@@ -360,6 +373,8 @@ function Bar({
   // the project; in project mode it is the other way round.
   const label = mode === 'environment' ? booking.project_name : booking.env_name;
   const width = scale.spanWidth(booking.start_date, booking.end_date);
+  const tag = noteTag(booking.note);
+  const tagged = tag && <span className="bar-note"> · {tag}</span>;
 
   const span = `${formatRange(booking.start_date, booking.end_date)}, ` +
     `${booking.working_days} working day${booking.working_days === 1 ? '' : 's'}`;
@@ -427,12 +442,12 @@ function Bar({
       {booking.is_milestone ? (
         <>
           {marker ? <MarkerIcon marker={marker} className="milestone-marker" /> : <span className="diamond" />}
-          {scale.dayWidth >= 6 && <span className="milestone-label">{label}</span>}
+          {scale.dayWidth >= 6 && <span className="milestone-label">{label}{tagged}</span>}
         </>
       ) : (
         <>
           {marker && width >= 18 && <MarkerIcon marker={marker} className="bar-marker" />}
-          {width >= 34 && <span className="bar-clip">{label}</span>}
+          {width >= 34 && <span className="bar-clip">{label}{tagged}</span>}
         </>
       )}
 

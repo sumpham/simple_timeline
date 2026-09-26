@@ -720,6 +720,13 @@ body {
   text-overflow: ellipsis;
 }
 
+/* The note tag separates repeat bookings of one project on one environment.
+   Secondary to the label, so it recedes by weight, not by a new colour. */
+.bar-note {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
 /* One orchestrated moment: bars wipe in left to right, so the first read of the
    board is a read of time. Nothing else animates unless you act on it. */
 @keyframes bar-in {
