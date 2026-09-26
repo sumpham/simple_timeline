@@ -16,6 +16,10 @@
   --muted:      #59677a;
   --alarm:      #d3232f;
   --alarm-soft: #fbe9ea;
+  /* A double-booking someone has accepted. Pale, so it recedes behind the alarm
+     rather than competing with it; still visible, because the clash is real. */
+  --resolved:      #3f9a5c;
+  --resolved-soft: #e7f5ec;
 
   --env-sit:     #2e8c8c;
   --env-uat:     #3a62c4;
@@ -49,6 +53,8 @@
     --muted:      #93a3b4;
     --alarm:      #ff5a63;
     --alarm-soft: #3a1d21;
+    --resolved:      #5cc07c;
+    --resolved-soft: #1c3326;
 
     --env-sit:     #46b3b3;
     --env-uat:     #6c8fe8;
@@ -74,6 +80,8 @@
   --muted:      #93a3b4;
   --alarm:      #ff5a63;
   --alarm-soft: #3a1d21;
+  --resolved:      #5cc07c;
+  --resolved-soft: #1c3326;
 
   --env-sit:     #46b3b3;
   --env-uat:     #6c8fe8;
@@ -372,6 +380,7 @@ body {
 }
 
 .rail-row {
+  overflow: hidden;
   border-bottom: 1px solid var(--rule-soft);
   padding: var(--row-pad) 12px;
   display: flex;
@@ -398,6 +407,7 @@ body {
 
 .rail-name {
   font-size: 13px;
+  line-height: 16px;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -418,6 +428,7 @@ body {
 .rail-meta {
   font-family: 'Archivo Narrow', 'Archivo', sans-serif;
   font-size: 12px;
+  line-height: 14px;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -576,6 +587,23 @@ body {
 }
 
 .conflict-frame:not([data-days])::after { content: none; }
+
+/* Accepted double-bookings keep their shape but trade the alarm for a pale green:
+   still there to see, no longer asking for attention. */
+.conflict-span.is-resolved {
+  background-color: var(--resolved-soft);
+  background-image: none;
+}
+
+.conflict-frame.is-resolved {
+  border-left: 1px solid var(--resolved);
+  border-right: 1px solid var(--resolved);
+}
+
+.conflict-frame.is-resolved::after {
+  background: var(--resolved);
+  content: attr(data-days) ' ✓';
+}
 
 .conflict-frame::after {
   content: attr(data-days);
@@ -818,18 +846,52 @@ body {
 }
 
 .conflict-card {
-  width: 100%;
-  text-align: left;
   background: var(--lane);
-  border: 0;
   border-bottom: 1px solid var(--rule-soft);
   border-left: 3px solid var(--alarm);
-  padding: 11px 16px;
-  cursor: pointer;
-  display: block;
 }
 
 .conflict-card:hover { background: var(--alarm-soft); }
+
+.conflict-card-main {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 11px 16px 6px;
+  cursor: pointer;
+  display: block;
+  color: inherit;
+  font: inherit;
+}
+
+.conflict-card-actions {
+  padding: 0 16px 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.conflict-resolve { padding: 3px 10px; font-size: 12px; }
+
+.conflict-card.is-resolved {
+  border-left-color: var(--resolved);
+  background: var(--resolved-soft);
+}
+
+.conflict-card.is-resolved:hover { background: color-mix(in srgb, var(--resolved-soft) 70%, var(--lane)); }
+.conflict-card.is-resolved .conflict-days { color: var(--resolved); }
+
+.conflict-resolved-tag {
+  margin-left: auto;
+  font-family: 'Archivo Narrow', 'Archivo', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--resolved);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.drawer-sub { font-weight: 400; color: var(--muted); }
 
 .conflict-card-top {
   display: flex;

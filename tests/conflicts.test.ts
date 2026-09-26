@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { detectConflicts, nextBookingAfter, occupancyOn } from '../shared/conflicts.ts';
+import {
+  applyResolutions, conflictKey, detectConflicts, nextBookingAfter, occupancyOn, openConflicts,
+} from '../shared/conflicts.ts';
+import { effectiveKind } from '../shared/bookings.ts';
 import type { BookingView } from '../shared/types.ts';
 
 let nextId = 1;
@@ -175,5 +178,63 @@ describe('occupancy', () => {
   it('names who is next', () => {
     expect(nextBookingAfter(b, 1, '2026-03-04')?.project_name).toBe('Billing');
     expect(nextBookingAfter(b, 1, '2026-03-25')).toBeNull();
+  });
+});
+
+describe('conflict resolution', () => {
+  const clash = () => detectConflicts([
+    booking({ id: 101, start_date: '2026-03-02', end_date: '2026-03-06' }),
+    booking({ id: 102, start_date: '2026-03-04', end_date: '2026-03-10' }),
+  ]);
+
+  it('keys a double-booking by environment and the bookings in it, not its dates', () => {
+    expect(conflictKey({ environment_id: 1, booking_ids: [102, 101] })).toBe('1:101,102');
+    const [c] = clash();
+    expect(conflictKey(c)).toBe('1:101,102');
+  });
+
+  it('marks resolved clashes and leaves the rest raising the alarm', () => {
+    const marked = applyResolutions(clash(), new Set(['1:101,102']));
+    expect(marked[0].resolved).toBe(true);
+    expect(openConflicts(marked)).toHaveLength(0);
+    expect(openConflicts(applyResolutions(clash(), new Set()))).toHaveLength(1);
+  });
+
+  it('stays resolved when a booking in it moves, and reopens when a new one joins', () => {
+    const moved = detectConflicts([
+      booking({ id: 101, start_date: '2026-03-02', end_date: '2026-03-06' }),
+      booking({ id: 102, start_date: '2026-03-05', end_date: '2026-03-12' }),
+    ]);
+    expect(applyResolutions(moved, new Set(['1:101,102']))[0].resolved).toBe(true);
+
+    const joined = detectConflicts([
+      booking({ id: 101, start_date: '2026-03-02', end_date: '2026-03-06' }),
+      booking({ id: 102, start_date: '2026-03-04', end_date: '2026-03-10' }),
+      booking({ id: 103, start_date: '2026-03-05', end_date: '2026-03-05' }),
+    ]);
+    expect(openConflicts(applyResolutions(joined, new Set(['1:101,102'])))).toHaveLength(1);
+  });
+
+  it('lists open clashes before resolved ones', () => {
+    const two = detectConflicts([
+      booking({ id: 201, environment_id: 1, start_date: '2026-03-02', end_date: '2026-03-06' }),
+      booking({ id: 202, environment_id: 1, start_date: '2026-03-02', end_date: '2026-03-06' }),
+      booking({ id: 203, environment_id: 2, start_date: '2026-03-02', end_date: '2026-03-03' }),
+      booking({ id: 204, environment_id: 2, start_date: '2026-03-02', end_date: '2026-03-03' }),
+    ]);
+    const marked = applyResolutions(two, new Set(['1:201,202']));
+    expect(marked.map((c) => c.resolved)).toEqual([false, true]);
+  });
+});
+
+describe('effectiveKind', () => {
+  it('makes a one-day booking a custom event', () => {
+    expect(effectiveKind('SIT', '2026-03-04', '2026-03-04')).toBe('CUSTOM');
+    expect(effectiveKind('UAT', '2026-03-04', '2026-03-04')).toBe('CUSTOM');
+  });
+
+  it('leaves releases and longer bookings alone', () => {
+    expect(effectiveKind('RELEASE', '2026-03-04', '2026-03-04')).toBe('RELEASE');
+    expect(effectiveKind('SIT', '2026-03-04', '2026-03-05')).toBe('SIT');
   });
 });

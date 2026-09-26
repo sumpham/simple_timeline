@@ -9,7 +9,8 @@ import {
   applyDrag, bookingKindFor, provisionalBooking, quickSpan, withSpan,
   type DragMode, type QuickPlan, type Span,
 } from './dragMath.ts';
-import { detectConflicts } from '../shared/conflicts.ts';
+import { applyResolutions, conflictKey, detectConflicts, openConflicts } from '../shared/conflicts.ts';
+import { effectiveKind } from '../shared/bookings.ts';
 import { OccupancyStrip } from './components/OccupancyStrip.tsx';
 import { ConflictDrawer, ConflictList } from './components/ConflictDrawer.tsx';
 import { BoardSheet, BookingSheet, EnvFilter } from './components/Sheets.tsx';
@@ -65,6 +66,9 @@ export function App() {
   const [quick, setQuick] = useState<{ plan: QuickPlan; createdId?: number } | null>(null);
 
   const railRef = useRef<HTMLDivElement>(null);
+  const railFootRef = useRef<HTMLDivElement>(null);
+  /** Height of the rail's environment filter, which the grid must be able to scroll past. */
+  const [railFootH, setRailFootH] = useState(0);
   const gridRef = useRef<HTMLDivElement>(null!);
 
   const scale = useMemo(() => makeScale(zoom, today), [zoom, today]);
@@ -131,16 +135,21 @@ export function App() {
       ? provisionalBooking(quick.plan, holidaySet)
       : null;
     if (!pendingSpans.size && !placeholder) return { bookings: data.bookings, conflicts: data.conflicts };
+    // Recomputed conflicts are new objects; the accepted ones must stay accepted.
+    const resolved = new Set(data.resolved ?? []);
 
     const bookings = data.bookings.map((b) => {
       const span = pendingSpans.get(b.id);
       return span ? withSpan(b, span, holidaySet) : b;
     });
     if (placeholder) bookings.push(placeholder);
-    return { bookings, conflicts: detectConflicts(bookings) };
+    return { bookings, conflicts: applyResolutions(detectConflicts(bookings), resolved) };
   }, [data, pendingSpans, holidaySet, quick]);
 
+  /** Every double-booking in view, resolved ones included; they are still drawn. */
   const conflicts = preview?.conflicts ?? [];
+  /** The ones nobody has accepted yet. Only these raise the alarm or count. */
+  const unresolved = useMemo(() => openConflicts(conflicts), [conflicts]);
 
   const boardData = useMemo(
     () => (data && preview ? { ...data, bookings: preview.bookings, conflicts: preview.conflicts } : null),
@@ -152,6 +161,8 @@ export function App() {
     [boardData, mode, visibleEnvIds, today],
   );
   const heights = useMemo(() => rowHeights(rows, scale.dayWidth), [rows, scale.dayWidth]);
+  /** The rail (and its filter) is drawn only on a desktop board with rows to show. */
+  const hasRail = !isPhone && rows.length > 0;
 
   // The rail and the grid scroll as one surface.
   const syncRail = useCallback((scrollTop: number) => {
@@ -160,6 +171,16 @@ export function App() {
       el.firstElementChild.style.transform = `translateY(${-scrollTop}px)`;
     }
   }, []);
+
+  // The filter grows and shrinks with the environment list and the window, so it
+  // is measured rather than assumed.
+  useEffect(() => {
+    const el = railFootRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setRailFootH(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasRail]);
 
   const scrollTo = useCallback((date: ISODate) => {
     const el = gridRef.current;
@@ -425,7 +446,10 @@ export function App() {
       ? environments.find((e) => e.id === row.id)
       : pick(visible.length ? visible : environments, lastUsed.current.env);
     if (!project || !env) return null;
-    return { project, env, kind: bookingKindFor(env.kind), span: quickSpan(date, holidaySet) };
+    const span = quickSpan(date, holidaySet);
+    // A Friday press books one day, which makes it a custom event; say so in the plan
+    // so the placeholder matches what the server will save.
+    return { project, env, kind: effectiveKind(bookingKindFor(env.kind), span.start, span.end), span };
   };
 
   /**
@@ -468,6 +492,28 @@ export function App() {
     }
   };
 
+  /**
+   * Accept a double-booking, or take the acceptance back. Applied locally first so
+   * the lane turns at once; a failed write refreshes, which puts the truth back.
+   */
+  const setResolved = async (c: Conflict, resolved: boolean) => {
+    const key = conflictKey(c);
+    setData((d) => {
+      if (!d) return d;
+      const keys = new Set(d.resolved ?? []);
+      if (resolved) keys.add(key); else keys.delete(key);
+      return { ...d, resolved: [...keys], conflicts: applyResolutions(d.conflicts, keys) };
+    });
+    try {
+      const body = { environment_id: c.environment_id, booking_ids: c.booking_ids };
+      await (resolved ? api.resolveConflict(body) : api.reopenConflict(body));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update that double-booking');
+      await refresh();
+    }
+  };
+
   const selectConflict = (c: Conflict) => {
     setMode('environment');
     setHiddenEnvs((prev) => {
@@ -503,8 +549,8 @@ export function App() {
     ? { kind: 'environments' }
     : { kind: 'projects', editingId: row.id });
 
-  const conflictLabel = conflicts.length
-    ? `${conflicts.length} double-booking${conflicts.length === 1 ? '' : 's'}`
+  const conflictLabel = unresolved.length
+    ? `${unresolved.length} double-booking${unresolved.length === 1 ? '' : 's'}`
     : 'No double-bookings';
 
   const modeSwitch = (
@@ -592,11 +638,11 @@ export function App() {
 
         <button
           type="button"
-          className={`conflict-toggle${conflicts.length ? ' has-conflicts' : ''}`}
+          className={`conflict-toggle${unresolved.length ? ' has-conflicts' : ''}`}
           aria-pressed={drawerOpen}
           onClick={() => setDrawerOpen((v) => !v)}
         >
-          {conflicts.length > 0 && <span className="marker" aria-hidden="true" />}
+          {unresolved.length > 0 && <span className="marker" aria-hidden="true" />}
           {conflictLabel}
         </button>
       </header>
@@ -652,7 +698,7 @@ export function App() {
               {rows.map((row, i) => (
                 <div
                   key={row.key}
-                  className={`rail-row${row.conflicts.length ? ' is-conflicted' : ''}`}
+                  className={`rail-row${openConflicts(row.conflicts).length ? ' is-conflicted' : ''}`}
                   style={{ height: heights[i] }}
                 >
                   <button
@@ -682,12 +728,12 @@ export function App() {
               </div>
               </div>
 
-              <div className="rail-foot">
+              <div className="rail-foot" ref={railFootRef}>
               <div className="filter-head">Show environments</div>
               <EnvFilter
                 environments={environments}
                 hidden={hiddenEnvs}
-                conflicts={data.conflicts}
+                conflicts={openConflicts(data.conflicts)}
                 onToggle={toggleEnv}
               />
               </div>
@@ -710,6 +756,7 @@ export function App() {
               compact={isPhone}
               picked={picked}
               onEditRow={editRow}
+              tailSpace={isPhone ? 0 : railFootH}
               planAt={data.projects.length ? planAt : undefined}
               onCreate={(plan) => void createFromPlan(plan)}
               onHint={() => showToast('Press and hold on a lane to book it', undefined, 2500)}
@@ -721,6 +768,7 @@ export function App() {
           <ConflictDrawer
             conflicts={conflicts}
             onSelect={selectConflict}
+            onResolve={(c, r) => void setResolved(c, r)}
             onClose={() => setDrawerOpen(false)}
           />
         )}
@@ -730,11 +778,11 @@ export function App() {
         <nav className="m-bottombar" aria-label="Board actions">
           <button
             type="button"
-            className={`m-peek${conflicts.length ? ' has-conflicts' : ''}`}
+            className={`m-peek${unresolved.length ? ' has-conflicts' : ''}`}
             aria-expanded={sheet.kind === 'conflicts'}
             onClick={() => setSheet((s) => (s.kind === 'conflicts' ? { kind: 'none' } : { kind: 'conflicts' }))}
           >
-            {conflicts.length > 0 && <span className="marker" aria-hidden="true" />}
+            {unresolved.length > 0 && <span className="marker" aria-hidden="true" />}
             <span>{conflictLabel}</span>
             {conflicts.length > 0 && (
               <svg className="m-peek-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 10 4-4 4 4" /></svg>
@@ -752,7 +800,7 @@ export function App() {
         <>
           <div className="sheet-scrim" onClick={() => setSheet({ kind: 'none' })} aria-hidden="true" />
           <section className="sheet conflict-sheet" role="dialog" aria-label="Double-bookings">
-            <ConflictList conflicts={conflicts} onSelect={selectConflict} />
+            <ConflictList conflicts={conflicts} onSelect={selectConflict} onResolve={(c, r) => void setResolved(c, r)} />
           </section>
         </>
       )}
@@ -764,7 +812,7 @@ export function App() {
         return (
           <BookingSheet
             booking={live}
-            inConflict={conflicts.some((c) => c.booking_ids.includes(live.id))}
+            inConflict={unresolved.some((c) => c.booking_ids.includes(live.id))}
             onNudge={(m, d) => nudge(saved, m, d)}
             onEdit={() => { setSheet({ kind: 'none' }); openBooking(saved); }}
             onClose={() => setSheet({ kind: 'none' })}
@@ -778,7 +826,7 @@ export function App() {
           teamId={teamId}
           environments={environments}
           hidden={hiddenEnvs}
-          conflicts={data?.conflicts ?? []}
+          conflicts={openConflicts(data?.conflicts ?? [])}
           onSelectTeam={(id) => { switchTeam(id); setSheet({ kind: 'none' }); }}
           onToggleEnv={toggleEnv}
           onManage={(what) => { setSheet({ kind: 'none' }); setDialog({ kind: what }); }}
@@ -799,7 +847,7 @@ export function App() {
         <DragReadout
           drag={drag}
           holidays={holidaySet}
-          clashes={conflicts.some((c) => c.booking_ids.includes(drag.booking.id))}
+          clashes={unresolved.some((c) => c.booking_ids.includes(drag.booking.id))}
         />
       )}
 

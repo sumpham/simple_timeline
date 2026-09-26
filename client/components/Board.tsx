@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { addDays, diffDays, toUTC, workingDays as countWorkingDays } from '../../shared/dates.ts';
 import type { BookingView, Conflict, EnvKind, Environment, Holiday, ISODate, Marker, Project } from '../../shared/types.ts';
-import { nextBookingAfter, occupancyOn } from '../../shared/conflicts.ts';
+import { nextBookingAfter, occupancyOn, openConflicts } from '../../shared/conflicts.ts';
 import { formatDate, formatRange, laneCount, majorTicks, minorTicks, packLanes, type Scale } from '../layout.ts';
 import { PROVISIONAL_ID, type DragMode, type QuickPlan } from '../dragMath.ts';
 import { LONG_PRESS_MS, TOUCH_SLOP_PX } from '../touch.ts';
@@ -61,14 +61,25 @@ export const LANE_HEAD_H = 26;
 /** Matches the drag hook: a press that moves less than this is a click. */
 const CLICK_SLOP_PX = 4;
 
+/**
+ * The shortest a row may be: enough for the rail's two lines (name, then booking
+ * count) beside it. A one-lane row at bar height alone is 36px, and the rail's
+ * second line spilled into the row below.
+ */
+const ROW_MIN_H = 44;
+
 function rowHeight(lanes: number): number {
-  return ROW_PAD * 2 + lanes * BAR_H + (lanes - 1) * BAR_GAP;
+  return Math.max(ROW_MIN_H, ROW_PAD * 2 + lanes * BAR_H + (lanes - 1) * BAR_GAP);
 }
 
-function laneStatus(bookings: BookingView[], env: Environment, today: ISODate): Row['status'] {
+function laneStatus(
+  bookings: BookingView[], env: Environment, today: ISODate, conflicts: Conflict[],
+): Row['status'] {
   const holders = occupancyOn(bookings, env.id, today);
   if (holders.length > env.capacity) {
-    return { text: `${holders.length} projects, room for ${env.capacity}`, clash: true };
+    // Over capacity today, but only an unresolved clash is shown as one.
+    const clash = conflicts.some((c) => !c.resolved && c.start_date <= today && c.end_date >= today);
+    return { text: `${holders.length} projects, room for ${env.capacity}`, clash };
   }
   if (holders.length === 1) {
     return { text: `${holders[0].project_name} until ${formatDate(holders[0].end_date)}`, clash: false };
@@ -103,7 +114,7 @@ export function buildRows(
           bookings,
           conflicts,
           occupancy: { booked, capacity: env.capacity },
-          status: laneStatus(data.bookings, env, today),
+          status: laneStatus(data.bookings, env, today, conflicts),
         };
       });
   }
@@ -161,6 +172,11 @@ type BoardProps = {
   compact?: boolean;
   /** A bar picked up by a long press, showing its resize tabs. */
   picked?: number | null;
+  /**
+   * Extra scroll room below the last row. The rail's environment filter covers
+   * the foot of the rail, so without it the last rows could never scroll clear.
+   */
+  tailSpace?: number;
   onEditRow?: (row: Row) => void;
   /** What a long press here would book; absent or null when nothing can be. */
   planAt?: (row: Row, date: ISODate) => QuickPlan | null;
@@ -183,10 +199,60 @@ export function noteTag(note: string | null | undefined): string | null {
   return chars.length > NOTE_TAG_LEN ? `${chars.slice(0, NOTE_TAG_LEN).join('').trimEnd()}…` : flat;
 }
 
+/**
+ * The note as a bar shows it: whole when label and note both fit in the room the
+ * bar has, otherwise the short tag. `measure` returns rendered widths in pixels,
+ * so the choice follows the real font rather than a character count.
+ */
+export function barNote(
+  label: string,
+  note: string | null | undefined,
+  room: number,
+  measure: (label: string, note: string) => number,
+): string | null {
+  const tag = noteTag(note);
+  if (!tag) return null;
+  const full = (note ?? '').replace(/\s+/g, ' ').trim();
+  return full !== tag && measure(label, ` · ${full}`) <= room ? full : tag;
+}
+
+/** Horizontal padding inside a bar, both sides (see `.bar` in styles.css). */
+const BAR_PAD_X = 14;
+/** A marker icon's width plus its gap, when the bar carries one. */
+const BAR_MARKER_W = 17;
+
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+
+/**
+ * Width of a bar's text as drawn: the label in the bar's semibold, the note in
+ * regular weight. Uses the loaded web font, which is why Board waits on
+ * `document.fonts.ready` before trusting these numbers.
+ */
+function measureBarText(label: string, note: string): number {
+  if (measureCtx === undefined) measureCtx = document.createElement('canvas').getContext('2d');
+  const ctx = measureCtx;
+  if (!ctx) return Infinity;
+  const family = "'Archivo Narrow', 'Archivo', sans-serif";
+  ctx.font = `600 11px ${family}`;
+  const a = ctx.measureText(label).width;
+  ctx.font = `400 11px ${family}`;
+  return a + ctx.measureText(note).width;
+}
+
 export function Board({
   rows, scale, holidays, today, mode, gridRef, onScroll, onSelectBooking,
   onDragStart, onNudge, drag, animate, compact = false, picked = null, onEditRow, planAt, onCreate, onHint,
+  tailSpace = 0,
 }: BoardProps) {
+  // Bars measure their text to decide whether a whole note fits; until the web
+  // font has loaded those widths are the fallback font's, so draw again once it has.
+  const [, setFontsLoaded] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void document.fonts?.ready.then(() => { if (live) setFontsLoaded(true); });
+    return () => { live = false; };
+  }, []);
+
   const major = useMemo(() => majorTicks(scale), [scale]);
   const minor = useMemo(() => minorTicks(scale), [scale]);
 
@@ -260,6 +326,7 @@ export function Board({
             />
           ))}
         </div>
+        {tailSpace > 0 && <div className="grid-tail" style={{ height: tailSpace }} aria-hidden="true" />}
       </div>
     </div>
   );
@@ -288,9 +355,11 @@ function BoardRow({
   const head = compact ? LANE_HEAD_H : 0;
   const height = rowHeight(lanes) + head;
   const over = row.occupancy && row.occupancy.booked > row.occupancy.capacity;
+  // Resolved clashes are still drawn, in green, but only open ones raise the alarm.
+  const alarming = useMemo(() => openConflicts(row.conflicts), [row.conflicts]);
   const conflictedIds = useMemo(
-    () => new Set(row.conflicts.flatMap((c) => c.booking_ids)),
-    [row.conflicts],
+    () => new Set(alarming.flatMap((c) => c.booking_ids)),
+    [alarming],
   );
 
   /**
@@ -381,7 +450,7 @@ function BoardRow({
 
   return (
     <div
-      className={`row${row.conflicts.length ? ' is-conflicted' : ''}${planAt ? ' can-book' : ''}${hold ? ' is-holding' : ''}`}
+      className={`row${alarming.length ? ' is-conflicted' : ''}${planAt ? ' can-book' : ''}${hold ? ' is-holding' : ''}`}
       style={{ height }}
       data-row={row.key}
       onPointerDownCapture={onPointerDownCapture}
@@ -412,7 +481,7 @@ function BoardRow({
         row.conflicts.map((c) => (
           <div
             key={`hatch-${c.start_date}`}
-            className="conflict-span"
+            className={`conflict-span${c.resolved ? ' is-resolved' : ''}`}
             style={{
               top: head,
               left: scale.x(c.start_date),
@@ -426,7 +495,7 @@ function BoardRow({
         row.conflicts.map((c) => (
           <div
             key={`frame-${c.start_date}`}
-            className="conflict-frame"
+            className={`conflict-frame${c.resolved ? ' is-resolved' : ''}`}
             data-days={scale.spanWidth(c.start_date, c.end_date) >= 30 ? `${c.overlap_days}d` : undefined}
             style={{
               top: head,
@@ -480,8 +549,6 @@ function Bar({
   // the project; in project mode it is the other way round.
   const label = mode === 'environment' ? booking.project_name : booking.env_name;
   const width = scale.spanWidth(booking.start_date, booking.end_date);
-  const tag = noteTag(booking.note);
-  const tagged = tag && <span className="bar-note"> · {tag}</span>;
 
   const span = `${formatRange(booking.start_date, booking.end_date)}, ` +
     `${booking.working_days} working day${booking.working_days === 1 ? '' : 's'}`;
@@ -493,6 +560,12 @@ function Bar({
   const description = booking.note ? `${what}. Note: ${booking.note}` : what;
   // Belt and braces: the server already clears markers on other kinds.
   const marker = booking.kind === 'CUSTOM' ? booking.marker : null;
+  // Milestone labels float beside the glyph with no bound, and collide with the
+  // next one; they keep the short tag. A bar shows the whole note when it fits.
+  const noteText = booking.is_milestone
+    ? noteTag(booking.note)
+    : barNote(label, booking.note, width - BAR_PAD_X - (marker ? BAR_MARKER_W : 0), measureBarText);
+  const tagged = noteText && <span className="bar-note"> · {noteText}</span>;
 
   // Resize handles need room to be grabbable; on a short bar they would leave
   // nothing to drag by, so only the move gesture is offered there.

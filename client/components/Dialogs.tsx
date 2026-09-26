@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { calendarDays, isWeekend, workingDays } from '../../shared/dates.ts';
+import { effectiveKind } from '../../shared/bookings.ts';
 import { MARKERS, type BookingView, type Environment, type ISODate, type Marker, type Project, type Team } from '../../shared/types.ts';
 import { MarkerIcon } from './Board.tsx';
 
@@ -132,8 +133,12 @@ export function BookingDialog({
   };
   const holidaySet = new Set(holidays);
   const isMilestone = form.kind === 'RELEASE';
-  const isCustom = form.kind === 'CUSTOM';
   const end = isMilestone ? form.start_date : form.end_date;
+  // A one-day booking is saved as a CUSTOM event, whatever kind was picked, so the
+  // form says so up front and offers the icon rather than surprising on save.
+  const kind = end ? effectiveKind(form.kind as BookingView['kind'], form.start_date, end) : form.kind;
+  const oneDayEvent = kind !== form.kind;
+  const isCustom = kind === 'CUSTOM';
 
   const valid = form.start_date && end && end >= form.start_date;
   const effort = valid ? workingDays(form.start_date, end, holidaySet) : 0;
@@ -168,7 +173,7 @@ export function BookingDialog({
             type="button"
             className="btn"
             disabled={!valid || pending != null}
-            onClick={() => void perform('save', () => onSave({ ...form, end_date: end, marker: isCustom ? form.marker : null }))}
+            onClick={() => void perform('save', () => onSave({ ...form, kind, end_date: end, marker: isCustom ? form.marker : null }))}
           >
             {pending === 'save'
               ? <Working label={draft.id ? 'Saving…' : 'Booking…'} />
@@ -203,7 +208,12 @@ export function BookingDialog({
 
           <label className="stack">
             Kind
-            <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
+            <select
+              value={kind}
+              disabled={oneDayEvent}
+              title={oneDayEvent ? 'A one-day booking is a custom event' : undefined}
+              onChange={(e) => setForm({ ...form, kind: e.target.value })}
+            >
               {['SIT', 'UAT', 'NFT', 'PENTEST', 'RELEASE', 'CUSTOM'].map((k) => (
                 <option key={k} value={k}>{k === 'RELEASE' ? 'Release (one day)' : k}</option>
               ))}
@@ -244,9 +254,15 @@ export function BookingDialog({
           </select>
         </label>
 
+        {oneDayEvent && (
+          <p className="note">
+            Starts and ends on the same day, so it is saved as a custom event. Pick an icon for it below.
+          </p>
+        )}
+
         {isCustom && (
           <div className="stack">
-            <span id="marker-label">Marker on the timeline</span>
+            <span id="marker-label">Icon on the timeline</span>
             <div className="segmented marker-picker" role="group" aria-labelledby="marker-label">
               <button
                 type="button"

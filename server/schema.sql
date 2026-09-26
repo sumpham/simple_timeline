@@ -56,6 +56,17 @@ CREATE INDEX IF NOT EXISTS idx_booking_project   ON booking(project_id);
 CREATE INDEX IF NOT EXISTS idx_project_team      ON project(team_id);
 CREATE INDEX IF NOT EXISTS idx_env_team          ON environment(team_id);
 
+-- A double-booking someone has looked at and accepted. Keyed by environment and the
+-- exact set of clashing bookings (see conflictKey in shared/conflicts.ts), so the
+-- alarm returns when a new booking joins the clash.
+CREATE TABLE IF NOT EXISTS conflict_resolution (
+  key            TEXT    PRIMARY KEY,
+  environment_id INTEGER NOT NULL REFERENCES environment(id) ON DELETE CASCADE,
+  resolved_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_resolution_env ON conflict_resolution(environment_id);
+
 CREATE TABLE IF NOT EXISTS holiday (
   date TEXT PRIMARY KEY,
   name TEXT NOT NULL

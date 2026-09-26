@@ -1,8 +1,9 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { all, audit, get, run, transaction } from './db.ts';
 import { listBookings, listEnvironments, listHolidays, listProjects, listTeams } from './queries.ts';
-import { detectConflicts } from '../shared/conflicts.ts';
+import { applyResolutions, conflictKey, detectConflicts } from '../shared/conflicts.ts';
 import { isValidISODate, isWorkingDay, snapToWorkingDay } from '../shared/dates.ts';
+import { effectiveKind } from '../shared/bookings.ts';
 import { holidaySet } from './queries.ts';
 import { MARKERS, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project } from '../shared/types.ts';
 
@@ -94,6 +95,17 @@ router.get('/bootstrap', handle((_req, res) => {
 
 // ---------------------------------------------------------------- board
 
+/** Keys of the resolved double-bookings for a team's environments, or every team's. */
+function resolvedKeys(teamId?: number): string[] {
+  const rows = teamId != null
+    ? all<{ key: string }>(
+      `SELECT r.key FROM conflict_resolution r JOIN environment e ON e.id = r.environment_id WHERE e.team_id = ?`,
+      teamId,
+    )
+    : all<{ key: string }>('SELECT key FROM conflict_resolution');
+  return rows.map((r) => r.key);
+}
+
 router.get('/board', handle((req, res) => {
   const teamId = intParam(req.query.team);
   const envIds = intList(req.query.envs);
@@ -107,11 +119,16 @@ router.get('/board', handle((req, res) => {
   // subset: hiding a lane must not make its double-bookings disappear.
   const unfiltered = listBookings({ teamId, from, to });
 
+  // The client needs the keys as well as the stamped conflicts: a drag preview
+  // recomputes conflicts locally and must still know which ones are accepted.
+  const resolved = resolvedKeys(teamId);
+
   res.json({
     bookings,
     projects,
     environments: listEnvironments(teamId),
-    conflicts: detectConflicts(unfiltered),
+    conflicts: applyResolutions(detectConflicts(unfiltered), new Set(resolved)),
+    resolved,
   });
 }));
 
@@ -120,7 +137,36 @@ router.get('/conflicts', handle((req, res) => {
   const from = isValidISODate(req.query.from) ? (req.query.from as ISODate) : undefined;
   const to = isValidISODate(req.query.to) ? (req.query.to as ISODate) : undefined;
   const includeTentative = req.query.tentative === '1';
-  res.json(detectConflicts(listBookings({ teamId, from, to }), { includeTentative }));
+  res.json(applyResolutions(
+    detectConflicts(listBookings({ teamId, from, to }), { includeTentative }),
+    new Set(resolvedKeys(teamId)),
+  ));
+}));
+
+/** The environment and booking ids that identify one double-booking. */
+function conflictIdentity(body: unknown) {
+  const b = body as { environment_id?: unknown; booking_ids?: unknown } | undefined;
+  const envId = intParam(b?.environment_id);
+  if (envId == null || !get('SELECT id FROM environment WHERE id = ?', envId)) {
+    throw bad('A valid environment is required');
+  }
+  const ids = Array.isArray(b?.booking_ids) ? b.booking_ids.map(intParam) : [];
+  if (ids.length < 2 || ids.some((id) => id == null)) throw bad('A double-booking involves at least two bookings');
+  return { envId, key: conflictKey({ environment_id: envId, booking_ids: ids as number[] }) };
+}
+
+router.post('/conflicts/resolve', handle((req, res) => {
+  const { envId, key } = conflictIdentity(req.body);
+  run('INSERT OR IGNORE INTO conflict_resolution (key, environment_id) VALUES (?, ?)', key, envId);
+  audit('conflict', envId, 'resolved', null, key);
+  res.status(201).json({ key, resolved: true });
+}));
+
+router.post('/conflicts/reopen', handle((req, res) => {
+  const { envId, key } = conflictIdentity(req.body);
+  run('DELETE FROM conflict_resolution WHERE key = ?', key);
+  audit('conflict', envId, 'resolved', key, null);
+  res.json({ key, resolved: false });
 }));
 
 // ---------------------------------------------------------------- teams
@@ -320,13 +366,14 @@ router.post('/bookings', handle((req, res) => {
   if (!env) throw bad('A valid environment is required');
   if (env.team_id !== project.team_id) throw bad('That environment belongs to another team');
 
-  const kind = oneOf(req.body?.kind, BOOKING_KINDS, 'kind', 'CUSTOM');
+  const requestedKind = oneOf(req.body?.kind, BOOKING_KINDS, 'kind', 'CUSTOM');
   const rawStart = requireDate(req.body?.start_date, 'start_date');
   // A release is a single day; accept just a start date for it.
-  const rawEnd = kind === 'RELEASE' ? rawStart : requireDate(req.body?.end_date ?? req.body?.start_date, 'end_date');
+  const rawEnd = requestedKind === 'RELEASE' ? rawStart : requireDate(req.body?.end_date ?? req.body?.start_date, 'end_date');
   if (rawEnd < rawStart) throw bad('A booking cannot end before it starts');
 
   const { start, end, adjusted } = snapRange(rawStart, rawEnd);
+  const kind = effectiveKind(requestedKind, start, end);
   const { lastInsertRowid } = run(
     `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence, optional, note, marker)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -355,14 +402,15 @@ router.patch('/bookings/:id', handle((req, res) => {
     envId = candidate!;
   }
 
-  const kind = req.body?.kind != null ? oneOf(req.body.kind, BOOKING_KINDS, 'kind') : existing.kind;
+  const requestedKind = req.body?.kind != null ? oneOf(req.body.kind, BOOKING_KINDS, 'kind') : existing.kind;
   const rawStart = req.body?.start_date != null ? requireDate(req.body.start_date, 'start_date') : existing.start_date;
-  const rawEnd = kind === 'RELEASE'
+  const rawEnd = requestedKind === 'RELEASE'
     ? rawStart
     : (req.body?.end_date != null ? requireDate(req.body.end_date, 'end_date') : existing.end_date);
   if (rawEnd < rawStart) throw bad('A booking cannot end before it starts');
 
   const { start, end, adjusted } = snapRange(rawStart, rawEnd);
+  const kind = effectiveKind(requestedKind, start, end);
   const confidence = req.body?.confidence != null ? oneOf(req.body.confidence, CONFIDENCES, 'confidence') : existing.confidence;
   const optional = req.body?.optional != null ? (req.body.optional ? 1 : 0) : existing.optional;
   // undefined leaves a field alone; null clears it.

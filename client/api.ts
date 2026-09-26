@@ -7,6 +7,8 @@ export type BoardData = {
   projects: Project[];
   environments: Environment[];
   conflicts: Conflict[];
+  /** Keys of accepted double-bookings (see `conflictKey`), for recomputed previews. */
+  resolved?: string[];
 };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -53,4 +55,9 @@ export const api = {
   updateBooking: (id: number, body: Partial<Booking>) =>
     request<Booking & { adjusted: boolean }>(`/api/bookings/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteBooking: (id: number) => request<void>(`/api/bookings/${id}`, { method: 'DELETE' }),
+
+  resolveConflict: (body: { environment_id: number; booking_ids: number[] }) =>
+    request<{ key: string }>('/api/conflicts/resolve', { method: 'POST', body: JSON.stringify(body) }),
+  reopenConflict: (body: { environment_id: number; booking_ids: number[] }) =>
+    request<{ key: string }>('/api/conflicts/reopen', { method: 'POST', body: JSON.stringify(body) }),
 };

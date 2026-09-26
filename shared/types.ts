@@ -95,4 +95,9 @@ export type Conflict = {
   overlap_days: number;
   /** overlap_days x rank of the highest-priority project involved. */
   severity: number;
+  /**
+   * Someone has looked at this double-booking and accepted it. It still exists
+   * and is still drawn, but no longer raises the alarm. See `conflictKey`.
+   */
+  resolved?: boolean;
 };

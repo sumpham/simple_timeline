@@ -174,3 +174,28 @@ export function nextBookingAfter(
     .sort((a, b) => a.start_date.localeCompare(b.start_date));
   return upcoming[0] ?? null;
 }
+
+/**
+ * A double-booking's identity for resolution: its environment and exactly which
+ * bookings clash. Dates are left out on purpose, so nudging a booking that is
+ * already accepted keeps it accepted; a new booking joining the clash makes a new
+ * key, and the alarm comes back, because that is a clash nobody has looked at.
+ */
+export function conflictKey(c: Pick<Conflict, 'environment_id' | 'booking_ids'>): string {
+  return `${c.environment_id}:${[...c.booking_ids].sort((a, b) => a - b).join(',')}`;
+}
+
+/**
+ * Stamp each conflict with whether it has been resolved. Resolved ones sort after
+ * the rest, so the list still opens on the clashes that need someone.
+ */
+export function applyResolutions(conflicts: readonly Conflict[], resolved: ReadonlySet<string>): Conflict[] {
+  return conflicts
+    .map((c) => ({ ...c, resolved: resolved.has(conflictKey(c)) }))
+    .sort((a, b) => Number(a.resolved) - Number(b.resolved));
+}
+
+/** The conflicts that still raise the alarm. */
+export function openConflicts(conflicts: readonly Conflict[]): Conflict[] {
+  return conflicts.filter((c) => !c.resolved);
+}

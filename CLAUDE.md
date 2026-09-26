@@ -19,7 +19,7 @@ npm run dev        # API (5174) + Vite (5173)
 npm start          # single process, serves dist/ + API on 5173
 npm run build      # bundle client to dist/
 npm run seed       # reset data/timeline.db to demo data
-npm test           # vitest, 43 tests
+npm test           # vitest
 npm run typecheck  # tsc --noEmit
 ```
 
@@ -52,7 +52,20 @@ in a component or a route.
 
 **Colour is spent on one thing.** `--alarm` is for double-bookings and nothing else;
 environment hues deliberately avoid the red family so the alarm stays pre-attentive. Before
-adding a new coloured element, check `DESIGN.md` §6 and §11.
+adding a new coloured element, check `DESIGN.md` §6 and §11. The one addition is
+`--resolved` (pale green), for a double-booking someone has accepted.
+
+**Resolved double-bookings still exist; they just stop alarming.** A resolution is keyed by
+`conflictKey` (environment + exact booking ids, no dates), stored in `conflict_resolution`,
+and stamped on by `applyResolutions` on both sides. `/api/board` returns the keys as
+`resolved` because the drag preview recomputes conflicts and must re-stamp them. Counts, the
+red outline, rail markers and lane status all use `openConflicts`; the hatch and drawer show
+every conflict, resolved ones in green.
+
+**A one-day booking is a CUSTOM event** (`effectiveKind` in `shared/bookings.ts`), so it can
+carry a marker icon. RELEASE keeps its kind. The server applies it on every write and
+`server/db.ts` migrates older rows on start; the dialog and the long-press plan apply it too,
+so what the form shows is what gets saved.
 
 **Conflicts are computed over the team's whole environment set, not the filtered subset.**
 Hiding a lane must not make its double-bookings disappear (see `/api/board`).

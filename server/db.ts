@@ -22,6 +22,10 @@ if (!bookingColumns.has('marker')) {
   db.exec("ALTER TABLE booking ADD COLUMN marker TEXT CHECK (marker IN ('star','flag','pin'))");
 }
 
+// One-day bookings are CUSTOM events (see shared/bookings.ts); bring older
+// rows into line. Idempotent, so it is safe on every start.
+db.exec(`UPDATE booking SET kind = 'CUSTOM' WHERE start_date = end_date AND kind NOT IN ('RELEASE', 'CUSTOM')`);
+
 /** node:sqlite returns null-prototype rows; spread them so JSON and spread operators behave. */
 export function all<T>(sql: string, ...params: unknown[]): T[] {
   return db.prepare(sql).all(...(params as never[])).map((r) => ({ ...r })) as T[];
