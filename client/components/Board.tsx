@@ -1,9 +1,10 @@
-import { useMemo, useRef, type CSSProperties, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { addDays, diffDays, toUTC, workingDays as countWorkingDays } from '../../shared/dates.ts';
 import type { BookingView, Conflict, EnvKind, Environment, Holiday, ISODate, Marker, Project } from '../../shared/types.ts';
 import { nextBookingAfter, occupancyOn } from '../../shared/conflicts.ts';
 import { formatDate, formatRange, laneCount, majorTicks, minorTicks, packLanes, type Scale } from '../layout.ts';
-import type { DragMode } from '../dragMath.ts';
+import { PROVISIONAL_ID, type DragMode, type QuickPlan } from '../dragMath.ts';
+import { LONG_PRESS_MS, TOUCH_SLOP_PX } from '../touch.ts';
 import type { DragSession } from '../useBookingDrag.ts';
 
 export type Mode = 'environment' | 'project';
@@ -161,8 +162,12 @@ type BoardProps = {
   /** A bar picked up by a long press, showing its resize tabs. */
   picked?: number | null;
   onEditRow?: (row: Row) => void;
-  /** A click on empty lane space: book this row from the clicked day. */
-  onCreateAt?: (row: Row, date: ISODate) => void;
+  /** What a long press here would book; absent or null when nothing can be. */
+  planAt?: (row: Row, date: ISODate) => QuickPlan | null;
+  /** A long press on empty lane space was held and released: book it. */
+  onCreate?: (plan: QuickPlan) => void;
+  /** A plain click on empty lane space, which books nothing, so say how. */
+  onHint?: () => void;
 };
 
 /**
@@ -180,7 +185,7 @@ export function noteTag(note: string | null | undefined): string | null {
 
 export function Board({
   rows, scale, holidays, today, mode, gridRef, onScroll, onSelectBooking,
-  onDragStart, onNudge, drag, animate, compact = false, picked = null, onEditRow, onCreateAt,
+  onDragStart, onNudge, drag, animate, compact = false, picked = null, onEditRow, planAt, onCreate, onHint,
 }: BoardProps) {
   const major = useMemo(() => majorTicks(scale), [scale]);
   const minor = useMemo(() => minorTicks(scale), [scale]);
@@ -249,7 +254,9 @@ export function Board({
               compact={compact}
               picked={picked}
               onEditRow={onEditRow}
-              onCreateAt={onCreateAt}
+              planAt={planAt}
+              onCreate={onCreate}
+              onHint={onHint}
             />
           ))}
         </div>
@@ -259,7 +266,8 @@ export function Board({
 }
 
 function BoardRow({
-  row, scale, mode, onSelectBooking, onDragStart, onNudge, dragId, compact, picked, onEditRow, onCreateAt,
+  row, scale, mode, onSelectBooking, onDragStart, onNudge, dragId, compact, picked, onEditRow,
+  planAt, onCreate, onHint,
 }: {
   row: Row;
   scale: Scale;
@@ -271,7 +279,9 @@ function BoardRow({
   compact: boolean;
   picked: number | null;
   onEditRow?: (row: Row) => void;
-  onCreateAt?: (row: Row, date: ISODate) => void;
+  planAt?: (row: Row, date: ISODate) => QuickPlan | null;
+  onCreate?: (plan: QuickPlan) => void;
+  onHint?: () => void;
 }) {
   const placed = useMemo(() => packLanes(row.bookings, scale.dayWidth), [row.bookings, scale.dayWidth]);
   const lanes = laneCount(placed);
@@ -284,36 +294,99 @@ function BoardRow({
   );
 
   /**
-   * Where a press on empty lane space began, and whether a bar was picked up at
-   * the time. A press that travelled is a pan or a text selection, and a tap that
-   * puts a picked-up bar down is not a request for a new booking.
+   * Booking by long press on empty lane space. A plain click books nothing: it is
+   * too easy to make by accident, and a save that takes a moment looked like one
+   * that had failed. Held still for LONG_PRESS_MS, the press arms and the preview
+   * fills in; releasing then books. Moving off, Escape, or the browser taking the
+   * touch for a scroll all abandon it.
    */
-  const press = useRef<{ x: number; y: number; hadPick: boolean } | null>(null);
+  const [hold, setHold] = useState<{ plan: QuickPlan; armed: boolean } | null>(null);
+  const holdRef = useRef<{ cleanup: () => void } | null>(null);
+  useEffect(() => () => holdRef.current?.cleanup(), []);
 
-  // Capture phase: a bar stops its own pointerdown from bubbling, and a drag that
-  // starts on a bar and ends on empty space must not leave a stale press behind.
-  const onPointerDownCapture = (e: React.PointerEvent) => {
-    const onBar = e.target instanceof Element && e.target.closest('.bar, .lane-head');
-    press.current = onBar ? null : { x: e.clientX, y: e.clientY, hadPick: picked != null };
-  };
-
-  const onClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const p = press.current;
-    press.current = null;
-    if (!onCreateAt || !p || p.hadPick) return;
+  const onPointerDownCapture = (e: React.PointerEvent<HTMLDivElement>) => {
+    holdRef.current?.cleanup();
+    if (!planAt || e.button !== 0) return;
+    // A bar or a lane header owns its own press, and a touch that puts a
+    // picked-up bar back down is not a request for a new booking.
     if (e.target instanceof Element && e.target.closest('.bar, .lane-head')) return;
-    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > CLICK_SLOP_PX) return;
+    if (picked != null) return;
+
     const offset = e.clientX - e.currentTarget.getBoundingClientRect().left;
-    onCreateAt(row, addDays(scale.from, Math.floor(offset / scale.dayWidth)));
+    const plan = planAt(row, addDays(scale.from, Math.floor(offset / scale.dayWidth)));
+    if (!plan) return;
+
+    const { pointerId, clientX: x0, clientY: y0 } = e;
+    const slop = e.pointerType === 'touch' ? TOUCH_SLOP_PX : CLICK_SLOP_PX;
+    // A mouse held still on the lane must not start a text selection.
+    if (e.pointerType === 'mouse') e.preventDefault();
+    let armed = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', cleanup);
+      window.removeEventListener('keydown', onKey);
+      holdRef.current = null;
+      setHold(null);
+    };
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId === pointerId && Math.hypot(ev.clientX - x0, ev.clientY - y0) > slop) cleanup();
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      cleanup();
+      if (armed) onCreate?.(plan);
+      else onHint?.();
+    };
+    const onKey = (ev: KeyboardEvent) => { if (ev.key === 'Escape') cleanup(); };
+    const timer = setTimeout(() => {
+      armed = true;
+      navigator.vibrate?.(12);
+      setHold({ plan, armed: true });
+    }, LONG_PRESS_MS);
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    // The browser took the touch for a scroll.
+    window.addEventListener('pointercancel', cleanup);
+    window.addEventListener('keydown', onKey);
+    holdRef.current = { cleanup };
+    setHold({ plan, armed: false });
   };
+
+  const ghost = hold && (() => {
+    const { span, kind, env, project } = hold.plan;
+    const single = kind === 'RELEASE' || span.start === span.end;
+    const end = kind === 'RELEASE' ? span.start : span.end;
+    return (
+      <div
+        className={`hold-ghost${hold.armed ? ' armed' : ''}`}
+        aria-hidden="true"
+        style={{
+          left: scale.x(span.start),
+          width: Math.max(scale.spanWidth(span.start, end), single ? 14 : 0),
+          top: head + ROW_PAD,
+          '--env-color': ENV_COLOR[env.kind] ?? ENV_COLOR.OTHER,
+          '--hold-ms': `${LONG_PRESS_MS}ms`,
+        } as CSSProperties}
+      >
+        <span className="hold-ghost-label">
+          {hold.armed ? 'Release to book ' : ''}{mode === 'environment' ? project.name : env.name}
+        </span>
+      </div>
+    );
+  })();
 
   return (
     <div
-      className={`row${row.conflicts.length ? ' is-conflicted' : ''}${onCreateAt ? ' can-book' : ''}`}
+      className={`row${row.conflicts.length ? ' is-conflicted' : ''}${planAt ? ' can-book' : ''}${hold ? ' is-holding' : ''}`}
       style={{ height }}
       data-row={row.key}
       onPointerDownCapture={onPointerDownCapture}
-      onClick={onClick}
+      // A long press on a phone would otherwise raise the system menu.
+      onContextMenu={planAt ? (e) => { if (!(e.target instanceof Element && e.target.closest('.bar'))) e.preventDefault(); } : undefined}
     >
       {compact && (
         <div className="lane-head">
@@ -379,6 +452,7 @@ function BoardRow({
           picked={picked === booking.id}
         />
       ))}
+      {ghost}
     </div>
   );
 }
@@ -423,7 +497,9 @@ function Bar({
   // Resize handles need room to be grabbable; on a short bar they would leave
   // nothing to drag by, so only the move gesture is offered there.
   // A picked-up bar's tabs sit outside it, so even a short one can be resized.
-  const resizable = !booking.is_milestone && (width >= 26 || picked);
+  // The placeholder for a booking still being saved: drawn, but not yet editable.
+  const saving = booking.id === PROVISIONAL_ID;
+  const resizable = !saving && !booking.is_milestone && (width >= 26 || picked);
 
   const classes = [
     'bar',
@@ -433,6 +509,7 @@ function Bar({
     inConflict && !booking.is_milestone ? 'in-conflict' : '',
     dragging ? 'is-dragging' : '',
     picked ? 'is-picked' : '',
+    saving ? 'is-saving' : '',
   ].filter(Boolean).join(' ');
 
   /**
@@ -463,15 +540,17 @@ function Bar({
         '--env-color': color,
         animationDelay: `${Math.min(280, Math.max(0, diffDays(scale.from, booking.start_date)) * 1.1)}ms`,
       } as CSSProperties}
-      title={`${description}\nDrag to move${resizable ? ', drag an edge to resize' : ''}`}
-      aria-label={description}
-      onPointerDown={(e) => onDragStart(booking, 'move', e)}
+      title={saving ? `${description}\nSaving…` : `${description}\nDrag to move${resizable ? ', drag an edge to resize' : ''}`}
+      aria-label={saving ? `Saving: ${description}` : description}
+      aria-busy={saving || undefined}
+      tabIndex={saving ? -1 : undefined}
+      onPointerDown={saving ? (e) => e.stopPropagation() : (e) => onDragStart(booking, 'move', e)}
       // A long press is how a phone picks a bar up; the system menu must not answer it.
       onContextMenu={(e) => e.preventDefault()}
-      onKeyDown={onKeyDown}
+      onKeyDown={saving ? undefined : onKeyDown}
       // Only a keyboard produces a click with no pointer detail; pointer clicks
       // are resolved by the drag hook so a drag never also opens the dialog.
-      onClick={(e) => { if (e.detail === 0) onSelect(booking); }}
+      onClick={(e) => { if (e.detail === 0 && !saving) onSelect(booking); }}
     >
       {booking.is_milestone ? (
         <>
@@ -480,6 +559,7 @@ function Bar({
         </>
       ) : (
         <>
+          {saving && <span className="bar-spinner" aria-hidden="true" />}
           {marker && width >= 18 && <MarkerIcon marker={marker} className="bar-marker" />}
           {width >= 34 && <span className="bar-clip">{label}{tagged}</span>}
         </>

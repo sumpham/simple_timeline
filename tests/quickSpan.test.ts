@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { bookingKindFor, quickSpan } from '../client/dragMath.ts';
+import { bookingKindFor, PROVISIONAL_ID, provisionalBooking, quickSpan } from '../client/dragMath.ts';
+import type { Environment, Project } from '../shared/types.ts';
 import { isWorkingDay } from '../shared/dates.ts';
 
 const none = new Set<string>();
@@ -45,5 +46,27 @@ describe('bookingKindFor', () => {
     expect(bookingKindFor('UAT')).toBe('UAT');
     expect(bookingKindFor('PROD')).toBe('RELEASE');
     expect(bookingKindFor('OTHER')).toBe('CUSTOM');
+  });
+});
+
+describe('provisionalBooking', () => {
+  const project = { id: 3, team_id: 1, name: 'Huawei Migration', priority: 'normal' } as unknown as Project;
+  const env = (kind: Environment['kind']) => ({ id: 7, team_id: 1, name: kind, kind, capacity: 1 }) as unknown as Environment;
+
+  it('draws the planned span with honest day counts', () => {
+    const b = provisionalBooking(
+      { project, env: env('UAT'), kind: 'UAT', span: { start: '2026-09-30', end: '2026-10-02' } }, none,
+    );
+    expect(b).toMatchObject({
+      id: PROVISIONAL_ID, project_id: 3, environment_id: 7, start_date: '2026-09-30', end_date: '2026-10-02',
+      working_days: 3, calendar_days: 3, is_milestone: false, confidence: 'committed',
+    });
+  });
+
+  it('is a one-day milestone for a release, as the server will save it', () => {
+    const b = provisionalBooking(
+      { project, env: env('PROD'), kind: 'RELEASE', span: { start: '2026-09-30', end: '2026-10-02' } }, none,
+    );
+    expect(b).toMatchObject({ start_date: '2026-09-30', end_date: '2026-09-30', is_milestone: true });
   });
 });

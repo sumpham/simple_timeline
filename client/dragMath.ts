@@ -1,7 +1,7 @@
 import {
   addDays, addWorkingDays, dayOfWeek, diffDays, snapToWorkingDay, workingDays, type HolidaySet,
 } from '../shared/dates.ts';
-import type { BookingKind, BookingView, EnvKind, ISODate } from '../shared/types.ts';
+import type { BookingKind, BookingView, EnvKind, Environment, ISODate, Project } from '../shared/types.ts';
 
 /**
  * Where a dragged booking lands.
@@ -89,4 +89,41 @@ export function bookingKindFor(env: EnvKind): BookingKind {
   if (env === 'PROD') return 'RELEASE';
   if (env === 'OTHER') return 'CUSTOM';
   return env;
+}
+
+/** What a long press on a lane will book, worked out before anything is saved. */
+export type QuickPlan = { project: Project; env: Environment; kind: BookingKind; span: Span };
+
+/** Stands in for a booking the server has not confirmed yet. Real ids are positive. */
+export const PROVISIONAL_ID = -1;
+
+/**
+ * The booking a plan will become, drawn on the board while the save is in flight.
+ * It goes through the same packing and conflict engine as a real one, so the bar
+ * appears at once, in its final lane, and any double-booking it makes shows too.
+ */
+export function provisionalBooking(plan: QuickPlan, holidays: HolidaySet): BookingView {
+  const { project, env, kind } = plan;
+  const span = kind === 'RELEASE' ? { start: plan.span.start, end: plan.span.start } : plan.span;
+  return withSpan({
+    id: PROVISIONAL_ID,
+    project_id: project.id,
+    environment_id: env.id,
+    kind,
+    start_date: span.start,
+    end_date: span.end,
+    confidence: 'committed',
+    optional: 0,
+    note: null,
+    marker: null,
+    project_name: project.name,
+    team_id: project.team_id,
+    priority: project.priority,
+    env_name: env.name,
+    env_kind: env.kind,
+    capacity: env.capacity,
+    calendar_days: 0,
+    working_days: 0,
+    is_milestone: kind === 'RELEASE' || span.start === span.end,
+  }, span, holidays);
 }

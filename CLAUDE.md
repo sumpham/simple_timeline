@@ -77,12 +77,18 @@ point, silently missing.
 **Click versus drag is decided in the hook** (4px slop), never by a click handler. The bar's
 `onClick` only fires for keyboard activation, detected with `event.detail === 0`.
 
-**Click-to-book** on empty lane space (`createAt` in `App.tsx`) saves at once, from the
-clicked working day to that week's Friday (`quickSpan` in `dragMath.ts`). The lane supplies
-one half — environment or project — and the last-used project/environment supplies the
-other. The row decides click versus pan with the same 4px slop, in the capture phase, so a
-bar drag that ends on empty space or a tap that drops a picked-up bar never creates one.
-Every lane-click booking gets a 6s Undo toast, which deletes it outright.
+**Long-press to book** on empty lane space books from the pressed working day to that
+week's Friday (`quickSpan` in `dragMath.ts`). It is a long press, not a click, on purpose: a
+click was too easy to make by accident, and with nothing on screen during the save it looked
+like it had failed. The row (`BoardRow`) runs the gesture: a ghost fills in over
+`LONG_PRESS_MS`, releasing then calls `createFromPlan`; moving past the slop, Escape or a
+`pointercancel` abandons it, and a plain click only shows a hint toast. `planAt` in `App.tsx`
+picks the booking: the lane supplies environment or project, the last-used one the other.
+
+**The save must never look like nothing.** From release until the server answers, a
+placeholder (`provisionalBooking`, id `PROVISIONAL_ID`) is injected into `preview`, so it
+packs into its real lane and runs through `detectConflicts` like any bar. It is dropped once
+the refreshed board contains the created id. Every such booking gets a 6s Undo toast.
 
 Arrow keys mirror the gestures and debounce into one write. Do not drop the keyboard path:
 drag-only editing would break the accessibility requirement in `DESIGN.md` §5.

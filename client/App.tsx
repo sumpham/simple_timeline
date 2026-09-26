@@ -5,7 +5,10 @@ import type { BookingView, Conflict, Environment, ISODate } from '../shared/type
 import { formatRange, makeScale, ZOOM, type Zoom } from './layout.ts';
 import { Board, buildRows, DragReadout, ENV_COLOR, rowHeights, type Mode, type Row } from './components/Board.tsx';
 import { useBookingDrag } from './useBookingDrag.ts';
-import { applyDrag, bookingKindFor, quickSpan, withSpan, type DragMode, type Span } from './dragMath.ts';
+import {
+  applyDrag, bookingKindFor, provisionalBooking, quickSpan, withSpan,
+  type DragMode, type QuickPlan, type Span,
+} from './dragMath.ts';
 import { detectConflicts } from '../shared/conflicts.ts';
 import { OccupancyStrip } from './components/OccupancyStrip.tsx';
 import { ConflictDrawer, ConflictList } from './components/ConflictDrawer.tsx';
@@ -50,9 +53,14 @@ export function App() {
   /** Optimistic date overrides, by booking id, while an edit is in flight. */
   const [pendingSpans, setPendingSpans] = useState<Map<number, Span>>(new Map());
   const [sheet, setSheet] = useState<SheetState>({ kind: 'none' });
-  /** The booking a lane click just made, offered back for a few seconds. */
-  const [undo, setUndo] = useState<{ id: number; text: string } | null>(null);
-  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** A short message at the foot of the board; with an id, it offers that booking back. */
+  const [toast, setToast] = useState<{ text: string; undoId?: number } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * A long-press booking on its way to the server. `createdId` is set once the
+   * server answers, and the placeholder bows out when the refreshed board has it.
+   */
+  const [quick, setQuick] = useState<{ plan: QuickPlan; createdId?: number } | null>(null);
 
   const railRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null!);
@@ -116,14 +124,19 @@ export function App() {
    */
   const preview = useMemo(() => {
     if (!data) return null;
-    if (!pendingSpans.size) return { bookings: data.bookings, conflicts: data.conflicts };
+    // A long-press booking shows as soon as the finger lifts, until the real one arrives.
+    const placeholder = quick && !data.bookings.some((b) => b.id === quick.createdId)
+      ? provisionalBooking(quick.plan, holidaySet)
+      : null;
+    if (!pendingSpans.size && !placeholder) return { bookings: data.bookings, conflicts: data.conflicts };
 
     const bookings = data.bookings.map((b) => {
       const span = pendingSpans.get(b.id);
       return span ? withSpan(b, span, holidaySet) : b;
     });
+    if (placeholder) bookings.push(placeholder);
     return { bookings, conflicts: detectConflicts(bookings) };
-  }, [data, pendingSpans, holidaySet]);
+  }, [data, pendingSpans, holidaySet, quick]);
 
   const conflicts = preview?.conflicts ?? [];
 
@@ -356,22 +369,22 @@ export function App() {
     });
   };
 
-  /**
-   * A click is cheap to make by accident, so every lane-click booking can be taken
-   * back for a few seconds. Undo deletes it outright, whatever was done to it since.
-   */
-  const UNDO_MS = 6000;
-  const offerUndo = (id: number, text: string) => {
-    if (undoTimer.current) clearTimeout(undoTimer.current);
-    setUndo({ id, text });
-    undoTimer.current = setTimeout(() => setUndo(null), UNDO_MS);
+  const showToast = (text: string, undoId?: number, ms = 6000) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ text, undoId });
+    toastTimer.current = setTimeout(() => setToast(null), ms);
   };
 
+  /**
+   * A long press is still easy to make by accident, so every booking made that way
+   * can be taken back for a few seconds. Undo deletes it outright, whatever was
+   * done to it since.
+   */
   const undoCreate = async () => {
-    if (!undo) return;
-    if (undoTimer.current) clearTimeout(undoTimer.current);
-    const { id } = undo;
-    setUndo(null);
+    const id = toast?.undoId;
+    if (id == null) return;
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(null);
     setSheet((s) => (s.kind === 'booking' && s.id === id ? { kind: 'none' } : s));
     setDialog((d) => (d.kind === 'booking' && d.draft.id === id ? { kind: 'none' } : d));
     try {
@@ -383,15 +396,15 @@ export function App() {
     }
   };
 
-  useEffect(() => () => { if (undoTimer.current) clearTimeout(undoTimer.current); }, []);
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   /**
-   * A click on empty lane space books it straight away, from the clicked day to
-   * that week's Friday. The new bar is then adjusted by dragging its edges like
-   * any other, and a click on it opens the full editor.
+   * What a long press on this lane, at this day, would book: the lane gives the
+   * environment or the project, and the last one used fills in the other. The
+   * board draws it under the finger while the press is held.
    */
-  const createAt = async (row: Row, date: ISODate) => {
-    if (!data?.projects.length) return;
+  const planAt = (row: Row, date: ISODate): QuickPlan | null => {
+    if (!data?.projects.length || quick) return null;
     const pick = <T extends { id: number }>(list: T[], id?: number) => list.find((x) => x.id === id) ?? list[0];
     const visible = environments.filter((e) => visibleEnvIds.has(e.id));
     const project = mode === 'project'
@@ -400,10 +413,17 @@ export function App() {
     const env = mode === 'environment'
       ? environments.find((e) => e.id === row.id)
       : pick(visible.length ? visible : environments, lastUsed.current.env);
-    if (!project || !env) return;
+    if (!project || !env) return null;
+    return { project, env, kind: bookingKindFor(env.kind), span: quickSpan(date, holidaySet) };
+  };
 
-    const kind = bookingKindFor(env.kind);
-    const span = quickSpan(date, holidaySet);
+  /**
+   * Save a long-press booking. The placeholder bar is on the board from the moment
+   * the press ends, so the wait for the server reads as saving, not as nothing.
+   */
+  const createFromPlan = async (plan: QuickPlan) => {
+    const { project, env, kind, span } = plan;
+    setQuick({ plan });
     try {
       const created = await api.createBooking({
         project_id: project.id,
@@ -413,10 +433,11 @@ export function App() {
         end_date: kind === 'RELEASE' ? span.start : span.end,
         confidence: 'committed',
       });
+      setQuick({ plan, createdId: created.id });
       remember(project.id, env.id);
       await refresh();
       setError(null);
-      offerUndo(created.id, `Booked ${project.name} on ${env.name}, ${formatRange(created.start_date, created.end_date)}`);
+      showToast(`Booked ${project.name} on ${env.name}, ${formatRange(created.start_date, created.end_date)}`, created.id);
       if (isPhone) {
         setSheet({ kind: 'booking', id: created.id });
       } else {
@@ -431,6 +452,8 @@ export function App() {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create that booking');
+    } finally {
+      setQuick(null);
     }
   };
 
@@ -676,7 +699,9 @@ export function App() {
               compact={isPhone}
               picked={picked}
               onEditRow={editRow}
-              onCreateAt={data.projects.length ? createAt : undefined}
+              planAt={data.projects.length ? planAt : undefined}
+              onCreate={(plan) => void createFromPlan(plan)}
+              onHint={() => showToast('Press and hold on a lane to book it', undefined, 2500)}
             />
           </div>
         )}
@@ -750,10 +775,12 @@ export function App() {
         />
       )}
 
-      {undo && (
+      {toast && (
         <div className="toast" role="status">
-          <span className="toast-text">{undo.text}</span>
-          <button type="button" className="toast-action" onClick={() => void undoCreate()}>Undo</button>
+          <span className="toast-text">{toast.text}</span>
+          {toast.undoId != null && (
+            <button type="button" className="toast-action" onClick={() => void undoCreate()}>Undo</button>
+          )}
         </div>
       )}
 
