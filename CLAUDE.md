@@ -67,6 +67,11 @@ carry a marker icon. RELEASE keeps its kind. The server applies it on every writ
 `server/db.ts` migrates older rows on start; the dialog and the long-press plan apply it too,
 so what the form shows is what gets saved.
 
+**Timeline text is NULL until someone writes it.** A bar says `timeline_text` when set,
+else the label and note (`defaultTimelineText` in `shared/bookings.ts`). The dialog shows the
+default filled in, and `timelineTextToStore` saves NULL when it is blank or unchanged, so an
+untouched booking keeps following project renames and note edits. Never store the default.
+
 **Conflicts are computed over the team's whole environment set, not the filtered subset.**
 Hiding a lane must not make its double-bookings disappear (see `/api/board`).
 

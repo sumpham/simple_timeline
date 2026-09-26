@@ -341,6 +341,17 @@ function snapRange(start: ISODate, end: ISODate) {
 
 const NOTE_MAX = 2000;
 
+const TIMELINE_TEXT_MAX = 200;
+
+/** Blank timeline text means the default; one line only, since it sits on a bar. */
+function timelineTextValue(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw bad('timeline_text must be text');
+  const flat = value.replace(/\s+/g, ' ').trim();
+  if (flat.length > TIMELINE_TEXT_MAX) throw bad(`Timeline text can be at most ${TIMELINE_TEXT_MAX} characters`);
+  return flat || null;
+}
+
 /** A blank note is no note: store null rather than an empty string. */
 function noteValue(value: unknown): string | null {
   if (value == null) return null;
@@ -375,13 +386,15 @@ router.post('/bookings', handle((req, res) => {
   const { start, end, adjusted } = snapRange(rawStart, rawEnd);
   const kind = effectiveKind(requestedKind, start, end);
   const { lastInsertRowid } = run(
-    `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence, optional, note, marker)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence, optional, note, marker,
+                          timeline_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     projectId, envId, kind, start, end,
     oneOf(req.body?.confidence, CONFIDENCES, 'confidence', 'committed'),
     req.body?.optional ? 1 : 0,
     noteValue(req.body?.note),
     markerValue(req.body?.marker, kind),
+    timelineTextValue(req.body?.timeline_text),
   );
 
   res.status(201).json({ ...get('SELECT * FROM booking WHERE id = ?', Number(lastInsertRowid)), adjusted });
@@ -415,6 +428,9 @@ router.patch('/bookings/:id', handle((req, res) => {
   const optional = req.body?.optional != null ? (req.body.optional ? 1 : 0) : existing.optional;
   // undefined leaves a field alone; null clears it.
   const note = req.body?.note !== undefined ? noteValue(req.body.note) : existing.note;
+  const timelineText = req.body?.timeline_text !== undefined
+    ? timelineTextValue(req.body.timeline_text)
+    : (existing.timeline_text ?? null);
   const marker = markerValue(req.body?.marker !== undefined ? req.body.marker : existing.marker, kind);
 
   // Dates are what people argue about, so every change to one is recorded.
@@ -424,9 +440,9 @@ router.patch('/bookings/:id', handle((req, res) => {
 
   run(
     `UPDATE booking SET environment_id = ?, kind = ?, start_date = ?, end_date = ?, confidence = ?, optional = ?,
-                        note = ?, marker = ?
+                        note = ?, marker = ?, timeline_text = ?
       WHERE id = ?`,
-    envId, kind, start, end, confidence, optional, note, marker, id,
+    envId, kind, start, end, confidence, optional, note, marker, timelineText, id,
   );
   res.json({ ...get('SELECT * FROM booking WHERE id = ?', id), adjusted });
 }));

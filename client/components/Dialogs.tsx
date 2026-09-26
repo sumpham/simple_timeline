@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { calendarDays, isWeekend, workingDays } from '../../shared/dates.ts';
-import { effectiveKind } from '../../shared/bookings.ts';
+import { defaultTimelineText, effectiveKind, timelineTextToStore } from '../../shared/bookings.ts';
 import { MARKERS, type BookingView, type Environment, type ISODate, type Marker, type Project, type Team } from '../../shared/types.ts';
 import { MarkerIcon } from './Board.tsx';
 
@@ -97,6 +97,8 @@ export type BookingDraft = {
   note: string;
   /** Only meaningful when kind is CUSTOM. */
   marker: Marker | null;
+  /** Null until someone edits it: the bar then follows project name and note. */
+  timeline_text: string | null;
 };
 
 const MARKER_LABEL: Record<Marker, string> = { star: 'Star', flag: 'Flag', pin: 'Pin' };
@@ -140,6 +142,13 @@ export function BookingDialog({
   const oneDayEvent = kind !== form.kind;
   const isCustom = kind === 'CUSTOM';
 
+  // The default follows the form as it is edited, so changing the project or the
+  // note moves it too, until the user writes their own.
+  const projectName = projects.find((p) => p.id === form.project_id)?.name ?? '';
+  const defaultText = defaultTimelineText(projectName, form.note);
+  const timelineText = form.timeline_text ?? defaultText;
+  const customText = timelineTextToStore(form.timeline_text, defaultText) != null;
+
   const valid = form.start_date && end && end >= form.start_date;
   const effort = valid ? workingDays(form.start_date, end, holidaySet) : 0;
   const occupied = valid ? calendarDays(form.start_date, end) : 0;
@@ -173,7 +182,13 @@ export function BookingDialog({
             type="button"
             className="btn"
             disabled={!valid || pending != null}
-            onClick={() => void perform('save', () => onSave({ ...form, kind, end_date: end, marker: isCustom ? form.marker : null }))}
+            onClick={() => void perform('save', () => onSave({
+              ...form,
+              kind,
+              end_date: end,
+              marker: isCustom ? form.marker : null,
+              timeline_text: timelineTextToStore(form.timeline_text, defaultText),
+            }))}
           >
             {pending === 'save'
               ? <Working label={draft.id ? 'Saving…' : 'Booking…'} />
@@ -296,6 +311,32 @@ export function BookingDialog({
             onChange={(e) => setForm({ ...form, note: e.target.value })}
           />
         </label>
+
+        <div className="stack">
+          <div className="label-row">
+            <label htmlFor="timeline-text">Timeline text</label>
+            {customText && (
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => setForm({ ...form, timeline_text: null })}
+              >
+                Use project name and note
+              </button>
+            )}
+          </div>
+          <input
+            id="timeline-text"
+            value={timelineText}
+            maxLength={200}
+            onChange={(e) => setForm({ ...form, timeline_text: e.target.value })}
+          />
+          <span className="field-hint">
+            {customText
+              ? 'Shown on the bar instead of the project name and note. The project and note are unchanged.'
+              : 'Follows the project name and note until you change it.'}
+          </span>
+        </div>
 
         {valid && !isMilestone && (
           <p className="note">

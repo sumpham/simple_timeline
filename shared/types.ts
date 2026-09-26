@@ -61,6 +61,11 @@ export type Booking = {
   note: string | null;
   /** Always null unless kind is CUSTOM. */
   marker: Marker | null;
+  /**
+   * What the bar says on the timeline, when someone has written it. Null means the
+   * default (`defaultTimelineText`), which follows the project name and note.
+   */
+  timeline_text?: string | null;
 };
 
 export type Holiday = { date: ISODate; name: string };

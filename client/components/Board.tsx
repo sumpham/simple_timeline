@@ -566,6 +566,9 @@ function Bar({
     ? noteTag(booking.note)
     : barNote(label, booking.note, width - BAR_PAD_X - (marker ? BAR_MARKER_W : 0), measureBarText);
   const tagged = noteText && <span className="bar-note"> · {noteText}</span>;
+  // Written timeline text replaces the label and note outright, in either mode.
+  const custom = booking.timeline_text?.trim() || null;
+  const text = custom ?? <>{label}{tagged}</>;
 
   // Resize handles need room to be grabbable; on a short bar they would leave
   // nothing to drag by, so only the move gesture is offered there.
@@ -628,13 +631,13 @@ function Bar({
       {booking.is_milestone ? (
         <>
           {marker ? <MarkerIcon marker={marker} className="milestone-marker" /> : <span className="diamond" />}
-          {scale.dayWidth >= 6 && <span className="milestone-label">{label}{tagged}</span>}
+          {scale.dayWidth >= 6 && <span className="milestone-label">{text}</span>}
         </>
       ) : (
         <>
           {saving && <span className="bar-spinner" aria-hidden="true" />}
           {marker && width >= 18 && <MarkerIcon marker={marker} className="bar-marker" />}
-          {width >= 34 && <span className="bar-clip">{label}{tagged}</span>}
+          {width >= 34 && <span className="bar-clip">{text}</span>}
         </>
       )}
 

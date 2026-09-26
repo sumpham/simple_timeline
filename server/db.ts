@@ -18,6 +18,7 @@ const bookingColumns = new Set(
   db.prepare('PRAGMA table_info(booking)').all().map((c) => (c as { name: string }).name),
 );
 if (!bookingColumns.has('note')) db.exec('ALTER TABLE booking ADD COLUMN note TEXT');
+if (!bookingColumns.has('timeline_text')) db.exec('ALTER TABLE booking ADD COLUMN timeline_text TEXT');
 if (!bookingColumns.has('marker')) {
   db.exec("ALTER TABLE booking ADD COLUMN marker TEXT CHECK (marker IN ('star','flag','pin'))");
 }

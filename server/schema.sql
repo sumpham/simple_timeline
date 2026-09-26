@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS booking (
   note           TEXT,
   -- Only a CUSTOM booking carries a marker; the API clears it for every other kind.
   marker         TEXT    CHECK (marker IN ('star','flag','pin')),
+  -- What the bar says, when someone wrote it. NULL means project name then note.
+  timeline_text  TEXT,
   CHECK (end_date >= start_date)
 );
 

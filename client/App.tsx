@@ -245,6 +245,7 @@ export function App() {
         optional: !!b.optional,
         note: b.note ?? '',
         marker: b.marker,
+        timeline_text: b.timeline_text ?? null,
       },
     });
   }, []);
@@ -397,6 +398,7 @@ export function App() {
         optional: false,
         note: '',
         marker: null,
+        timeline_text: null,
       },
     });
   };
@@ -874,6 +876,7 @@ export function App() {
               optional: d.optional ? 1 : 0,
               note: d.note.trim() || null,
               marker: d.kind === 'CUSTOM' ? d.marker : null,
+              timeline_text: d.timeline_text,
             };
             return d.id ? api.updateBooking(d.id, body) : api.createBooking(body);
           })}

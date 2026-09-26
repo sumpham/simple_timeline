@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { barNote, noteTag } from '../client/components/Board.tsx';
+import { defaultTimelineText, timelineTextToStore } from '../shared/bookings.ts';
 
 describe('noteTag', () => {
   it('is null for a missing or blank note', () => {
@@ -46,5 +47,25 @@ describe('barNote', () => {
 
   it('is null with no note', () => {
     expect(barNote('AI', '  ', 500, measure)).toBeNull();
+  });
+});
+
+describe('timeline text', () => {
+  it('defaults to the project name, then the note', () => {
+    expect(defaultTimelineText('Huawei Migration', 'NFT')).toBe('Huawei Migration · NFT');
+    expect(defaultTimelineText('Huawei Migration', '  ')).toBe('Huawei Migration');
+    expect(defaultTimelineText('Huawei Migration', 'NFT\nround 2')).toBe('Huawei Migration · NFT round 2');
+  });
+
+  it('stores nothing while the text is blank or still the default', () => {
+    const d = defaultTimelineText('Huawei Migration', 'NFT');
+    expect(timelineTextToStore(null, d)).toBeNull();
+    expect(timelineTextToStore('   ', d)).toBeNull();
+    expect(timelineTextToStore(' Huawei Migration · NFT ', d)).toBeNull();
+  });
+
+  it('stores what the user wrote, on one line', () => {
+    const d = defaultTimelineText('Huawei Migration', 'NFT');
+    expect(timelineTextToStore('HW NFT  run\n2', d)).toBe('HW NFT run 2');
   });
 });

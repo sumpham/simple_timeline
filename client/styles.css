@@ -1107,6 +1107,38 @@ div.stack {
   color: var(--muted);
 }
 
+/* A field inside a div.stack, styled like its label.stack siblings. */
+div.stack > input {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 7px 9px;
+  font-size: 13.5px;
+  color: var(--ink);
+  width: 100%;
+}
+
+.label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.link-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.field-hint { font-size: 12px; }
+
 .marker-picker { justify-self: start; }
 .marker-picker button { display: inline-flex; align-items: center; gap: 5px; }
 .marker-picker-icon { width: 13px; height: 13px; flex: 0 0 auto; }
