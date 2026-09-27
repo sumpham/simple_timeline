@@ -23,6 +23,7 @@ export type Team = {
   /** What deleting this team would take with it. Present on list responses. */
   project_count?: number;
   booking_count?: number;
+  task_count?: number;
 };
 
 export type Environment = {
@@ -33,6 +34,7 @@ export type Environment = {
   capacity: number;
   sort_order: number;
   booking_count?: number;
+  task_count?: number;
 };
 
 export type Project = {
@@ -78,7 +80,9 @@ export type Booking = {
    */
   manual_start?: ISODate | null;
   manual_end?: ISODate | null;
-  /** Every task in the covered hold is done (1) or not (0). Written by replan. */
+  /** The task hold this booking covers, if any, and whether its tasks are all done (1). Written by replan. */
+  hold_start?: ISODate | null;
+  hold_end?: ISODate | null;
   hold_done?: number;
 };
 
@@ -99,10 +103,8 @@ export type BookingView = Booking & {
   is_milestone: boolean;
   /** Made by tasks alone; its dates belong to the plan, not to a drag. */
   auto?: boolean;
-  /** The task hold this booking covers, if any. */
-  hold_start?: ISODate | null;
-  hold_end?: ISODate | null;
-  task_ids?: number[];
+  /** The tasks that make up that hold. */
+  tasks?: { id: number; name: string }[];
   /**
    * Every task in the hold is done and the booking runs on past them: the
    * environment could be handed back from this day.

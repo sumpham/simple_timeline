@@ -547,6 +547,7 @@ function planResponse(projectId: number) {
     dependencies: state.deps,
     schedule: [...outcome.schedule.tasks.values()],
     critical_path: outcome.schedule.critical_path,
+    order: outcome.schedule.order,
     finish,
     late_by: lateBy(finish, state.project.target_date, holidays),
     holds: outcome.holds,

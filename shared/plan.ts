@@ -195,17 +195,24 @@ function openFor(outcome: PlanOutcome, ctx: ImpactContext): Conflict[] {
 }
 
 function conflictChanges(before: PlanOutcome, after: PlanOutcome, ctx: ImpactContext) {
-  // Compare by who clashes where, not by booking ids: a new booking has no id yet.
-  const sig = (c: Conflict) => `${c.environment_id}:${c.projects.map((p) => p.id).sort((a, b) => a - b).join(',')}`;
+  // Compare by which pairs of projects clash on which environment, not by booking ids
+  // (a new booking has none) or by whole groups (two clashes merging into one three-way
+  // clash is one new fact, not a clash cleared and another made).
+  const pairs = (c: Conflict) => {
+    const ids = c.projects.map((p) => p.id).sort((a, b) => a - b);
+    const out: string[] = [];
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) out.push(`${c.environment_id}:${ids[i]}-${ids[j]}`);
+    return out;
+  };
   const view = (c: Conflict) => ({
     env_name: c.env_name, start_date: c.start_date, end_date: c.end_date, projects: c.projects.map((p) => p.name),
   });
   const b = openFor(before, ctx);
   const a = openFor(after, ctx);
-  const bSig = new Set(b.map(sig));
-  const aSig = new Set(a.map(sig));
+  const bPairs = new Set(b.flatMap(pairs));
+  const aPairs = new Set(a.flatMap(pairs));
   return {
-    added: a.filter((c) => !bSig.has(sig(c))).map(view),
-    cleared: b.filter((c) => !aSig.has(sig(c))).map(view),
+    added: a.filter((c) => pairs(c).some((p) => !bPairs.has(p))).map(view),
+    cleared: b.filter((c) => pairs(c).every((p) => !aPairs.has(p))).map(view),
   };
 }
