@@ -4,8 +4,12 @@ import { listBookings, listEnvironments, listHolidays, listProjects, listTeams }
 import { applyResolutions, conflictKey, detectConflicts } from '../shared/conflicts.ts';
 import { isValidISODate, isWorkingDay, snapToWorkingDay } from '../shared/dates.ts';
 import { effectiveKind } from '../shared/bookings.ts';
-import { holidaySet } from './queries.ts';
-import { MARKERS, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project } from '../shared/types.ts';
+import { holidaySet, listTasks } from './queries.ts';
+import { applyChange, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
+import { lateBy } from '../shared/schedule.ts';
+import {
+  MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
+} from '../shared/types.ts';
 
 export const router = Router();
 
@@ -54,6 +58,12 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[], field: s
     throw bad(`${field} must be one of ${allowed.join(', ')}`);
   }
   return value as T;
+}
+
+/** A date that may be cleared: null or blank clears, anything else must be real. */
+function optionalDate(value: unknown, field: string): ISODate | null {
+  if (value == null || value === '') return null;
+  return requireDate(value, field);
 }
 
 function nonEmpty(value: unknown, field: string): string {
@@ -262,6 +272,10 @@ router.delete('/environments/:id', handle((req, res) => {
   if (inUse && inUse.n > 0) {
     throw bad(`This environment has ${inUse.n} booking${inUse.n === 1 ? '' : 's'}. Remove them first.`);
   }
+  const tasks = get<{ n: number }>('SELECT COUNT(*) AS n FROM task WHERE environment_id = ?', id);
+  if (tasks && tasks.n > 0) {
+    throw bad(`${tasks.n} task${tasks.n === 1 ? ' is' : 's are'} planned on this environment. Move ${tasks.n === 1 ? 'it' : 'them'} first.`);
+  }
   run('DELETE FROM environment WHERE id = ?', id);
   res.status(204).end();
 }));
@@ -285,12 +299,14 @@ router.post('/projects', handle((req, res) => {
   }
 
   const { lastInsertRowid } = run(
-    `INSERT INTO project (team_id, parent_id, name, status, priority, owner, description, external_link)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO project (team_id, parent_id, name, status, priority, owner, description, external_link,
+                          start_date, target_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     teamId, parentId, name,
     oneOf(req.body?.status, STATUSES, 'status', 'planned'),
     oneOf(req.body?.priority, PRIORITIES, 'priority', 'normal'),
     req.body?.owner ?? null, req.body?.description ?? null, req.body?.external_link ?? null,
+    optionalDate(req.body?.start_date, 'start_date'), optionalDate(req.body?.target_date, 'target_date'),
   );
   res.status(201).json(get('SELECT * FROM project WHERE id = ?', Number(lastInsertRowid)));
 }));
@@ -307,12 +323,23 @@ router.patch('/projects/:id', handle((req, res) => {
     owner: req.body?.owner !== undefined ? req.body.owner : existing.owner,
     description: req.body?.description !== undefined ? req.body.description : existing.description,
     external_link: req.body?.external_link !== undefined ? req.body.external_link : existing.external_link,
+    start_date: req.body?.start_date !== undefined ? optionalDate(req.body.start_date, 'start_date') : existing.start_date ?? null,
+    target_date: req.body?.target_date !== undefined ? optionalDate(req.body.target_date, 'target_date') : existing.target_date ?? null,
   };
 
-  run(
-    'UPDATE project SET name = ?, status = ?, priority = ?, owner = ?, description = ?, external_link = ? WHERE id = ?',
-    next.name, next.status, next.priority, next.owner, next.description, next.external_link, id,
-  );
+  transaction(() => {
+    run(
+      `UPDATE project SET name = ?, status = ?, priority = ?, owner = ?, description = ?, external_link = ?,
+                          start_date = ?, target_date = ? WHERE id = ?`,
+      next.name, next.status, next.priority, next.owner, next.description, next.external_link,
+      next.start_date, next.target_date, id,
+    );
+    // Moving the start moves every task that is not pinned by a predecessor or its actual dates.
+    if (next.start_date !== (existing.start_date ?? null)) {
+      audit('project', id, 'start_date', existing.start_date, next.start_date);
+      replan(id);
+    }
+  });
   res.json(get('SELECT * FROM project WHERE id = ?', id));
 }));
 
@@ -385,19 +412,25 @@ router.post('/bookings', handle((req, res) => {
 
   const { start, end, adjusted } = snapRange(rawStart, rawEnd);
   const kind = effectiveKind(requestedKind, start, end);
-  const { lastInsertRowid } = run(
-    `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence, optional, note, marker,
-                          timeline_text)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    projectId, envId, kind, start, end,
-    oneOf(req.body?.confidence, CONFIDENCES, 'confidence', 'committed'),
-    req.body?.optional ? 1 : 0,
-    noteValue(req.body?.note),
-    markerValue(req.body?.marker, kind),
-    timelineTextValue(req.body?.timeline_text),
-  );
+  const id = transaction(() => {
+    const { lastInsertRowid } = run(
+      `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence, optional, note, marker,
+                            timeline_text, manual_start, manual_end)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      projectId, envId, kind, start, end,
+      oneOf(req.body?.confidence, CONFIDENCES, 'confidence', 'committed'),
+      req.body?.optional ? 1 : 0,
+      noteValue(req.body?.note),
+      markerValue(req.body?.marker, kind),
+      timelineTextValue(req.body?.timeline_text),
+      start, end,
+    );
+    // A new manual booking may take over a hold that an auto booking was serving.
+    replan(projectId!);
+    return Number(lastInsertRowid);
+  });
 
-  res.status(201).json({ ...get('SELECT * FROM booking WHERE id = ?', Number(lastInsertRowid)), adjusted });
+  res.status(201).json({ ...get('SELECT * FROM booking WHERE id = ?', id), adjusted });
 }));
 
 router.patch('/bookings/:id', handle((req, res) => {
@@ -415,11 +448,18 @@ router.patch('/bookings/:id', handle((req, res) => {
     envId = candidate!;
   }
 
+  // Dates in a PATCH are the manual span; the stored span is that stretched over any
+  // task hold. Setting dates or moving environment on a task-made booking makes it
+  // manual: someone has now booked it by hand.
+  const auto = existing.manual_start == null || existing.manual_end == null;
+  const datesGiven = req.body?.start_date != null || req.body?.end_date != null || envId !== existing.environment_id;
+  const baseStart = existing.manual_start ?? existing.start_date;
+  const baseEnd = existing.manual_end ?? existing.end_date;
   const requestedKind = req.body?.kind != null ? oneOf(req.body.kind, BOOKING_KINDS, 'kind') : existing.kind;
-  const rawStart = req.body?.start_date != null ? requireDate(req.body.start_date, 'start_date') : existing.start_date;
+  const rawStart = req.body?.start_date != null ? requireDate(req.body.start_date, 'start_date') : baseStart;
   const rawEnd = requestedKind === 'RELEASE'
     ? rawStart
-    : (req.body?.end_date != null ? requireDate(req.body.end_date, 'end_date') : existing.end_date);
+    : (req.body?.end_date != null ? requireDate(req.body.end_date, 'end_date') : baseEnd);
   if (rawEnd < rawStart) throw bad('A booking cannot end before it starts');
 
   const { start, end, adjusted } = snapRange(rawStart, rawEnd);
@@ -433,25 +473,209 @@ router.patch('/bookings/:id', handle((req, res) => {
     : (existing.timeline_text ?? null);
   const marker = markerValue(req.body?.marker !== undefined ? req.body.marker : existing.marker, kind);
 
-  // Dates are what people argue about, so every change to one is recorded.
-  if (start !== existing.start_date) audit('booking', id, 'start_date', existing.start_date, start);
-  if (end !== existing.end_date) audit('booking', id, 'end_date', existing.end_date, end);
-  if (envId !== existing.environment_id) audit('booking', id, 'environment_id', existing.environment_id, envId);
+  const manualStart = auto && !datesGiven ? null : start;
+  const manualEnd = auto && !datesGiven ? null : end;
 
-  run(
-    `UPDATE booking SET environment_id = ?, kind = ?, start_date = ?, end_date = ?, confidence = ?, optional = ?,
-                        note = ?, marker = ?, timeline_text = ?
-      WHERE id = ?`,
-    envId, kind, start, end, confidence, optional, note, marker, timelineText, id,
-  );
+  transaction(() => {
+    // Dates are what people argue about, so every change to one is recorded.
+    if (manualStart !== existing.manual_start) audit('booking', id, 'manual_start', existing.manual_start, manualStart);
+    if (manualEnd !== existing.manual_end) audit('booking', id, 'manual_end', existing.manual_end, manualEnd);
+    if (envId !== existing.environment_id) audit('booking', id, 'environment_id', existing.environment_id, envId);
+
+    run(
+      `UPDATE booking SET environment_id = ?, kind = ?, start_date = ?, end_date = ?, confidence = ?, optional = ?,
+                          note = ?, marker = ?, timeline_text = ?, manual_start = ?, manual_end = ?
+        WHERE id = ?`,
+      envId, kind, auto && !datesGiven ? existing.start_date : start, auto && !datesGiven ? existing.end_date : end,
+      confidence, optional, note, marker, timelineText, manualStart, manualEnd, id,
+    );
+    replan(existing.project_id);
+  });
   res.json({ ...get('SELECT * FROM booking WHERE id = ?', id), adjusted });
 }));
 
 router.delete('/bookings/:id', handle((req, res) => {
   const id = Number(req.params.id);
-  if (!get('SELECT id FROM booking WHERE id = ?', id)) throw missing('Booking');
-  run('DELETE FROM booking WHERE id = ?', id);
+  const existing = get<Booking>('SELECT * FROM booking WHERE id = ?', id);
+  if (!existing) throw missing('Booking');
+  if (existing.manual_start == null && existing.hold_start) {
+    // Its tasks would book it straight back; say which ones instead.
+    const names = all<{ name: string }>(
+      `SELECT name FROM task WHERE project_id = ? AND environment_id = ? AND duration > 0
+          AND start_date <= ? AND end_date >= ? ORDER BY start_date`,
+      existing.project_id, existing.environment_id, existing.hold_end, existing.hold_start,
+    ).map((t) => t.name);
+    throw bad(`This booking is made by tasks${names.length ? ` (${names.join(', ')})` : ''}. Move or delete them in the plan.`);
+  }
+  transaction(() => {
+    run('DELETE FROM booking WHERE id = ?', id);
+    // Tasks it covered now need an auto booking of their own.
+    replan(existing.project_id);
+  });
   res.status(204).end();
+}));
+
+/** Hand an environment back once every task in the booking is done: trim the manual end to the last task. */
+router.post('/bookings/:id/release', handle((req, res) => {
+  const id = Number(req.params.id);
+  const existing = get<Booking>('SELECT * FROM booking WHERE id = ?', id);
+  if (!existing) throw missing('Booking');
+  if (!existing.hold_end || !existing.hold_done || existing.end_date <= existing.hold_end) {
+    throw bad('Only a booking whose tasks are all done, and that runs on past them, can be released');
+  }
+  const previousEnd = existing.manual_end ?? existing.end_date;
+  transaction(() => {
+    const start = existing.manual_start && existing.manual_start < existing.hold_end! ? existing.manual_start : existing.hold_start;
+    audit('booking', id, 'manual_end', previousEnd, existing.hold_end);
+    run('UPDATE booking SET manual_start = ?, manual_end = ? WHERE id = ?', start, existing.hold_end, id);
+    replan(existing.project_id);
+  });
+  res.json({ ...get('SELECT * FROM booking WHERE id = ?', id), previous_end: previousEnd });
+}));
+
+// ---------------------------------------------------------------- plans and tasks
+
+function planResponse(projectId: number) {
+  const state = loadState(projectId);
+  const outcome = outcomeOf(state);
+  if ('cycle' in outcome) throw bad('This plan has a dependency loop. Remove one of its links.');
+  const holidays = holidaySet();
+  const finish = state.tasks.length ? outcome.schedule.finish : null;
+  return {
+    project: get<Project>('SELECT * FROM project WHERE id = ?', projectId),
+    tasks: listTasks(projectId),
+    dependencies: state.deps,
+    schedule: [...outcome.schedule.tasks.values()],
+    critical_path: outcome.schedule.critical_path,
+    finish,
+    late_by: lateBy(finish, state.project.target_date, holidays),
+    holds: outcome.holds,
+    bookings: listBookings({ teamId: state.project.team_id }).filter((b) => b.project_id === projectId),
+  };
+}
+
+router.get('/projects/:id/plan', handle((req, res) => {
+  const id = Number(req.params.id);
+  if (!get('SELECT id FROM project WHERE id = ?', id)) throw missing('Project');
+  res.json(planResponse(id));
+}));
+
+const TASK_NAME_MAX = 200;
+
+/** Validate the task fields a request sets; absent fields are left out, not defaulted. */
+function taskFields(body: Record<string, unknown> | undefined, teamId: number): TaskFields {
+  const f: TaskFields = {};
+  if (!body) return f;
+  if (body.name !== undefined) {
+    f.name = nonEmpty(body.name, 'Task name').replace(/\s+/g, ' ');
+    if (f.name.length > TASK_NAME_MAX) throw bad(`A task name can be at most ${TASK_NAME_MAX} characters`);
+  }
+  if (body.environment_id !== undefined) {
+    if (body.environment_id == null || body.environment_id === '') f.environment_id = null;
+    else {
+      const envId = intParam(body.environment_id);
+      const env = envId != null ? get<Environment>('SELECT * FROM environment WHERE id = ?', envId) : undefined;
+      if (!env) throw bad('A valid environment is required');
+      if (env.team_id !== teamId) throw bad('That environment belongs to another team');
+      f.environment_id = envId!;
+    }
+  }
+  if (body.duration !== undefined) {
+    const d = intParam(body.duration);
+    if (d == null || d < 0 || d > 1000) throw bad('Duration is a whole number of working days, 0 to 1000');
+    f.duration = d;
+  }
+  if (body.status !== undefined) f.status = oneOf(body.status, TASK_STATUSES, 'status');
+  if (body.not_before !== undefined) f.not_before = optionalDate(body.not_before, 'not_before');
+  if (body.actual_start !== undefined) f.actual_start = optionalDate(body.actual_start, 'actual_start');
+  if (body.actual_end !== undefined) f.actual_end = optionalDate(body.actual_end, 'actual_end');
+  if (body.assignee !== undefined) f.assignee = typeof body.assignee === 'string' && body.assignee.trim() ? body.assignee.trim() : null;
+  if (body.note !== undefined) f.note = noteValue(body.note);
+  if (body.predecessors !== undefined) {
+    if (!Array.isArray(body.predecessors)) throw bad('predecessors must be a list');
+    f.predecessors = body.predecessors.map((p) => {
+      const id = intParam((p as { id?: unknown })?.id);
+      const lag = intParam((p as { lag?: unknown })?.lag ?? 0);
+      if (id == null || lag == null) throw bad('Each predecessor needs a task id and a whole-day lag');
+      return { id, lag };
+    });
+  }
+  if (f.actual_start && f.actual_end && f.actual_end < f.actual_start) throw bad('A task cannot finish before it starts');
+  return f;
+}
+
+function taskProject(taskId: number): Project {
+  const p = get<Project>('SELECT p.* FROM project p JOIN task t ON t.project_id = p.id WHERE t.id = ?', taskId);
+  if (!p) throw missing('Task');
+  return p;
+}
+
+/** Apply a change and replan, all or nothing. Returns the created task id for a create. */
+function commit(projectId: number, change: Change): number | null {
+  return transaction(() => {
+    const before = loadState(projectId);
+    const created = writeState(before, applyChange(before, change));
+    replan(projectId);
+    return created;
+  });
+}
+
+function changeFrom(req: Request, projectId: number): Change {
+  const body = req.body ?? {};
+  const change = body.change ?? body;
+  const project = get<Project>('SELECT * FROM project WHERE id = ?', projectId)!;
+  if (change.op === 'create') {
+    return { op: 'create', fields: { name: 'New task', ...taskFields(change.fields, project.team_id) } as TaskFields & { name: string }, after_id: intParam(change.after_id) ?? null };
+  }
+  const id = intParam(change.id);
+  if (id == null) throw bad('A task id is required');
+  if (taskProject(id).id !== projectId) throw bad('That task belongs to another project');
+  if (change.op === 'update') return { op: 'update', id, fields: taskFields(change.fields, project.team_id) };
+  if (change.op === 'delete') return { op: 'delete', id, bridge: Boolean(change.bridge) };
+  throw bad('op must be create, update or delete');
+}
+
+router.post('/tasks', handle((req, res) => {
+  const projectId = intParam(req.body?.project_id);
+  const project = projectId != null ? get<Project>('SELECT * FROM project WHERE id = ?', projectId) : undefined;
+  if (!project) throw bad('A valid project is required');
+  const fields = taskFields(req.body, project.team_id);
+  if (!fields.name) throw bad('Task name is required');
+  const id = commit(project.id, { op: 'create', fields: fields as TaskFields & { name: string }, after_id: intParam(req.body?.after_id) ?? null });
+  res.status(201).json({ id, plan: planResponse(project.id) });
+}));
+
+router.patch('/tasks/:id', handle((req, res) => {
+  const id = Number(req.params.id);
+  const project = taskProject(id);
+  commit(project.id, { op: 'update', id, fields: taskFields(req.body, project.team_id) });
+  res.json({ id, plan: planResponse(project.id) });
+}));
+
+router.delete('/tasks/:id', handle((req, res) => {
+  const id = Number(req.params.id);
+  const project = taskProject(id);
+  commit(project.id, { op: 'delete', id, bridge: req.query.bridge === '1' });
+  res.json({ plan: planResponse(project.id) });
+}));
+
+router.post('/tasks/reorder', handle((req, res) => {
+  const projectId = intParam(req.body?.project_id);
+  if (projectId == null || !get('SELECT id FROM project WHERE id = ?', projectId)) throw bad('A valid project is required');
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(intParam) : [];
+  const current = listTasks(projectId).map((t) => t.id);
+  if (ids.length !== current.length || ids.some((id: number | undefined) => id == null || !current.includes(id))) {
+    throw bad('Reorder needs every task of the project exactly once');
+  }
+  transaction(() => ids.forEach((id: number, i: number) => run('UPDATE task SET sort_order = ? WHERE id = ?', i, id)));
+  res.json({ plan: planResponse(projectId) });
+}));
+
+/** What a change would do, without making it. The impact panel reads this before every edit and delete. */
+router.post('/tasks/preview', handle((req, res) => {
+  const projectId = intParam(req.body?.project_id);
+  if (projectId == null || !get('SELECT id FROM project WHERE id = ?', projectId)) throw bad('A valid project is required');
+  res.json(previewChange(projectId, changeFrom(req, projectId)));
 }));
 
 // ---------------------------------------------------------------- holidays
@@ -461,19 +685,26 @@ router.get('/holidays', handle((_req, res) => res.json(listHolidays())));
 router.post('/holidays', handle((req, res) => {
   const date = requireDate(req.body?.date, 'date');
   const name = nonEmpty(req.body?.name, 'Holiday name');
-  run('INSERT OR REPLACE INTO holiday (date, name) VALUES (?, ?)', date, name);
+  transaction(() => {
+    run('INSERT OR REPLACE INTO holiday (date, name) VALUES (?, ?)', date, name);
+    // Durations count working days, so a new holiday moves every plan across it.
+    replanAll();
+  });
   res.status(201).json({ date, name });
 }));
 
 router.delete('/holidays/:date', handle((req, res) => {
-  run('DELETE FROM holiday WHERE date = ?', req.params.date);
+  transaction(() => {
+    run('DELETE FROM holiday WHERE date = ?', req.params.date);
+    replanAll();
+  });
   res.status(204).end();
 }));
 
 // ---------------------------------------------------------------- errors
 
 router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err instanceof HttpError ? err.status : 500;
+  const status = err instanceof HttpError ? err.status : err instanceof PlanError ? 400 : 500;
   const message = err instanceof Error ? err.message : 'Something went wrong';
   if (status === 500) console.error(err);
   res.status(status).json({ error: message });

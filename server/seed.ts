@@ -3,6 +3,7 @@
  * about the feature the tool exists for.
  */
 import { db, run, transaction } from './db.ts';
+import { replan } from './plan.ts';
 import { addWorkingDays, snapToWorkingDay, today } from '../shared/dates.ts';
 import type { ISODate } from '../shared/types.ts';
 
@@ -22,6 +23,17 @@ const TEAMS = [
     projects: [
       {
         name: 'Card tokenisation R2', priority: 'critical', owner: 'Mai', status: 'in_progress',
+        start: -8, target: 20,
+        // A plan whose UAT work outgrows the UAT booking made by hand, so the booking stretches.
+        tasks: [
+          { key: 'hsm', name: 'Deploy HSM stub', dur: 2, status: 'done', actual: [-8, -7] },
+          { key: 'vault', name: 'Build card vault', dur: 4, after: ['hsm'], status: 'done', actual: [-6, -3], assignee: 'Mai' },
+          { key: 'sit', name: 'Vault regression in SIT', env: 'SIT', dur: 8, after: ['vault'], status: 'in_progress', actual: [-2], assignee: 'Tuan' },
+          { key: 'pen', name: 'Pen test scoping', dur: 2, after: ['vault'] },
+          { key: 'nft', name: 'Tokenisation soak test', env: 'NFT', dur: 5, after: ['sit'] },
+          { key: 'uat', name: 'Merchant UAT', env: 'UAT', dur: 12, after: [['sit', 1]], assignee: 'Lan' },
+          { key: 'live', name: 'Go / no-go', dur: 0, after: ['nft', 'uat'] },
+        ],
         bookings: [
           { env: 'SIT', kind: 'SIT', start: -6, end: 6, note: 'Needs the HSM stub deployed before day one.' },
           { env: 'UAT', kind: 'UAT', start: 8, end: 18 },
@@ -43,6 +55,13 @@ const TEAMS = [
       {
         // And a second, quieter UAT collision later in the window.
         name: 'Refund API v3', priority: 'normal', owner: 'Linh', status: 'planned',
+        start: 10,
+        // No NFT booking by hand: the load test books NFT itself and lands on tokenisation's soak.
+        tasks: [
+          { key: 'api', name: 'Refund endpoints', dur: 5 },
+          { key: 'load', name: 'Refund load test', env: 'NFT', dur: 5, after: ['api'], not_before: 16 },
+          { key: 'docs', name: 'Partner docs', dur: 3, after: ['api'] },
+        ],
         bookings: [
           { env: 'SIT', kind: 'SIT', start: 16, end: 23 },
           { env: 'UAT', kind: 'UAT', start: 21, end: 30 },
@@ -102,6 +121,13 @@ const TEAMS = [
     projects: [
       {
         name: 'Mobile app 5.0', priority: 'high', owner: 'Quan', status: 'in_progress',
+        start: -2,
+        // SIT work finished early, but the SIT booking runs on: the board offers to release it.
+        tasks: [
+          { key: 'smoke', name: 'SIT smoke suite', env: 'SIT', dur: 2, status: 'done', actual: [-2, -1] },
+          { key: 'fix', name: 'Fix SIT findings', dur: 3, after: ['smoke'] },
+          { key: 'uat', name: 'Store review build in UAT', env: 'UAT', dur: 6, after: ['fix'], not_before: 12 },
+        ],
         bookings: [
           { env: 'SIT', kind: 'SIT', start: -2, end: 9 },
           { env: 'UAT', kind: 'UAT', start: 12, end: 22 },
@@ -119,15 +145,20 @@ const TEAMS = [
   },
 ] as const;
 
+type SeedTask = {
+  key: string; name: string; dur: number; env?: string; status?: string; assignee?: string;
+  after?: readonly (string | readonly [string, number])[]; not_before?: number; actual?: readonly number[];
+};
+
 const HOLIDAYS = [
   { date: addWorkingDays(snapToWorkingDay(base), 11), name: 'Company day' },
 ];
 
 transaction(() => {
-  for (const table of ['audit_log', 'booking', 'project', 'environment', 'holiday', 'team']) {
+  for (const table of ['audit_log', 'task_dependency', 'task', 'booking', 'project', 'environment', 'holiday', 'team']) {
     run(`DELETE FROM ${table}`);
   }
-  db.exec("DELETE FROM sqlite_sequence WHERE name IN ('team','environment','project','booking')");
+  db.exec("DELETE FROM sqlite_sequence WHERE name IN ('team','environment','project','booking','task')");
 
   for (const h of HOLIDAYS) run('INSERT OR REPLACE INTO holiday (date, name) VALUES (?, ?)', h.date, h.name);
 
@@ -145,8 +176,9 @@ transaction(() => {
 
     for (const project of team.projects) {
       const projectId = Number(run(
-        'INSERT INTO project (team_id, name, status, priority, owner) VALUES (?, ?, ?, ?, ?)',
+        'INSERT INTO project (team_id, name, status, priority, owner, start_date, target_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
         teamId, project.name, project.status, project.priority, project.owner,
+        'start' in project ? d(project.start) : null, 'target' in project ? d(project.target) : null,
       ).lastInsertRowid);
 
       for (const b of project.bookings) {
@@ -161,16 +193,39 @@ transaction(() => {
           envIds.set(b.env, envId);
         }
         run(
-          `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence, note, marker)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO booking (project_id, environment_id, kind, start_date, end_date, confidence, note, marker,
+                                manual_start, manual_end)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           projectId, envId, b.kind, d(b.start), d(b.end),
           'confidence' in b ? b.confidence : 'committed',
           'note' in b ? b.note : null,
           'marker' in b ? b.marker : null,
+          d(b.start), d(b.end),
         );
       }
+
+      if (!('tasks' in project)) continue;
+      const taskIds = new Map<string, number>();
+      project.tasks.forEach((t: SeedTask, i) => {
+        const actual = t.actual ?? [];
+        taskIds.set(t.key, Number(run(
+          `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, assignee, sort_order,
+                             actual_start, actual_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          projectId, t.env ? envIds.get(t.env) : null, t.name, t.dur, t.status ?? 'todo',
+          t.not_before != null ? d(t.not_before) : null, t.assignee ?? null, i,
+          actual[0] != null ? d(actual[0]) : null, actual[1] != null ? d(actual[1]) : null,
+        ).lastInsertRowid));
+      });
+      for (const t of project.tasks as readonly SeedTask[]) {
+        for (const a of t.after ?? []) {
+          const [key, lag] = typeof a === 'string' ? [a, 0] : a;
+          run('INSERT INTO task_dependency (predecessor_id, successor_id, lag) VALUES (?, ?, ?)',
+            taskIds.get(key), taskIds.get(t.key), lag);
+        }
+      }
+      replan(projectId);
     }
   }
 });
 
-console.log('Seeded 3 teams with deliberate double-bookings in Payments SIT and UAT.');
+console.log('Seeded 3 teams with deliberate double-bookings in Payments SIT and UAT, and task plans on three projects.');

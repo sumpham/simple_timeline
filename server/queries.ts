@@ -1,8 +1,9 @@
 import { all } from './db.ts';
 import { calendarDays, workingDays } from '../shared/dates.ts';
-import type { BookingView, Environment, Holiday, ISODate, Project, Team } from '../shared/types.ts';
+import { releaseFrom, taskSpan } from '../shared/taskHolds.ts';
+import type { BookingView, Environment, Holiday, ISODate, Project, Task, Team } from '../shared/types.ts';
 
-type RawBooking = Omit<BookingView, 'calendar_days' | 'working_days' | 'is_milestone'>;
+type RawBooking = Omit<BookingView, 'calendar_days' | 'working_days' | 'is_milestone' | 'auto' | 'tasks' | 'release_from'>;
 
 export function holidaySet(): Set<ISODate> {
   return new Set(all<Holiday>('SELECT date, name FROM holiday').map((h) => h.date));
@@ -15,7 +16,10 @@ export function listTeams(): Team[] {
             (SELECT COUNT(*) FROM project p WHERE p.team_id = t.id) AS project_count,
             (SELECT COUNT(*) FROM booking b
                JOIN project p ON p.id = b.project_id
-              WHERE p.team_id = t.id) AS booking_count
+              WHERE p.team_id = t.id) AS booking_count,
+            (SELECT COUNT(*) FROM task k
+               JOIN project p ON p.id = k.project_id
+              WHERE p.team_id = t.id) AS task_count
        FROM team t
       ORDER BY t.active DESC, t.name`,
   );
@@ -26,7 +30,8 @@ export function listEnvironments(teamId?: number): Environment[] {
   const params = teamId == null ? [] : [teamId];
   return all<Environment>(
     `SELECT e.*,
-            (SELECT COUNT(*) FROM booking b WHERE b.environment_id = e.id) AS booking_count
+            (SELECT COUNT(*) FROM booking b WHERE b.environment_id = e.id) AS booking_count,
+            (SELECT COUNT(*) FROM task k WHERE k.environment_id = e.id) AS task_count
        FROM environment e
        ${where}
       ORDER BY e.team_id, e.sort_order, e.name`,
@@ -40,7 +45,8 @@ export function listProjects(teamId?: number): Project[] {
   const params = teamId == null ? [] : [teamId];
   return all<Project>(
     `SELECT p.*,
-            (SELECT COUNT(*) FROM booking b WHERE b.project_id = p.id) AS booking_count
+            (SELECT COUNT(*) FROM booking b WHERE b.project_id = p.id) AS booking_count,
+            (SELECT COUNT(*) FROM task k WHERE k.project_id = p.id) AS task_count
        FROM project p
        ${where}
       ORDER BY p.name`,
@@ -100,11 +106,41 @@ export function listBookings(filter: {
   );
 
   const holidays = holidaySet();
-  return rows.map((r) => ({
-    ...r,
-    calendar_days: calendarDays(r.start_date, r.end_date),
-    working_days: workingDays(r.start_date, r.end_date, holidays),
-    // A release is a moment, not a span, and the renderer draws it as a diamond.
-    is_milestone: r.kind === 'RELEASE' || r.start_date === r.end_date,
-  }));
+  const tasks = tasksOnEnvironments(rows.filter((r) => r.hold_start).map((r) => r.project_id));
+  return rows.map((r) => {
+    const held = r.hold_start && r.hold_end
+      ? tasks.filter((t) => t.project_id === r.project_id && t.environment_id === r.environment_id
+        && t.span.start >= r.hold_start! && t.span.end <= r.hold_end!)
+      : [];
+    return {
+      ...r,
+      calendar_days: calendarDays(r.start_date, r.end_date),
+      working_days: workingDays(r.start_date, r.end_date, holidays),
+      // A release is a moment, not a span, and the renderer draws it as a diamond.
+      is_milestone: r.kind === 'RELEASE' || r.start_date === r.end_date,
+      auto: r.manual_start == null || r.manual_end == null,
+      tasks: held.map((t) => ({ id: t.id, name: t.name })),
+      release_from: r.hold_end
+        ? releaseFrom(r.end_date, { end: r.hold_end, done: Boolean(r.hold_done) })
+        : null,
+    };
+  });
+}
+
+/** Environment tasks of the given projects with their calendar spans, for labelling bookings. */
+function tasksOnEnvironments(projectIds: number[]) {
+  const ids = [...new Set(projectIds)];
+  if (!ids.length) return [];
+  return all<Task>(
+    `SELECT * FROM task WHERE environment_id IS NOT NULL AND duration > 0
+        AND project_id IN (${ids.map(() => '?').join(',')})`,
+    ...ids,
+  ).flatMap((t) => {
+    const span = taskSpan(t);
+    return span ? [{ id: t.id, project_id: t.project_id, environment_id: t.environment_id!, name: t.name, span }] : [];
+  });
+}
+
+export function listTasks(projectId: number): Task[] {
+  return all<Task>('SELECT * FROM task WHERE project_id = ? ORDER BY sort_order, id', projectId);
 }
