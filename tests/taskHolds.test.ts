@@ -146,6 +146,17 @@ describe('planImpact', () => {
     expect(impact.moved).toEqual([expect.objectContaining({ id: 2, days: -3 })]);
   });
 
+  it('reports joining an existing clash as one new double-booking, not a cleared one', () => {
+    const third = { ...other, id: 98, project_id: 3, project_name: 'Ledger', start_date: '2026-03-02', end_date: '2026-03-06' };
+    const first = { ...other, start_date: '2026-03-02', end_date: '2026-03-06' };
+    const before = plan([t(1, 5, null)], []);
+    const after = plan([t(1, 5)], []);
+    const impact = planImpact(before, after, { ...ctx, teamBookings: [first, third] });
+    expect(impact.conflicts_added).toHaveLength(1);
+    expect(impact.conflicts_added[0].projects).toHaveLength(3);
+    expect(impact.conflicts_cleared).toEqual([]);
+  });
+
   it('names a dependency loop', () => {
     const before = plan([t(1, 1, null), t(2, 1, null)], [{ predecessor_id: 1, successor_id: 2, lag: 0 }]);
     const after = planProject({ projectStart: '2026-03-02', tasks: before.tasks, bookings: [],

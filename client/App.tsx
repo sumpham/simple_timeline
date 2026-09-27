@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type BoardData, type Bootstrap } from './api.ts';
 import { addDays, addWorkingDays, snapToWorkingDay, today as todayISO } from '../shared/dates.ts';
 import type { BookingView, Conflict, Environment, ISODate } from '../shared/types.ts';
-import { formatRange, makeScale, ZOOM, type Zoom } from './layout.ts';
+import { formatDate, formatRange, makeScale, ZOOM, type Zoom } from './layout.ts';
 import { Board, buildRows, DragReadout, ENV_COLOR, rowHeights, type Mode, type Row } from './components/Board.tsx';
 import { useBookingDrag } from './useBookingDrag.ts';
 import {
@@ -18,6 +18,13 @@ import { PHONE_QUERY, useMediaQuery, usePinchZoom } from './touch.ts';
 import {
   BookingDialog, EnvironmentDialog, ProjectsDialog, TeamsDialog, type BookingDraft,
 } from './components/Dialogs.tsx';
+import { PlanView } from './components/Plan.tsx';
+
+/** `#plan/12` opens project 12's plan; anything else is the board. */
+function planFromHash(): number | null {
+  const m = /^#plan\/(\d+)$/.exec(window.location.hash);
+  return m ? Number(m[1]) : null;
+}
 
 type DialogState =
   | { kind: 'none' }
@@ -57,7 +64,9 @@ export function App() {
   const [pendingSpans, setPendingSpans] = useState<Map<number, Span>>(new Map());
   const [sheet, setSheet] = useState<SheetState>({ kind: 'none' });
   /** A short message at the foot of the board; with an id, it offers that booking back. */
-  const [toast, setToast] = useState<{ text: string; undoId?: number } | null>(null);
+  const [toast, setToast] = useState<{ text: string; undoId?: number; onUndo?: () => Promise<void> } | null>(null);
+  /** The project whose plan is open in place of the board, from the URL hash. */
+  const [planId, setPlanId] = useState<number | null>(planFromHash);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * A long-press booking on its way to the server. `createdId` is set once the
@@ -403,11 +412,55 @@ export function App() {
     });
   };
 
-  const showToast = (text: string, undoId?: number, ms = 6000) => {
+  const showToast = (text: string, undoId?: number, ms = 6000, onUndo?: () => Promise<void>) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast({ text, undoId });
+    setToast({ text, undoId, onUndo });
     toastTimer.current = setTimeout(() => setToast(null), ms);
   };
+
+  useEffect(() => {
+    const onHash = () => setPlanId(planFromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  /** Open a project's plan, or go back to the board. The hash makes it a link and gives Back meaning. */
+  const openPlan = useCallback((id: number | null) => {
+    setDialog({ kind: 'none' });
+    setSheet({ kind: 'none' });
+    window.location.hash = id == null ? '' : `plan/${id}`;
+    setPlanId(id);
+  }, []);
+
+  // A plan link names a project, not a team: follow it to its team, once.
+  const followedPlan = useRef<number | null>(null);
+  useEffect(() => {
+    if (planId == null || !data || data.projects.some((p) => p.id === planId)) return;
+    if (followedPlan.current === planId) return;
+    followedPlan.current = planId;
+    api.plan(planId)
+      .then((p) => { if (p.project.team_id !== teamId) switchTeam(p.project.team_id); })
+      .catch(() => openPlan(null));
+  }, [planId, data, teamId, switchTeam, openPlan]);
+
+  /**
+   * Hand an environment back once its tasks are done. Undo puts the old end back
+   * as the manual end, which is exactly what it was before.
+   */
+  const releaseBooking = useCallback(async (b: BookingView) => {
+    try {
+      const res = await api.releaseBooking(b.id);
+      await refresh();
+      setError(null);
+      showToast(`Released ${b.env_name} from ${formatDate(addDays(res.end_date, 1))}`, undefined, 6000, async () => {
+        await api.updateBooking(b.id, { end_date: res.previous_end });
+        await refresh();
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not release that booking');
+    }
+  // showToast only writes state, so it is safe to leave out of the deps.
+  }, [refresh]);
 
   /**
    * A long press is still easy to make by accident, so every booking made that way
@@ -415,6 +468,15 @@ export function App() {
    * done to it since.
    */
   const undoCreate = async () => {
+    const custom = toast?.onUndo;
+    if (custom) {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      setToast(null);
+      try { await custom(); setError(null); } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not undo that');
+      }
+      return;
+    }
     const id = toast?.undoId;
     if (id == null) return;
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -517,6 +579,7 @@ export function App() {
   };
 
   const selectConflict = (c: Conflict) => {
+    if (planId != null) openPlan(null);
     setMode('environment');
     setHiddenEnvs((prev) => {
       const next = new Set(prev);
@@ -586,6 +649,8 @@ export function App() {
   }
 
   const team = boot.teams.find((t) => t.id === teamId) ?? null;
+  /** The plan shown in place of the board: only a project of the team in view. */
+  const planView = planId != null && data?.projects.some((p) => p.id === planId) ? planId : null;
 
   return (
     <div className="app">
@@ -650,11 +715,11 @@ export function App() {
       </header>
       )}
 
-      {isPhone && team && data && rows.length > 0 && <div className="m-modebar">{modeSwitch}</div>}
+      {isPhone && team && data && rows.length > 0 && planView == null && <div className="m-modebar">{modeSwitch}</div>}
 
       {error && <div className="error-bar">{error}</div>}
 
-      {data && !isPhone && (
+      {data && !isPhone && planView == null && (
         <OccupancyStrip
           environments={environments.filter((e) => visibleEnvIds.has(e.id))}
           bookings={data.bookings}
@@ -671,6 +736,17 @@ export function App() {
           </div>
         ) : !data ? (
           <div className="empty"><p>Loading {team.name}…</p></div>
+        ) : planView != null ? (
+          <PlanView
+            projectId={planView}
+            projects={data.projects}
+            environments={environments}
+            today={today}
+            onBack={() => openPlan(null)}
+            onSwitchProject={(id) => openPlan(id)}
+            onChanged={() => void refresh()}
+            onRelease={releaseBooking}
+          />
         ) : rows.length === 0 ? (
           <div className="empty">
             <h2>Nothing booked yet</h2>
@@ -717,6 +793,16 @@ export function App() {
                     </div>
                     <div className="rail-meta">{row.meta}</div>
                   </button>
+                  {mode === 'project' && (
+                    <button
+                      type="button"
+                      className="rail-plan"
+                      title={`Open the plan for ${row.name}`}
+                      onClick={() => openPlan(row.id)}
+                    >
+                      Plan
+                    </button>
+                  )}
                   {row.occupancy && (
                     <span
                       className={`occupancy${row.occupancy.booked > row.occupancy.capacity ? ' over' : ''}`}
@@ -839,7 +925,7 @@ export function App() {
       {toast && (
         <div className="toast" role="status">
           <span className="toast-text">{toast.text}</span>
-          {toast.undoId != null && (
+          {(toast.undoId != null || toast.onUndo) && (
             <button type="button" className="toast-action" onClick={() => void undoCreate()}>Undo</button>
           )}
         </div>
@@ -895,6 +981,7 @@ export function App() {
           onUpdate={(id, p) => run(() => api.updateProject(id, p), false)}
           onDelete={(id) => run(() => api.deleteProject(id), false)}
           onBook={(projectId) => { setDialogError(undefined); openNewBooking(projectId); }}
+          onPlan={(projectId) => { setDialogError(undefined); openPlan(projectId); }}
         />
       )}
 

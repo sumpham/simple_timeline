@@ -413,7 +413,7 @@ function ProjectForm({
 }
 
 export function ProjectsDialog({
-  projects, teamName, initialEditingId, onCreate, onUpdate, onDelete, onBook, onClose, error, busy,
+  projects, teamName, initialEditingId, onCreate, onUpdate, onDelete, onBook, onPlan, onClose, error, busy,
 }: {
   projects: Project[];
   teamName: string;
@@ -422,6 +422,7 @@ export function ProjectsDialog({
   onUpdate: (id: number, p: Partial<Project>) => void;
   onDelete: (id: number) => void;
   onBook: (projectId: number) => void;
+  onPlan: (projectId: number) => void;
   onClose: () => void;
   error?: string;
   busy?: boolean;
@@ -468,16 +469,21 @@ export function ProjectsDialog({
                     {[project.owner, project.priority, project.status.replace('_', ' ')]
                       .filter(Boolean).join(' · ')}
                     {` · ${project.booking_count ?? 0} booking${project.booking_count === 1 ? '' : 's'}`}
+                    {project.task_count ? ` · ${project.task_count} task${project.task_count === 1 ? '' : 's'}` : ''}
                   </div>
                 </div>
+                <button type="button" className="btn quiet" onClick={() => onPlan(project.id)}>Plan</button>
                 <button type="button" className="btn quiet" onClick={() => onBook(project.id)}>Book</button>
                 <button type="button" className="btn quiet" onClick={() => { setEditing(project.id); setAdding(false); }}>
                   Edit
                 </button>
                 <DangerButton
                   label="Remove"
-                  confirmLabel={project.booking_count
-                    ? `Remove with ${project.booking_count} booking${project.booking_count === 1 ? '' : 's'}?`
+                  confirmLabel={project.booking_count || project.task_count
+                    ? `Remove with ${[
+                      project.booking_count ? `${project.booking_count} booking${project.booking_count === 1 ? '' : 's'}` : '',
+                      project.task_count ? `${project.task_count} task${project.task_count === 1 ? '' : 's'}` : '',
+                    ].filter(Boolean).join(' and ')}?`
                     : 'Remove it?'}
                   onConfirm={() => onDelete(project.id)}
                 />
