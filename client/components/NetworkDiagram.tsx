@@ -27,6 +27,8 @@ export function NetworkDiagram({
   onOpenTask: (id: number) => void;
 }) {
   const [zoom, setZoom] = useState(3);
+  /** The task under the pointer or the keyboard: its own arrows come forward, the rest recede. */
+  const [focused, setFocused] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef(new Map<number, HTMLButtonElement>());
 
@@ -124,13 +126,19 @@ export function NetworkDiagram({
               <g transform={`translate(${pad},${pad})`}>
                 {layout.edges.map((edge) => {
                   const onPath = critical(edge.from) && critical(edge.to);
+                  const related = focused != null && (edge.from === focused || edge.to === focused);
                   return (
                     <path
                       key={`${edge.from}-${edge.to}`}
                       d={roundedPath(edge.points)}
                       pathLength={1}
-                      className={`network-edge${onPath ? ' is-critical' : ''}${criticalOnly && !onPath ? ' is-dim' : ''}`}
-                      markerEnd={`url(#${onPath ? 'arrow-critical' : 'arrow'})`}
+                      className={[
+                        'network-edge',
+                        onPath ? 'is-critical' : '',
+                        criticalOnly && !onPath ? 'is-dim' : '',
+                        related ? 'is-related' : focused != null ? 'is-faint' : '',
+                      ].filter(Boolean).join(' ')}
+                      markerEnd={`url(#${onPath || related ? 'arrow-critical' : 'arrow'})`}
                     />
                   );
                 })}
@@ -161,6 +169,10 @@ export function NetworkDiagram({
                   } as CSSProperties}
                   onClick={() => onOpenTask(id)}
                   onKeyDown={(e) => onNodeKey(e, id)}
+                  onPointerEnter={() => setFocused(id)}
+                  onPointerLeave={() => setFocused((f) => (f === id ? null : f))}
+                  onFocus={() => setFocused(id)}
+                  onBlur={() => setFocused((f) => (f === id ? null : f))}
                   aria-label={[
                     t.name,
                     env ? `on ${env.name}` : '',
@@ -193,7 +205,7 @@ export function NetworkDiagram({
 
       <p className="network-key">
         Top row: early start, duration, early finish. Bottom row: late start, float, late finish.
-        Heavy boxes and arrows are the critical path.
+        Heavy boxes and arrows are the critical path. Point at a task to pick out its own arrows.
       </p>
     </div>
   );

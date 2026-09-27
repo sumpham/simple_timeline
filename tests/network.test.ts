@@ -60,6 +60,75 @@ describe('layoutNetwork', () => {
   });
 });
 
+/** Every way a drawing can mislead: a line through a box, or two unrelated arrows on one line. */
+function misleading(layout: ReturnType<typeof layoutNetwork>): string[] {
+  const problems: string[] = [];
+  const segs = layout.edges.flatMap((e) => e.points.slice(1).map((p, i) => ({ e, a: e.points[i], b: p })));
+  for (const { e, a, b } of segs) {
+    for (const n of layout.nodes.values()) {
+      if (n.id === e.from || n.id === e.to) continue;
+      const [x1, x2] = [Math.min(a[0], b[0]), Math.max(a[0], b[0])];
+      const [y1, y2] = [Math.min(a[1], b[1]), Math.max(a[1], b[1])];
+      if (x2 > n.x && x1 < n.x + NODE_W && y2 > n.y && y1 < n.y + NODE_H) problems.push(`${e.from}->${e.to} crosses box ${n.id}`);
+    }
+  }
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) {
+      const p = segs[i];
+      const q = segs[j];
+      if (p.e === q.e || p.e.from === q.e.from || p.e.to === q.e.to) continue;
+      const horiz = p.a[1] === p.b[1] && q.a[1] === q.b[1] && p.a[1] === q.a[1];
+      const vert = p.a[0] === p.b[0] && q.a[0] === q.b[0] && p.a[0] === q.a[0];
+      if (!horiz && !vert) continue;
+      const axis = horiz ? 0 : 1;
+      const lo = Math.max(Math.min(p.a[axis], p.b[axis]), Math.min(q.a[axis], q.b[axis]));
+      const hi = Math.min(Math.max(p.a[axis], p.b[axis]), Math.max(q.a[axis], q.b[axis]));
+      if (hi - lo > 1) problems.push(`${p.e.from}->${p.e.to} overlaps ${q.e.from}->${q.e.to}`);
+    }
+  }
+  return problems;
+}
+
+describe('edge routing', () => {
+  // The plan that looked wrong: SIT Deployment (12) waits on rows 1, 2, 3 and 5, and
+  // the arrow from row 1 used to run through the onboarding boxes in between.
+  const ids = Array.from({ length: 16 }, (_, i) => i + 1);
+  const deps = [
+    dep(6, 4), dep(4, 5), dep(6, 10), dep(6, 11),
+    dep(1, 12), dep(2, 12), dep(3, 12), dep(5, 12),
+    dep(12, 14), dep(14, 13), dep(13, 15), dep(14, 15), dep(15, 16),
+  ];
+  const order = [1, 2, 3, 6, 7, 8, 9, 4, 10, 11, 5, 12, 14, 13, 15, 16];
+
+  it('never draws through a box or puts unrelated arrows on one line', () => {
+    const l = layoutNetwork(ids.map((id) => t(id)), deps, order);
+    expect(misleading(l)).toEqual([]);
+  });
+
+  it('holds with environment lanes too', () => {
+    const env = (id: number) => (id === 6 || id === 7 ? null : id === 10 || id === 13 || id === 15 ? 11 : id === 11 || id === 16 ? 12 : 10);
+    const lanes = [{ id: 10, name: 'SIT' }, { id: 11, name: 'UAT' }, { id: 12, name: 'PROD' }, { id: null, name: 'No environment' }];
+    const l = layoutNetwork(ids.map((id) => t(id, env(id))), deps, order, lanes);
+    expect(misleading(l)).toEqual([]);
+  });
+
+  it('holds on random plans', () => {
+    // A small deterministic generator, so a failure reproduces.
+    let seed = 7;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    for (let run = 0; run < 40; run++) {
+      const n = 6 + Math.floor(rnd() * 18);
+      const ds: TaskDependency[] = [];
+      for (let b = 2; b <= n; b++) {
+        for (let a = 1; a < b; a++) if (rnd() < 0.18) ds.push(dep(a, b));
+      }
+      const tasks = Array.from({ length: n }, (_, i) => t(i + 1));
+      const l = layoutNetwork(tasks, ds, tasks.map((x) => x.id));
+      expect(misleading(l), `run ${run}`).toEqual([]);
+    }
+  });
+});
+
 describe('roundedPath', () => {
   it('rounds elbows and keeps straight runs straight', () => {
     expect(roundedPath([[0, 0], [10, 0]])).toBe('M0,0 L10,0');

@@ -473,8 +473,14 @@ Critical rows carry a heavy ink rule. A task that should have started says so. O
 rows become stacked cards.
 
 **Network.** Activity-on-node boxes (early start, duration, early finish / name / late start,
-float, late finish), columns by longest chain, rows by barycentre sweeps, orthogonal arrows
-turning in the gutter. **Show environments** puts each node in its environment's lane, in board
+float, late finish), columns by longest chain, rows by barycentre sweeps. Arrows are routed so
+the drawing cannot lie: each source has its own vertical track in the gutter after it and each
+long arrow's target its own track before it; an arrow that skips columns crosses them in a
+clear gap between rows (or above or below everything), never through a box; arrows leave a
+box just above its middle and arrive just below it, so a line leaving one box never lies on a
+line arriving at a box level with it. Lines may cross; only arrows sharing a source or a
+target share a line. Pointing at or focusing a task brings its own arrows forward. Tests
+check this on the plan that first looked wrong and on random plans. **Show environments** puts each node in its environment's lane, in board
 order, with "No environment" last. **Critical path only** dims the rest. Zoom steps, never
 continuous. Arrow keys walk the graph and Enter opens a task. The one motion: critical arrows
 draw once on open, behind reduced motion.

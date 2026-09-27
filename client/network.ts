@@ -16,7 +16,7 @@ import type { TaskDependency } from '../shared/types.ts';
 export const NODE_W = 184;
 export const NODE_H = 66;
 export const COL_GAP = 64;
-export const ROW_GAP = 22;
+export const ROW_GAP = 30;
 export const LANE_PAD = 14;
 const SWEEPS = 6;
 
@@ -102,11 +102,11 @@ export function layoutNetwork(
   }
 
   const strideY = NODE_H + ROW_GAP;
-  const strideX = NODE_W + COL_GAP;
   const nodes = new Map<number, NodeBox>();
   let bands: LaneBand[] = [];
   let height = 0;
 
+  // Rows first; x comes after routing, because a busy gutter is made wider.
   if (lanes) {
     // Each band is as tall as its busiest column.
     const counts = lanes.map((_, li) => Math.max(0, ...cols.map((c) => c.filter((id) => laneIndex(id) === li).length)));
@@ -124,7 +124,7 @@ export function layoutNetwork(
         const li = laneIndex(id);
         const k = seen.get(li) ?? 0;
         seen.set(li, k + 1);
-        nodes.set(id, { id, col: ci, lane: li, x: ci * strideX, y: bands[li].y + LANE_PAD + k * strideY });
+        nodes.set(id, { id, col: ci, lane: li, x: 0, y: bands[li].y + LANE_PAD + k * strideY });
       }
     }
   } else {
@@ -132,32 +132,207 @@ export function layoutNetwork(
     height = tallest ? tallest * strideY - ROW_GAP : 0;
     for (let ci = 0; ci < cols.length; ci++) {
       // Short columns sit centred against the tallest, so chains read as a line.
-      const offset = ((tallest - cols[ci].length) * strideY) / 2;
-      cols[ci].forEach((id, i) => nodes.set(id, { id, col: ci, lane: 0, x: ci * strideX, y: offset + i * strideY }));
+      const offset = Math.round(((tallest - cols[ci].length) * strideY) / 2);
+      cols[ci].forEach((id, i) => nodes.set(id, { id, col: ci, lane: 0, x: 0, y: offset + i * strideY }));
     }
   }
 
-  const edges: EdgePath[] = live.map((d) => {
-    const a = nodes.get(d.predecessor_id)!;
-    const b = nodes.get(d.successor_id)!;
-    const x1 = a.x + NODE_W;
-    const y1 = a.y + NODE_H / 2;
-    const x2 = b.x;
-    const y2 = b.y + NODE_H / 2;
-    // Turn in the gutter just after the source, so the vertical run never crosses a node.
-    const mid = x1 + COL_GAP / 2;
-    const points: [number, number][] = y1 === y2 ? [[x1, y1], [x2, y2]] : [[x1, y1], [mid, y1], [mid, y2], [x2, y2]];
-    return { from: d.predecessor_id, to: d.successor_id, points };
-  });
+  const { edges, colX } = routeEdges(live, nodes, cols);
+  for (const n of nodes.values()) n.x = colX[n.col];
+
+  // Channels above or below every node can reach past the edge; keep them on the canvas.
+  let minY = 0;
+  let maxY = height;
+  for (const e of edges) for (const [, y] of e.points) { minY = Math.min(minY, y - 8); maxY = Math.max(maxY, y + 8); }
+  if (minY < 0) {
+    for (const n of nodes.values()) n.y -= minY;
+    for (const e of edges) e.points = e.points.map(([x, y]) => [x, y - minY]);
+    bands = bands.map((b) => ({ ...b, y: b.y - minY }));
+    if (bands.length) bands[0] = { ...bands[0], y: 0, height: bands[0].height - minY };
+  }
 
   return {
     nodes,
     edges,
     lanes: bands,
-    width: columns ? columns * strideX - COL_GAP : 0,
-    height,
+    width: columns ? colX[columns - 1] + NODE_W : 0,
+    height: maxY - minY,
     columns,
   };
+}
+
+/** Gap between vertical tracks in a gutter, and between arrows sharing a channel. */
+const TRACK = 10;
+const CHANNEL_TRACK = 6;
+/** Clearance an arrow keeps from a box it passes. */
+const CLEAR = 5;
+/**
+ * Arrows leave a box this far above its middle and arrive this far below it, so a
+ * line leaving one box can never lie on a line arriving at a box level with it.
+ * An arrow between two level boxes stays straight, through the middle.
+ */
+const PORT = 6;
+
+/**
+ * Orthogonal routing that never lets two unrelated arrows share a line.
+ *
+ * - Every source gets its own vertical track in the gutter after it (its arrows
+ *   fan out from there), and every target of a long arrow its own track in the
+ *   gutter before it. Tracks never share an x, so vertical runs never overlap.
+ * - An arrow that skips columns crosses them in a channel: the gap between two
+ *   rows that is clear in every column it passes, or above or below everything.
+ *   It never runs through a box. Arrows in one channel are spread apart.
+ * - Lines may cross; only arrows with the same source or the same target may
+ *   share a segment, and there the shared line means exactly that.
+ */
+function routeEdges(
+  deps: readonly TaskDependency[],
+  nodes: Map<number, NodeBox>,
+  cols: number[][],
+): { edges: EdgePath[]; colX: number[] } {
+  const mid = (id: number) => nodes.get(id)!.y + NODE_H / 2;
+  const outY = (id: number) => mid(id) - PORT;
+  const inY = (id: number) => mid(id) + PORT;
+  const all = [...nodes.values()];
+  const top = all.length ? Math.min(...all.map((n) => n.y)) : 0;
+  const bottom = all.length ? Math.max(...all.map((n) => n.y + NODE_H)) : 0;
+
+  type Route = {
+    d: TaskDependency; a: NodeBox; b: NodeBox; straight: boolean;
+    channel?: number;
+    /** Whether a channel height is clear of every box the arrow passes. */
+    clear?: (y: number) => boolean;
+  };
+  const routes: Route[] = deps.map((d) => {
+    const a = nodes.get(d.predecessor_id)!;
+    const b = nodes.get(d.successor_id)!;
+    return { d, a, b, straight: b.col === a.col + 1 && mid(a.id) === mid(b.id) };
+  });
+
+  // 1. Channels for arrows that skip columns.
+  const groups = new Map<string, { base: number; kind: 'gap' | 'top' | 'bottom'; members: Route[] }>();
+  for (const r of routes) {
+    if (r.b.col - r.a.col < 2) continue;
+    const between: [number, number][] = [];
+    const candidates: number[] = [];
+    for (let c = r.a.col + 1; c < r.b.col; c++) {
+      const ys = cols[c].map((id) => nodes.get(id)!.y).sort((p, q) => p - q);
+      for (const y of ys) between.push([y - CLEAR, y + NODE_H + CLEAR]);
+      for (let i = 1; i < ys.length; i++) candidates.push((ys[i - 1] + NODE_H + ys[i]) / 2);
+      // The space above and below a column's own boxes is a channel too.
+      if (ys.length) candidates.push(ys[0] - ROW_GAP / 2, ys[ys.length - 1] + NODE_H + ROW_GAP / 2);
+    }
+    const free = (y: number) => !between.some(([lo, hi]) => y > lo && y < hi);
+    r.clear = free;
+    const want = (mid(r.a.id) + mid(r.b.id)) / 2;
+    const inner = candidates.filter((y) => free(y) && y > top && y < bottom);
+    let key: string;
+    let base: number;
+    let kind: 'gap' | 'top' | 'bottom';
+    if (inner.length) {
+      base = inner.reduce((best, y) => (Math.abs(y - want) < Math.abs(best - want) ? y : best));
+      key = `g${Math.round(base)}`;
+      kind = 'gap';
+    } else {
+      // Nothing clear between the rows: go round, over the top or under the bottom.
+      kind = Math.abs(top - want) <= Math.abs(bottom - want) ? 'top' : 'bottom';
+      base = kind === 'top' ? top - ROW_GAP / 2 : bottom + ROW_GAP / 2;
+      key = kind;
+    }
+    const g = groups.get(key) ?? groups.set(key, { base, kind, members: [] }).get(key)!;
+    g.members.push(r);
+  }
+  // A channel must not sit at the height of any arrow leaving or entering a box, nor
+  // reuse another channel's height, or two unrelated lines would share it.
+  const portYs = all.flatMap((n) => [outY(n.id), inY(n.id), mid(n.id)]);
+  const usedYs: number[] = [];
+  const taken = (y: number) => portYs.some((p) => Math.abs(p - y) < 2) || usedYs.some((u) => Math.abs(u - y) < 2);
+  for (const g of groups.values()) {
+    // Spread arrows that share a channel, ordered so they cross each other as little as they can.
+    g.members.sort((p, q) => mid(p.a.id) + mid(p.b.id) - (mid(q.a.id) + mid(q.b.id)) || p.d.predecessor_id - q.d.predecessor_id);
+    const n = g.members.length;
+    g.members.forEach((r, k) => {
+      let y = g.kind === 'gap' ? g.base + (k - (n - 1) / 2) * CHANNEL_TRACK
+        : g.kind === 'top' ? g.base - k * CHANNEL_TRACK
+        : g.base + k * CHANNEL_TRACK;
+      // Nudge off a taken height, alternating up and down, staying clear of the boxes.
+      const start = y;
+      for (let step = 1; step <= 24 && (taken(y) || !r.clear!(y)); step++) {
+        y = start + (step % 2 ? 1 : -1) * Math.ceil(step / 2) * 2;
+      }
+      if (taken(y) || !r.clear!(y)) {
+        // The gap is full: go under everything instead, below every other channel.
+        y = Math.max(bottom + ROW_GAP / 2, ...usedYs.map((u) => u + CHANNEL_TRACK));
+        for (let guard = 0; guard < 1000 && taken(y); guard++) y += CHANNEL_TRACK;
+      }
+      usedYs.push(y);
+      r.channel = y;
+    });
+  }
+
+  // 2. Vertical tracks, gutter by gutter.
+  const gutters = Math.max(0, cols.length - 1);
+  const trackX: Map<string, number>[] = [];
+  const width: number[] = [];
+  const order: string[][] = [];
+  for (let g = 0; g < gutters; g++) {
+    const exits = new Map<number, number[]>(); // source -> ys its trunk spans
+    const entries = new Map<number, number[]>(); // long-arrow target -> ys
+    for (const r of routes) {
+      if (r.a.col === g && !r.straight) {
+        const ys = exits.get(r.a.id) ?? exits.set(r.a.id, [outY(r.a.id)]).get(r.a.id)!;
+        ys.push(r.channel ?? inY(r.b.id));
+      }
+      if (r.channel != null && r.b.col === g + 1) {
+        const ys = entries.get(r.b.id) ?? entries.set(r.b.id, [inY(r.b.id)]).get(r.b.id)!;
+        ys.push(r.channel);
+      }
+    }
+    const centre = (ys: number[]) => (Math.min(...ys) + Math.max(...ys)) / 2;
+    const placed = [...exits.keys()].sort((p, q) => centre(exits.get(p)!) - centre(exits.get(q)!) || p - q);
+    // Fan-out trunks sit nearer their sources, fan-in trunks nearer their targets.
+    const entryOrder = [...entries.keys()].sort((p, q) => centre(entries.get(p)!) - centre(entries.get(q)!) || p - q);
+    const keys = [...placed.map((s) => `s${s}`), ...entryOrder.map((t) => `t${t}`)];
+    order.push(keys);
+    width.push(Math.max(COL_GAP, (keys.length + 1) * TRACK));
+  }
+
+  const colX: number[] = [];
+  for (let c = 0; c < cols.length; c++) colX.push(c === 0 ? 0 : colX[c - 1] + NODE_W + width[c - 1]);
+  for (let g = 0; g < gutters; g++) {
+    const keys = order[g];
+    const left = colX[g] + NODE_W;
+    trackX.push(new Map(keys.map((k, i) => [k, left + ((i + 1) * width[g]) / (keys.length + 1)])));
+  }
+
+  // 3. Points.
+  const edges: EdgePath[] = routes.map((r) => {
+    const x1 = colX[r.a.col] + NODE_W;
+    const x2 = colX[r.b.col];
+    if (r.straight) return { from: r.d.predecessor_id, to: r.d.successor_id, points: [[x1, mid(r.a.id)], [x2, mid(r.b.id)]] };
+    const y1 = outY(r.a.id);
+    const y2 = inY(r.b.id);
+    const out = trackX[r.a.col].get(`s${r.a.id}`)!;
+    const into = r.channel != null ? trackX[r.b.col - 1].get(`t${r.b.id}`)! : out;
+    const points: [number, number][] = r.channel == null
+      ? [[x1, y1], [out, y1], [out, y2], [x2, y2]]
+      : [[x1, y1], [out, y1], [out, r.channel], [into, r.channel], [into, y2], [x2, y2]];
+    return { from: r.d.predecessor_id, to: r.d.successor_id, points: simplify(points) };
+  });
+  return { edges, colX };
+}
+
+/** Drop repeated points and points in the middle of a straight run. */
+function simplify(points: [number, number][]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const p of points) {
+    const last = out[out.length - 1];
+    if (last && last[0] === p[0] && last[1] === p[1]) continue;
+    const prev = out[out.length - 2];
+    if (last && prev && ((prev[0] === last[0] && last[0] === p[0]) || (prev[1] === last[1] && last[1] === p[1]))) out.pop();
+    out.push(p);
+  }
+  return out;
 }
 
 /** An SVG path through orthogonal points, with the elbows rounded. */

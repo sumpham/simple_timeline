@@ -2350,6 +2350,10 @@ kbd {
 .network-edge.is-critical { stroke: var(--critical); stroke-width: 2.6; opacity: 1; }
 .network-arrow.is-critical { fill: var(--critical); }
 .network-edge.is-dim { opacity: 0.18; }
+/* Pointing at a task picks out its own arrows; everything else steps back. */
+.network-edge.is-related { stroke: var(--ink); stroke-width: 2.2; opacity: 1; }
+.network-edge.is-faint { opacity: 0.14; }
+.network-edge { transition: opacity 120ms ease; }
 
 /* The one orchestrated moment: the critical path draws itself, once, left to right. */
 .network-edge.is-critical {
