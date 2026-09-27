@@ -99,7 +99,11 @@ CREATE TABLE IF NOT EXISTS task (
   start_date     TEXT,
   end_date       TEXT,
   total_float    INTEGER,
-  critical       INTEGER NOT NULL DEFAULT 0
+  critical       INTEGER NOT NULL DEFAULT 0,
+  -- Where someone dragged the task's box in the network diagram. Layout only:
+  -- NULL means the automatic place. Never read by scheduling.
+  net_x          REAL,
+  net_y          REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_project ON task(project_id, sort_order);
@@ -110,6 +114,12 @@ CREATE TABLE IF NOT EXISTS task_dependency (
   predecessor_id INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
   successor_id   INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
   lag            INTEGER NOT NULL DEFAULT 0,
+  -- A hand-shaped arrow in the network diagram (see routeOf in client/network.ts):
+  -- first vertical run from the source's edge, detour height, last vertical run
+  -- before the target. NULL means automatic. Layout only.
+  route_out      REAL,
+  route_y        REAL,
+  route_in       REAL,
   PRIMARY KEY (predecessor_id, successor_id),
   CHECK (predecessor_id <> successor_id)
 );

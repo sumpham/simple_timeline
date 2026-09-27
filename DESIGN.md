@@ -479,7 +479,17 @@ long arrow's target its own track before it; an arrow that skips columns crosses
 clear gap between rows (or above or below everything), never through a box; arrows leave a
 box just above its middle and arrive just below it, so a line leaving one box never lies on a
 line arriving at a box level with it. Lines may cross; only arrows sharing a source or a
-target share a line. Pointing at or focusing a task brings its own arrows forward. Tests
+target share a line. Pointing at or focusing a task brings its own arrows forward.
+
+The automatic layout is a starting point, not a verdict. A box can be dragged anywhere (it
+snaps to an 8px grid; Alt+arrows move it from the keyboard), and an arrow, once clicked, shows
+square handles for its first vertical run, its detour height and its last vertical run. Offsets
+are stored relative to the boxes (`task.net_x/net_y`, `task_dependency.route_*`), so a shaped
+arrow keeps its shape when a box moves; an arrow touching a moved box but never shaped is drawn
+with sensible defaults, going round underneath when its target now sits to the left.
+Arrangement is shared with everyone and never touches the schedule. **Reset arrow** and
+**Reset layout** return to automatic. Hand arrangement applies to the plain view; with
+environment lanes on, the lanes lay the boxes out. Tests
 check this on the plan that first looked wrong and on random plans. **Show environments** puts each node in its environment's lane, in board
 order, with "No environment" last. **Critical path only** dims the rest. Zoom steps, never
 continuous. Arrow keys walk the graph and Enter opens a task. The one motion: critical arrows

@@ -255,8 +255,11 @@ export function writeState(before: PlanState, next: PlanState): number | null {
   }
   for (const d of next.deps) {
     if (!taskIds.includes(idOf(d.predecessor_id)) || !taskIds.includes(idOf(d.successor_id))) continue;
-    run('INSERT INTO task_dependency (predecessor_id, successor_id, lag) VALUES (?, ?, ?)',
-      idOf(d.predecessor_id), idOf(d.successor_id), d.lag);
+    // Links are rewritten wholesale; a hand-shaped arrow must survive an unrelated edit.
+    const kept = before.deps.find((b) => b.predecessor_id === d.predecessor_id && b.successor_id === d.successor_id);
+    run('INSERT INTO task_dependency (predecessor_id, successor_id, lag, route_out, route_y, route_in) VALUES (?, ?, ?, ?, ?, ?)',
+      idOf(d.predecessor_id), idOf(d.successor_id), d.lag,
+      kept?.route_out ?? null, kept?.route_y ?? null, kept?.route_in ?? null);
   }
   return createdId;
 }

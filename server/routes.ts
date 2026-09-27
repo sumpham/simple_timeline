@@ -672,6 +672,52 @@ router.post('/tasks/reorder', handle((req, res) => {
   res.json({ plan: planResponse(projectId) });
 }));
 
+// ---------------------------------------------------------------- network layout
+// Where boxes and arrows sit in the network diagram. Layout only: none of this is
+// read by scheduling, so none of it replans.
+
+const LAYOUT_MAX = 50_000;
+
+function coordinate(value: unknown, field: string): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || Math.abs(n) > LAYOUT_MAX) throw bad(`${field} must be a number`);
+  return Math.round(n * 10) / 10;
+}
+
+router.patch('/tasks/:id/position', handle((req, res) => {
+  const id = Number(req.params.id);
+  if (!get('SELECT id FROM task WHERE id = ?', id)) throw missing('Task');
+  const x = coordinate(req.body?.x, 'x');
+  const y = coordinate(req.body?.y, 'y');
+  // Both or neither: half a position is no position.
+  run('UPDATE task SET net_x = ?, net_y = ? WHERE id = ?', x != null && y != null ? Math.max(0, x) : null,
+    x != null && y != null ? Math.max(0, y) : null, id);
+  res.json({ id, net_x: x, net_y: y });
+}));
+
+router.patch('/dependencies/route', handle((req, res) => {
+  const pred = intParam(req.body?.predecessor_id);
+  const succ = intParam(req.body?.successor_id);
+  if (pred == null || succ == null || !get('SELECT 1 FROM task_dependency WHERE predecessor_id = ? AND successor_id = ?', pred, succ)) {
+    throw missing('Link');
+  }
+  run('UPDATE task_dependency SET route_out = ?, route_y = ?, route_in = ? WHERE predecessor_id = ? AND successor_id = ?',
+    coordinate(req.body?.out, 'out'), coordinate(req.body?.y, 'y'), coordinate(req.body?.in, 'in'), pred, succ);
+  res.json({ predecessor_id: pred, successor_id: succ });
+}));
+
+router.post('/projects/:id/layout/reset', handle((req, res) => {
+  const id = Number(req.params.id);
+  if (!get('SELECT id FROM project WHERE id = ?', id)) throw missing('Project');
+  transaction(() => {
+    run('UPDATE task SET net_x = NULL, net_y = NULL WHERE project_id = ?', id);
+    run(`UPDATE task_dependency SET route_out = NULL, route_y = NULL, route_in = NULL
+          WHERE successor_id IN (SELECT id FROM task WHERE project_id = ?)`, id);
+  });
+  res.status(204).end();
+}));
+
 /** What a change would do, without making it. The impact panel reads this before every edit and delete. */
 router.post('/tasks/preview', handle((req, res) => {
   const projectId = intParam(req.body?.project_id);

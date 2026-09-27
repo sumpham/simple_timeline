@@ -193,6 +193,30 @@ export function PlanView({
   const criticalCount = plan?.critical_path.length ?? 0;
   const envById = (id: number | null) => environments.find((e) => e.id === id);
 
+  // Network arrangement: layout only, so it is shown at once and saved behind the
+  // scenes; a failed save reloads the plan, which puts the truth back.
+  const moveTaskBox = (id: number, pos: { x: number; y: number } | null) => {
+    setPlan((p) => p && { ...p, tasks: p.tasks.map((t) => (t.id === id ? { ...t, net_x: pos?.x ?? null, net_y: pos?.y ?? null } : t)) });
+    api.moveTaskBox(id, pos).catch((err) => { fail(err); void load(); });
+  };
+  const routeLink = (from: number, to: number, route: { out: number; y: number | null; in: number } | null) => {
+    setPlan((p) => p && {
+      ...p,
+      dependencies: p.dependencies.map((d) => (d.predecessor_id === from && d.successor_id === to
+        ? { ...d, route_out: route?.out ?? null, route_y: route?.y ?? null, route_in: route?.in ?? null }
+        : d)),
+    });
+    api.routeLink(from, to, route).catch((err) => { fail(err); void load(); });
+  };
+  const resetLayout = () => {
+    setPlan((p) => p && {
+      ...p,
+      tasks: p.tasks.map((t) => ({ ...t, net_x: null, net_y: null })),
+      dependencies: p.dependencies.map((d) => ({ ...d, route_out: null, route_y: null, route_in: null })),
+    });
+    api.resetLayout(projectId).catch((err) => { fail(err); void load(); });
+  };
+
   const setProjectDate = async (field: 'start_date' | 'target_date', value: string) => {
     try {
       await api.updateProject(projectId, { [field]: value || null });
@@ -305,6 +329,9 @@ export function PlanView({
               showEnvironments={showEnvs}
               criticalOnly={criticalOnly}
               onOpenTask={setEditing}
+              onMoveTask={moveTaskBox}
+              onRouteEdge={routeLink}
+              onResetLayout={resetLayout}
             />
           </>
         ) : (

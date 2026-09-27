@@ -102,6 +102,11 @@ on every replan would silently un-resolve every accepted double-booking that inv
 
 **Holds are calendar spans; durations are working days.** Same split as bookings.
 
+**Network arrangement is layout only.** `task.net_x/net_y` and `task_dependency.route_*`
+are written by their own endpoints, never replan, and are never read by scheduling.
+`writeState` deletes and reinserts a project's links on every task edit, so it copies the
+route columns across; drop that and every hand-shaped arrow resets on the next edit.
+
 `task.environment_id` is `ON DELETE RESTRICT`, like bookings, and the environment delete route
 refuses while tasks use it, saying how many. The network layout (`client/network.ts`) is bounded like the ruler: a
 fixed number of barycentre sweeps, one pass per rank.

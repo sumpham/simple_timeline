@@ -34,6 +34,22 @@ if (!bookingColumns.has('hold_start')) {
   db.exec('ALTER TABLE booking ADD COLUMN hold_done INTEGER NOT NULL DEFAULT 0');
 }
 
+const taskColumns = new Set(
+  db.prepare('PRAGMA table_info(task)').all().map((c) => (c as { name: string }).name),
+);
+if (!taskColumns.has('net_x')) {
+  db.exec('ALTER TABLE task ADD COLUMN net_x REAL');
+  db.exec('ALTER TABLE task ADD COLUMN net_y REAL');
+}
+const depColumns = new Set(
+  db.prepare('PRAGMA table_info(task_dependency)').all().map((c) => (c as { name: string }).name),
+);
+if (!depColumns.has('route_out')) {
+  db.exec('ALTER TABLE task_dependency ADD COLUMN route_out REAL');
+  db.exec('ALTER TABLE task_dependency ADD COLUMN route_y REAL');
+  db.exec('ALTER TABLE task_dependency ADD COLUMN route_in REAL');
+}
+
 const projectColumns = new Set(
   db.prepare('PRAGMA table_info(project)').all().map((c) => (c as { name: string }).name),
 );

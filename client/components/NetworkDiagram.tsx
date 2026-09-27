@@ -1,20 +1,39 @@
-import { useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type { Environment, Task, TaskDependency, TaskSchedule } from '../../shared/types.ts';
 import { formatDate } from '../layout.ts';
-import { layoutNetwork, NODE_H, NODE_W, roundedPath, type LayoutLane } from '../network.ts';
+import {
+  edgeKey, layoutNetwork, NODE_H, NODE_W, roundedPath, routeOf, STUB, type LayoutLane, type Route,
+} from '../network.ts';
 import { ENV_COLOR } from './Board.tsx';
 
 /** Zoom runs in fixed steps, like the board's grains, never continuously. */
 const ZOOMS = [0.5, 0.65, 0.8, 1, 1.2];
+/** Dragged boxes land on this grid, so hand arrangements line up without effort. */
+const GRID = 8;
+/** Movement, in screen pixels, before a press on a box becomes a drag rather than a click. */
+const SLOP = 4;
+/** How far Alt+arrow moves a focused box. */
+const KEY_STEP = GRID * 2;
+
+const snap = (v: number, to: number) => Math.round(v / to) * to;
+
+type Drag =
+  | { kind: 'node'; id: number; startX: number; startY: number; orig: { x: number; y: number }; pos: { x: number; y: number }; moved: boolean }
+  | { kind: 'handle'; key: string; from: number; to: number; which: 'out' | 'y' | 'in'; startX: number; startY: number; orig: Route; baseY: number; route: Route };
 
 /**
  * Activity-on-node network. Each node is the classic scheduling box: early start,
  * duration and early finish on top; late start, float and late finish beneath.
  * The critical path is the one bold thing here, drawn in heavy ink rather than
  * red, because red on this app means a double-booking and nothing else.
+ *
+ * The automatic layout is a starting point. Boxes can be dragged anywhere, and an
+ * arrow, once clicked, shows handles that move its runs. Both are saved with the
+ * plan and shared; neither touches the schedule.
  */
 export function NetworkDiagram({
   tasks, deps, schedule, order, environments, showEnvironments, criticalOnly, onOpenTask,
+  onMoveTask, onRouteEdge, onResetLayout,
 }: {
   tasks: readonly Task[];
   deps: readonly TaskDependency[];
@@ -25,12 +44,28 @@ export function NetworkDiagram({
   showEnvironments: boolean;
   criticalOnly: boolean;
   onOpenTask: (id: number) => void;
+  /** Save where a box was dropped; null puts it back in its automatic place. */
+  onMoveTask: (id: number, pos: { x: number; y: number } | null) => void;
+  /** Save an arrow's shape; null makes it automatic again. */
+  onRouteEdge: (from: number, to: number, route: Route | null) => void;
+  onResetLayout: () => void;
 }) {
   const [zoom, setZoom] = useState(3);
   /** The task under the pointer or the keyboard: its own arrows come forward, the rest recede. */
   const [focused, setFocused] = useState<number | null>(null);
+  /** The arrow showing its handles. */
+  const [selected, setSelected] = useState<string | null>(null);
+  const [drag, setDrag] = useState<Drag | null>(null);
+  const dragRef = useRef<Drag | null>(null);
+  dragRef.current = drag;
+  /** A drag ends in a click event; this stops that click from opening the task. */
+  const suppressClick = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef(new Map<number, HTMLButtonElement>());
+
+  // Hand arrangement belongs to the plain view; environment lanes lay themselves out.
+  const arrangeable = !showEnvironments;
+  const scale = ZOOMS[zoom];
 
   const byId = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
 
@@ -43,16 +78,77 @@ export function NetworkDiagram({
     return list;
   }, [showEnvironments, tasks, environments]);
 
+  const saved = useMemo(() => ({
+    positions: new Map(tasks.filter((t) => t.net_x != null && t.net_y != null).map((t) => [t.id, { x: t.net_x!, y: t.net_y! }])),
+    routes: new Map(deps.filter((d) => d.route_out != null).map((d) => [
+      edgeKey(d.predecessor_id, d.successor_id),
+      { out: d.route_out!, y: d.route_y ?? null, in: d.route_in ?? STUB },
+    ])),
+  }), [tasks, deps]);
+
+  const overrides = useMemo(() => {
+    if (!arrangeable) return {};
+    const positions = new Map(saved.positions);
+    const routes = new Map(saved.routes);
+    // What is under the pointer right now wins over what was saved.
+    if (drag?.kind === 'node' && drag.moved) positions.set(drag.id, drag.pos);
+    if (drag?.kind === 'handle') routes.set(drag.key, drag.route);
+    return { positions, routes };
+  }, [arrangeable, saved, drag]);
+
   const layout = useMemo(() => layoutNetwork(
     tasks.map((t) => ({ id: t.id, environment_id: t.environment_id, start: schedule.get(t.id)?.start ?? '' })),
     deps,
     order,
     lanes,
-  ), [tasks, deps, order, lanes, schedule]);
+    overrides,
+  ), [tasks, deps, order, lanes, schedule, overrides]);
+
+  // One set of window listeners per drag, reading the live drag through the ref.
+  const dragging = drag != null;
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const dx = (e.clientX - d.startX) / scale;
+      const dy = (e.clientY - d.startY) / scale;
+      if (d.kind === 'node') {
+        const moved = d.moved || Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > SLOP;
+        const pos = { x: Math.max(0, snap(d.orig.x + dx, GRID)), y: Math.max(0, snap(d.orig.y + dy, GRID)) };
+        setDrag({ ...d, moved, pos });
+      } else {
+        const r = { ...d.route };
+        if (d.which === 'out') r.out = Math.max(4, snap(d.orig.out + dx, 2));
+        if (d.which === 'in') r.in = Math.max(4, snap(d.orig.in - dx, 2));
+        if (d.which === 'y') r.y = snap((d.orig.y ?? d.baseY) + dy, 2);
+        setDrag({ ...d, route: r });
+      }
+    };
+    const onUp = () => {
+      const d = dragRef.current;
+      setDrag(null);
+      if (!d) return;
+      if (d.kind === 'node') {
+        if (!d.moved) return;
+        suppressClick.current = true;
+        onMoveTask(d.id, d.pos);
+      } else {
+        onRouteEdge(d.from, d.to, d.route);
+      }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, [dragging, scale, onMoveTask, onRouteEdge]);
 
   const critical = (id: number) => schedule.get(id)?.critical ?? false;
   const envOf = (id: number | null) => environments.find((e) => e.id === id);
-  const scale = ZOOMS[zoom];
 
   const fit = () => {
     const el = scrollRef.current;
@@ -63,19 +159,46 @@ export function NetworkDiagram({
     setZoom(pick);
   };
 
-  /** Arrows walk the graph: right to a successor, left to a predecessor, up and down within a column. */
+  /**
+   * Arrows walk the graph: right to a successor, left to a predecessor, up and down
+   * within a column. Alt+arrows move the box itself, for arranging without a mouse.
+   */
   const onNodeKey = (e: KeyboardEvent, id: number) => {
+    if (!e.key.startsWith('Arrow')) return;
     const box = layout.nodes.get(id)!;
+    e.preventDefault();
+    if (e.altKey) {
+      if (!arrangeable) return;
+      const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key] ?? [0, 0];
+      onMoveTask(id, { x: Math.max(0, snap(box.x, GRID) + step[0] * KEY_STEP), y: Math.max(0, snap(box.y, GRID) + step[1] * KEY_STEP) });
+      return;
+    }
     let next: number | undefined;
     if (e.key === 'ArrowRight') next = deps.find((d) => d.predecessor_id === id)?.successor_id;
     else if (e.key === 'ArrowLeft') next = deps.find((d) => d.successor_id === id)?.predecessor_id;
-    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    else {
       const column = [...layout.nodes.values()].filter((n) => n.col === box.col).sort((a, b) => a.y - b.y);
       const i = column.findIndex((n) => n.id === id) + (e.key === 'ArrowDown' ? 1 : -1);
       next = column[i]?.id;
-    } else return;
-    e.preventDefault();
+    }
     if (next != null) nodeRefs.current.get(next)?.focus();
+  };
+
+  const startNodeDrag = (e: ReactPointerEvent, id: number) => {
+    if (!arrangeable || e.button !== 0) return;
+    const box = layout.nodes.get(id)!;
+    setSelected(null);
+    setDrag({ kind: 'node', id, startX: e.clientX, startY: e.clientY, orig: { x: box.x, y: box.y }, pos: { x: box.x, y: box.y }, moved: false });
+  };
+
+  const startHandleDrag = (e: ReactPointerEvent, key: string, which: 'out' | 'y' | 'in') => {
+    e.stopPropagation();
+    e.preventDefault();
+    const edge = layout.edges.find((x) => edgeKey(x.from, x.to) === key);
+    if (!edge) return;
+    const orig = routeOf(edge.points, layout.nodes.get(edge.from)!, layout.nodes.get(edge.to)!);
+    const baseY = edge.points[edge.points.length - 1][1];
+    setDrag({ kind: 'handle', key, from: edge.from, to: edge.to, which, startX: e.clientX, startY: e.clientY, orig, baseY, route: orig });
   };
 
   if (!tasks.length) return null;
@@ -83,10 +206,50 @@ export function NetworkDiagram({
   const pad = 24;
   const width = layout.width + pad * 2;
   const height = layout.height + pad * 2;
+  const hasArrangement = saved.positions.size > 0 || saved.routes.size > 0;
+  const selectedEdge = selected ? layout.edges.find((x) => edgeKey(x.from, x.to) === selected) : undefined;
+
+  /** Where the selected arrow's handles sit: one per run it can move. */
+  const handles = (() => {
+    if (!selectedEdge || !arrangeable) return [];
+    const a = layout.nodes.get(selectedEdge.from)!;
+    const b = layout.nodes.get(selectedEdge.to)!;
+    const pts = selectedEdge.points;
+    const r = drag?.kind === 'handle' && drag.key === selected ? drag.route : routeOf(pts, a, b);
+    const x1 = a.x + NODE_W;
+    const x2 = b.x;
+    const y1 = pts[0][1];
+    const y2 = pts[pts.length - 1][1];
+    const outX = x1 + r.out;
+    const list: { which: 'out' | 'y' | 'in'; x: number; y: number; label: string }[] = [
+      { which: 'out', x: outX, y: (y1 + (r.y ?? y2)) / 2, label: 'Move the first run left or right' },
+    ];
+    if (r.y == null) {
+      list.push({ which: 'y', x: (outX + x2) / 2, y: y2, label: 'Drag up or down to route this arrow round' });
+    } else {
+      const inX = x2 - r.in;
+      list.push({ which: 'y', x: (outX + inX) / 2, y: r.y, label: 'Move the detour up or down' });
+      list.push({ which: 'in', x: inX, y: (r.y + y2) / 2, label: 'Move the last run left or right' });
+    }
+    return list;
+  })();
 
   return (
-    <div className="network">
-      <div className="network-zoom" role="group" aria-label="Zoom">
+    <div
+      className={`network${arrangeable ? ' is-arrangeable' : ''}${drag ? ' is-dragging' : ''}`}
+      onKeyDown={(e) => { if (e.key === 'Escape') setSelected(null); }}
+    >
+      <div className="network-zoom" role="group" aria-label="Layout and zoom">
+        {selectedEdge && saved.routes.has(selected!) && (
+          <button type="button" className="btn quiet" onClick={() => { onRouteEdge(selectedEdge.from, selectedEdge.to, null); }}>
+            Reset arrow
+          </button>
+        )}
+        {hasArrangement && arrangeable && (
+          <button type="button" className="btn quiet" onClick={() => { setSelected(null); onResetLayout(); }}>
+            Reset layout
+          </button>
+        )}
         <button type="button" className="btn quiet" disabled={zoom === 0} onClick={() => setZoom((z) => z - 1)} aria-label="Zoom out">−</button>
         <button type="button" className="btn quiet" onClick={fit}>Fit</button>
         <button type="button" className="btn quiet" disabled={zoom === ZOOMS.length - 1} onClick={() => setZoom((z) => z + 1)} aria-label="Zoom in">+</button>
@@ -97,6 +260,8 @@ export function NetworkDiagram({
           <div
             className="network-inner"
             style={{ width, height, transform: `scale(${scale})` }}
+            // A press on empty canvas puts a selected arrow down.
+            onPointerDown={(e) => { if (!(e.target as Element).closest('.network-node, .network-edge-hit, .network-handle')) setSelected(null); }}
           >
             {layout.lanes.map((lane) => {
               const env = envOf(lane.id);
@@ -114,7 +279,7 @@ export function NetworkDiagram({
               );
             })}
 
-            <svg className="network-edges" width={width} height={height} aria-hidden="true">
+            <svg className="network-edges" width={width} height={height}>
               <defs>
                 <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
                   <path d="M0,0 L8,4 L0,8 z" className="network-arrow" />
@@ -125,23 +290,54 @@ export function NetworkDiagram({
               </defs>
               <g transform={`translate(${pad},${pad})`}>
                 {layout.edges.map((edge) => {
+                  const key = edgeKey(edge.from, edge.to);
                   const onPath = critical(edge.from) && critical(edge.to);
-                  const related = focused != null && (edge.from === focused || edge.to === focused);
+                  const isSelected = key === selected;
+                  const related = isSelected || (focused != null && (edge.from === focused || edge.to === focused));
+                  const d = roundedPath(edge.points);
+                  const name = (id: number) => byId.get(id)?.name ?? '';
                   return (
-                    <path
-                      key={`${edge.from}-${edge.to}`}
-                      d={roundedPath(edge.points)}
-                      pathLength={1}
-                      className={[
-                        'network-edge',
-                        onPath ? 'is-critical' : '',
-                        criticalOnly && !onPath ? 'is-dim' : '',
-                        related ? 'is-related' : focused != null ? 'is-faint' : '',
-                      ].filter(Boolean).join(' ')}
-                      markerEnd={`url(#${onPath || related ? 'arrow-critical' : 'arrow'})`}
-                    />
+                    <g key={key}>
+                      <path
+                        d={d}
+                        pathLength={1}
+                        aria-hidden="true"
+                        className={[
+                          'network-edge',
+                          onPath ? 'is-critical' : '',
+                          criticalOnly && !onPath ? 'is-dim' : '',
+                          related ? 'is-related' : focused != null || selected != null ? 'is-faint' : '',
+                          isSelected ? 'is-selected' : '',
+                        ].filter(Boolean).join(' ')}
+                        markerEnd={`url(#${onPath || related ? 'arrow-critical' : 'arrow'})`}
+                      />
+                      {arrangeable && (
+                        // A wide, invisible twin of the arrow, so it is easy to pick up.
+                        <path
+                          d={d}
+                          className="network-edge-hit"
+                          onPointerDown={(e) => { e.stopPropagation(); setSelected(key); }}
+                        >
+                          <title>{`${name(edge.from)} → ${name(edge.to)}. Click to reshape.`}</title>
+                        </path>
+                      )}
+                    </g>
                   );
                 })}
+                {handles.map((h) => (
+                  <rect
+                    key={h.which}
+                    className={`network-handle is-${h.which === 'y' ? 'vertical' : 'horizontal'}`}
+                    x={h.x - 6}
+                    y={h.y - 6}
+                    width={12}
+                    height={12}
+                    rx={2}
+                    onPointerDown={(e) => startHandleDrag(e, selected!, h.which)}
+                  >
+                    <title>{h.label}</title>
+                  </rect>
+                ))}
               </g>
             </svg>
 
@@ -162,12 +358,17 @@ export function NetworkDiagram({
                     isCritical ? 'is-critical' : '',
                     t.status === 'done' ? 'is-done' : '',
                     criticalOnly && !isCritical ? 'is-dim' : '',
+                    drag?.kind === 'node' && drag.id === id && drag.moved ? 'is-moving' : '',
                   ].filter(Boolean).join(' ')}
                   style={{
                     left: pad + box.x, top: pad + box.y, width: NODE_W, height: NODE_H,
                     ['--env-color' as string]: env ? ENV_COLOR[env.kind] : 'transparent',
                   } as CSSProperties}
-                  onClick={() => onOpenTask(id)}
+                  onPointerDown={(e) => startNodeDrag(e, id)}
+                  onClick={() => {
+                    if (suppressClick.current) { suppressClick.current = false; return; }
+                    onOpenTask(id);
+                  }}
                   onKeyDown={(e) => onNodeKey(e, id)}
                   onPointerEnter={() => setFocused(id)}
                   onPointerLeave={() => setFocused((f) => (f === id ? null : f))}
@@ -205,7 +406,10 @@ export function NetworkDiagram({
 
       <p className="network-key">
         Top row: early start, duration, early finish. Bottom row: late start, float, late finish.
-        Heavy boxes and arrows are the critical path. Point at a task to pick out its own arrows.
+        Heavy boxes and arrows are the critical path. Point at a task to pick out its own arrows.{' '}
+        {arrangeable
+          ? 'Drag a box to move it (Alt+arrows with the keyboard). Click an arrow, then drag its square handles to reshape it.'
+          : 'Turn off Show environments to arrange boxes and arrows by hand.'}
       </p>
     </div>
   );

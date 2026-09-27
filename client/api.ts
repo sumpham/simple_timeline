@@ -96,6 +96,14 @@ export const api = {
     request<{ plan: PlanData }>('/api/tasks/reorder', { method: 'POST', body: JSON.stringify({ project_id: projectId, ids }) }),
   previewTask: (projectId: number, change: TaskChange) =>
     request<PlanImpact>('/api/tasks/preview', { method: 'POST', body: JSON.stringify({ project_id: projectId, change }) }),
+  moveTaskBox: (id: number, pos: { x: number; y: number } | null) =>
+    request<unknown>(`/api/tasks/${id}/position`, { method: 'PATCH', body: JSON.stringify(pos ?? { x: null, y: null }) }),
+  routeLink: (predecessorId: number, successorId: number, route: { out: number | null; y: number | null; in: number | null } | null) =>
+    request<unknown>('/api/dependencies/route', {
+      method: 'PATCH',
+      body: JSON.stringify({ predecessor_id: predecessorId, successor_id: successorId, ...(route ?? { out: null, y: null, in: null }) }),
+    }),
+  resetLayout: (projectId: number) => request<void>(`/api/projects/${projectId}/layout/reset`, { method: 'POST' }),
   releaseBooking: (id: number) =>
     request<Booking & { previous_end: ISODate }>(`/api/bookings/${id}/release`, { method: 'POST' }),
 

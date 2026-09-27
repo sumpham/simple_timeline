@@ -27,6 +27,26 @@ export type NodeBox = { id: number; x: number; y: number; col: number; lane: num
 export type EdgePath = { from: number; to: number; points: [number, number][] };
 export type LaneBand = { id: number | null; name: string; y: number; height: number };
 
+/**
+ * A hand-shaped arrow: how far right of its source the first vertical run sits,
+ * the height of a detour (null: none, it runs at the target's height), and how far
+ * left of its target the last vertical run sits. Offsets are relative to the boxes
+ * so a shaped arrow keeps its shape when a box is dragged.
+ */
+export type Route = { out: number; y: number | null; in: number };
+
+export type LayoutOverrides = {
+  /** Dragged boxes, by task id, in layout coordinates. */
+  positions?: ReadonlyMap<number, { x: number; y: number }>;
+  /** Hand-shaped arrows, by `edgeKey`. */
+  routes?: ReadonlyMap<string, Route>;
+};
+
+export const edgeKey = (from: number, to: number) => `${from}-${to}`;
+
+/** The stub an arrow keeps between a box and its first or last turn. */
+export const STUB = 14;
+
 export type NetworkLayout = {
   nodes: Map<number, NodeBox>;
   edges: EdgePath[];
@@ -46,6 +66,7 @@ export function layoutNetwork(
   deps: readonly TaskDependency[],
   order: readonly number[],
   lanes?: readonly LayoutLane[],
+  overrides: LayoutOverrides = {},
 ): NetworkLayout {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const ids = order.filter((id) => byId.has(id));
@@ -140,9 +161,26 @@ export function layoutNetwork(
   const { edges, colX } = routeEdges(live, nodes, cols);
   for (const n of nodes.values()) n.x = colX[n.col];
 
+  // Hand arrangement goes on top: dragged boxes move, and any arrow that touches a
+  // moved box or was shaped by hand is drawn from its route instead of the router's.
+  const moved = new Set<number>();
+  for (const [id, p] of overrides.positions ?? []) {
+    const n = nodes.get(id);
+    if (!n) continue;
+    n.x = p.x;
+    n.y = p.y;
+    moved.add(id);
+  }
+  for (const e of edges) {
+    const route = overrides.routes?.get(edgeKey(e.from, e.to));
+    if (!route && !moved.has(e.from) && !moved.has(e.to)) continue;
+    e.points = manualPoints(nodes.get(e.from)!, nodes.get(e.to)!, route ?? null);
+  }
+
   // Channels above or below every node can reach past the edge; keep them on the canvas.
   let minY = 0;
   let maxY = height;
+  for (const n of nodes.values()) maxY = Math.max(maxY, n.y + NODE_H);
   for (const e of edges) for (const [, y] of e.points) { minY = Math.min(minY, y - 8); maxY = Math.max(maxY, y + 8); }
   if (minY < 0) {
     for (const n of nodes.values()) n.y -= minY;
@@ -151,11 +189,15 @@ export function layoutNetwork(
     if (bands.length) bands[0] = { ...bands[0], y: 0, height: bands[0].height - minY };
   }
 
+  let width = columns ? colX[columns - 1] + NODE_W : 0;
+  for (const n of nodes.values()) width = Math.max(width, n.x + NODE_W);
+  for (const e of edges) for (const [x] of e.points) width = Math.max(width, x + 8);
+
   return {
     nodes,
     edges,
     lanes: bands,
-    width: columns ? colX[columns - 1] + NODE_W : 0,
+    width,
     height: maxY - minY,
     columns,
   };
@@ -320,6 +362,40 @@ function routeEdges(
     return { from: r.d.predecessor_id, to: r.d.successor_id, points: simplify(points) };
   });
   return { edges, colX };
+}
+
+/**
+ * An arrow drawn from a route, or from sensible defaults when a box has been
+ * dragged and the arrow has no shape of its own. Always orthogonal: out of the
+ * source's right side, into the target's left side, going round when the target
+ * sits to the left.
+ */
+export function manualPoints(a: { x: number; y: number }, b: { x: number; y: number }, route: Route | null): [number, number][] {
+  const x1 = a.x + NODE_W;
+  const y1 = a.y + NODE_H / 2 - 6;
+  const x2 = b.x;
+  const y2 = b.y + NODE_H / 2 + 6;
+  const backward = x2 < x1 + STUB * 2;
+  const out = x1 + (route?.out ?? (backward ? STUB : Math.max(STUB, (x2 - x1) / 2)));
+  // A target to the left is reached by going round underneath both boxes.
+  const detour = route ? route.y : backward ? Math.max(a.y, b.y) + NODE_H + ROW_GAP / 2 : null;
+  if (detour == null) return simplify([[x1, y1], [out, y1], [out, y2], [x2, y2]]);
+  const into = x2 - (route?.in ?? STUB);
+  return simplify([[x1, y1], [out, y1], [out, detour], [into, detour], [into, y2], [x2, y2]]);
+}
+
+/**
+ * The route an arrow is drawn with now, whether the router made it or a hand did,
+ * so a drag of one of its handles starts from exactly what is on screen.
+ */
+export function routeOf(points: readonly [number, number][], from: { x: number }, to: { x: number }): Route {
+  const x1 = from.x + NODE_W;
+  const x2 = to.x;
+  if (points.length >= 6) {
+    return { out: points[1][0] - x1, y: points[2][1], in: x2 - points[3][0] };
+  }
+  if (points.length >= 3) return { out: points[1][0] - x1, y: null, in: STUB };
+  return { out: Math.max(STUB, (x2 - x1) / 2), y: null, in: STUB };
 }
 
 /** Drop repeated points and points in the middle of a straight run. */

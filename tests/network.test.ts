@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { layoutNetwork, NODE_H, NODE_W, roundedPath, type LayoutTask } from '../client/network.ts';
+import { edgeKey, layoutNetwork, manualPoints, NODE_H, NODE_W, roundedPath, routeOf, STUB, type LayoutTask } from '../client/network.ts';
 import type { TaskDependency } from '../shared/types.ts';
 
 const t = (id: number, environment_id: number | null = null): LayoutTask => ({ id, environment_id, start: '2026-03-02' });
@@ -125,6 +125,47 @@ describe('edge routing', () => {
       const tasks = Array.from({ length: n }, (_, i) => t(i + 1));
       const l = layoutNetwork(tasks, ds, tasks.map((x) => x.id));
       expect(misleading(l), `run ${run}`).toEqual([]);
+    }
+  });
+});
+
+describe('hand arrangement', () => {
+  const tasks = [t(1), t(2), t(3)];
+  const deps = [dep(1, 2), dep(2, 3)];
+
+  it('puts a dragged box where it was dropped and redraws only its arrows', () => {
+    const auto = layoutNetwork(tasks, deps, [1, 2, 3]);
+    const l = layoutNetwork(tasks, deps, [1, 2, 3], undefined, { positions: new Map([[3, { x: 900, y: 400 }]]) });
+    expect(l.nodes.get(3)).toMatchObject({ x: 900, y: 400 });
+    expect(l.edges.find((e) => e.to === 2)!.points).toEqual(auto.edges.find((e) => e.to === 2)!.points);
+    const into3 = l.edges.find((e) => e.to === 3)!.points;
+    expect(into3[into3.length - 1]).toEqual([900, 400 + NODE_H / 2 + 6]);
+    expect(l.width).toBeGreaterThanOrEqual(900 + NODE_W);
+    expect(l.height).toBeGreaterThanOrEqual(400 + NODE_H);
+  });
+
+  it('draws a shaped arrow from its route, and reads the same route back', () => {
+    const route = { out: 30, y: 250, in: 20 };
+    const l = layoutNetwork(tasks, deps, [1, 2, 3], undefined, { routes: new Map([[edgeKey(1, 2), route]]) });
+    const e = l.edges.find((x) => x.to === 2)!;
+    expect(e.points).toHaveLength(6);
+    expect(routeOf(e.points, l.nodes.get(1)!, l.nodes.get(2)!)).toEqual(route);
+  });
+
+  it('goes round when the target is dragged to the left of its source', () => {
+    const pts = manualPoints({ x: 500, y: 0 }, { x: 0, y: 200 }, null);
+    expect(pts[0][0]).toBe(500 + NODE_W);
+    expect(pts[1][0]).toBe(500 + NODE_W + STUB);
+    expect(pts[pts.length - 1][0]).toBe(0);
+    // Underneath both boxes, so the way round never crosses them.
+    expect(pts[2][1]).toBeGreaterThan(200 + NODE_H);
+  });
+
+  it('reads the router\u2019s own arrows as routes', () => {
+    const l = layoutNetwork(tasks, deps, [1, 2, 3]);
+    for (const e of l.edges) {
+      const r = routeOf(e.points, l.nodes.get(e.from)!, l.nodes.get(e.to)!);
+      expect(r.out).toBeGreaterThan(0);
     }
   });
 });

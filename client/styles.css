@@ -2350,6 +2350,23 @@ kbd {
 .network-edge.is-critical { stroke: var(--critical); stroke-width: 2.6; opacity: 1; }
 .network-arrow.is-critical { fill: var(--critical); }
 .network-edge.is-dim { opacity: 0.18; }
+/* Arranging by hand: boxes can be picked up, arrows clicked, handles dragged. */
+.network-edges { pointer-events: none; }
+.network-edge-hit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
+.network.is-arrangeable .network-node { cursor: grab; touch-action: none; }
+.network.is-dragging, .network.is-dragging * { cursor: grabbing !important; user-select: none; }
+.network-node.is-moving { z-index: 3; box-shadow: 0 6px 18px rgba(10, 18, 26, 0.22), inset 4px 0 0 var(--env-color); }
+.network-edge.is-selected { stroke: var(--ink); stroke-width: 2.4; opacity: 1; stroke-dasharray: none; }
+.network-handle {
+  fill: var(--lane);
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  pointer-events: all;
+}
+.network-handle.is-horizontal { cursor: ew-resize; }
+.network-handle.is-vertical { cursor: ns-resize; }
+.network-handle:hover { fill: var(--ink); }
+
 /* Pointing at a task picks out its own arrows; everything else steps back. */
 .network-edge.is-related { stroke: var(--ink); stroke-width: 2.2; opacity: 1; }
 .network-edge.is-faint { opacity: 0.14; }

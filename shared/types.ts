@@ -160,6 +160,9 @@ export type Task = {
   end_date: ISODate | null;
   total_float: number | null;
   critical: number;
+  /** Where the box was dragged in the network diagram; null is the automatic place. */
+  net_x?: number | null;
+  net_y?: number | null;
 };
 
 /** Finish-to-start: the successor starts `lag` working days after the predecessor ends. */
@@ -168,6 +171,10 @@ export type TaskDependency = {
   successor_id: number;
   /** Working days; negative is a lead. */
   lag: number;
+  /** A hand-shaped arrow in the network diagram; null is automatic. Layout only. */
+  route_out?: number | null;
+  route_y?: number | null;
+  route_in?: number | null;
 };
 
 /** A task's computed place in the schedule. All floats are in working days. */
