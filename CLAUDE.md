@@ -103,7 +103,7 @@ on every replan would silently un-resolve every accepted double-booking that inv
 **Holds are calendar spans; durations are working days.** Same split as bookings.
 
 `task.environment_id` is `ON DELETE RESTRICT`, like bookings, and the environment delete route
-names the tasks first. The network layout (`client/network.ts`) is bounded like the ruler: a
+refuses while tasks use it, saying how many. The network layout (`client/network.ts`) is bounded like the ruler: a
 fixed number of barycentre sweeps, one pass per rank.
 
 ## Drag-to-edit
