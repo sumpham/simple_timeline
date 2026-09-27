@@ -22,6 +22,23 @@ if (!bookingColumns.has('timeline_text')) db.exec('ALTER TABLE booking ADD COLUM
 if (!bookingColumns.has('marker')) {
   db.exec("ALTER TABLE booking ADD COLUMN marker TEXT CHECK (marker IN ('star','flag','pin'))");
 }
+if (!bookingColumns.has('manual_start')) {
+  db.exec('ALTER TABLE booking ADD COLUMN manual_start TEXT');
+  db.exec('ALTER TABLE booking ADD COLUMN manual_end TEXT');
+  // Every booking made before tasks existed was made by hand.
+  db.exec('UPDATE booking SET manual_start = start_date, manual_end = end_date');
+}
+if (!bookingColumns.has('hold_start')) {
+  db.exec('ALTER TABLE booking ADD COLUMN hold_start TEXT');
+  db.exec('ALTER TABLE booking ADD COLUMN hold_end TEXT');
+  db.exec('ALTER TABLE booking ADD COLUMN hold_done INTEGER NOT NULL DEFAULT 0');
+}
+
+const projectColumns = new Set(
+  db.prepare('PRAGMA table_info(project)').all().map((c) => (c as { name: string }).name),
+);
+if (!projectColumns.has('start_date')) db.exec('ALTER TABLE project ADD COLUMN start_date TEXT');
+if (!projectColumns.has('target_date')) db.exec('ALTER TABLE project ADD COLUMN target_date TEXT');
 
 // One-day bookings are CUSTOM events (see shared/bookings.ts); bring older
 // rows into line. Idempotent, so it is safe on every start.

@@ -30,7 +30,10 @@ CREATE TABLE IF NOT EXISTS project (
                         CHECK (priority IN ('low','normal','high','critical')),
   owner         TEXT,
   description   TEXT,
-  external_link TEXT
+  external_link TEXT,
+  -- Where the task schedule starts, and the date the project has promised.
+  start_date    TEXT,
+  target_date   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS booking (
@@ -49,6 +52,14 @@ CREATE TABLE IF NOT EXISTS booking (
   marker         TEXT    CHECK (marker IN ('star','flag','pin')),
   -- What the bar says, when someone wrote it. NULL means project name then note.
   timeline_text  TEXT,
+  -- start_date/end_date are the EFFECTIVE span: the manual one stretched over any
+  -- task hold (shared/taskHolds.ts). NULL manual dates mean the tasks made it.
+  manual_start   TEXT,
+  manual_end     TEXT,
+  -- The task hold this booking covers, written by replan; NULL when none.
+  hold_start     TEXT,
+  hold_end       TEXT,
+  hold_done      INTEGER NOT NULL DEFAULT 0,
   CHECK (end_date >= start_date)
 );
 
@@ -68,6 +79,42 @@ CREATE TABLE IF NOT EXISTS conflict_resolution (
 );
 
 CREATE INDEX IF NOT EXISTS idx_resolution_env ON conflict_resolution(environment_id);
+
+-- Work a project has to do. Dates are scheduled by server/plan.ts from duration and
+-- dependencies (shared/schedule.ts), never typed. A task on an environment books it.
+CREATE TABLE IF NOT EXISTS task (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id     INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  environment_id INTEGER REFERENCES environment(id) ON DELETE RESTRICT,
+  name           TEXT    NOT NULL,
+  duration       INTEGER NOT NULL DEFAULT 1 CHECK (duration >= 0),
+  status         TEXT    NOT NULL DEFAULT 'todo'
+                         CHECK (status IN ('todo','in_progress','blocked','done')),
+  not_before     TEXT,
+  assignee       TEXT,
+  note           TEXT,
+  sort_order     INTEGER NOT NULL DEFAULT 0,
+  actual_start   TEXT,
+  actual_end     TEXT,
+  start_date     TEXT,
+  end_date       TEXT,
+  total_float    INTEGER,
+  critical       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_project ON task(project_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_task_env     ON task(environment_id);
+
+-- Finish-to-start, within one project. Lag in working days; negative is a lead.
+CREATE TABLE IF NOT EXISTS task_dependency (
+  predecessor_id INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  successor_id   INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  lag            INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (predecessor_id, successor_id),
+  CHECK (predecessor_id <> successor_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dep_successor ON task_dependency(successor_id);
 
 CREATE TABLE IF NOT EXISTS holiday (
   date TEXT PRIMARY KEY,

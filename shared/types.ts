@@ -45,8 +45,13 @@ export type Project = {
   owner: string | null;
   description: string | null;
   external_link: string | null;
+  /** Where the task schedule starts. Null until the project has a plan. */
+  start_date?: ISODate | null;
+  /** The date the project has promised; a schedule that finishes later is late. */
+  target_date?: ISODate | null;
   /** Total bookings, not just those inside the current window. */
   booking_count?: number;
+  task_count?: number;
 };
 
 export type Booking = {
@@ -66,6 +71,15 @@ export type Booking = {
    * default (`defaultTimelineText`), which follows the project name and note.
    */
   timeline_text?: string | null;
+  /**
+   * The span someone booked by hand. Null on both means the booking was made by
+   * the project's tasks alone (see `shared/taskHolds.ts`). `start_date`/`end_date`
+   * are always the effective span: the manual one stretched over any task hold.
+   */
+  manual_start?: ISODate | null;
+  manual_end?: ISODate | null;
+  /** Every task in the covered hold is done (1) or not (0). Written by replan. */
+  hold_done?: number;
 };
 
 export type Holiday = { date: ISODate; name: string };
@@ -83,6 +97,17 @@ export type BookingView = Booking & {
   /** Working days of effort, weekends and holidays excluded. */
   working_days: number;
   is_milestone: boolean;
+  /** Made by tasks alone; its dates belong to the plan, not to a drag. */
+  auto?: boolean;
+  /** The task hold this booking covers, if any. */
+  hold_start?: ISODate | null;
+  hold_end?: ISODate | null;
+  task_ids?: number[];
+  /**
+   * Every task in the hold is done and the booking runs on past them: the
+   * environment could be handed back from this day.
+   */
+  release_from?: ISODate | null;
 };
 
 /** A stretch of time where an environment is booked beyond its capacity. */
@@ -105,4 +130,86 @@ export type Conflict = {
    * and is still drawn, but no longer raises the alarm. See `conflictKey`.
    */
   resolved?: boolean;
+};
+
+// ---------------------------------------------------------------- tasks
+
+export type TaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
+export const TASK_STATUSES: readonly TaskStatus[] = ['todo', 'in_progress', 'blocked', 'done'];
+
+export type Task = {
+  id: number;
+  project_id: number;
+  /** A task on an environment books it (see `taskHolds`); null means it books nothing. */
+  environment_id: number | null;
+  name: string;
+  /** Working days of effort. Zero is a milestone. */
+  duration: number;
+  status: TaskStatus;
+  /** Start no earlier than this date, whatever the dependencies allow. */
+  not_before: ISODate | null;
+  assignee: string | null;
+  note: string | null;
+  sort_order: number;
+  actual_start: ISODate | null;
+  actual_end: ISODate | null;
+  /** Scheduled by the server on every change; never typed by a person. */
+  start_date: ISODate | null;
+  end_date: ISODate | null;
+  total_float: number | null;
+  critical: number;
+};
+
+/** Finish-to-start: the successor starts `lag` working days after the predecessor ends. */
+export type TaskDependency = {
+  predecessor_id: number;
+  successor_id: number;
+  /** Working days; negative is a lead. */
+  lag: number;
+};
+
+/** A task's computed place in the schedule. All floats are in working days. */
+export type TaskSchedule = {
+  id: number;
+  start: ISODate;
+  end: ISODate;
+  late_start: ISODate;
+  late_end: ISODate;
+  total_float: number;
+  free_float: number;
+  critical: boolean;
+};
+
+/**
+ * A stretch where one project's tasks hold one environment: the tasks on it,
+ * merged while the gap between them is short (`HOLD_GAP_DAYS`).
+ */
+export type TaskHold = {
+  project_id: number;
+  environment_id: number;
+  start: ISODate;
+  end: ISODate;
+  task_ids: number[];
+  /** Every task in the hold is done. */
+  done: boolean;
+};
+
+export type PlanRisk = 'low' | 'medium' | 'high';
+
+/** What a proposed change to a plan would do, stated before it is made. */
+export type PlanImpact = {
+  risk: PlanRisk;
+  moved: { id: number; name: string; days: number }[];
+  unlinked: { id: number; name: string }[];
+  finish: { before: ISODate | null; after: ISODate | null; days: number };
+  /** Working days past the target date after the change; 0 when on time or no target. */
+  late_by: number;
+  critical_added: { id: number; name: string }[];
+  critical_removed: { id: number; name: string }[];
+  bookings: { id: number | null; env_name: string; change: 'created' | 'removed' | 'longer' | 'shorter' | 'moved';
+    before: { start: ISODate; end: ISODate } | null; after: { start: ISODate; end: ISODate } | null }[];
+  conflicts_added: { env_name: string; start_date: ISODate; end_date: ISODate; projects: string[] }[];
+  conflicts_cleared: { env_name: string; start_date: ISODate; end_date: ISODate; projects: string[] }[];
+  /** Set when the change would make a dependency loop; the change is then refused. */
+  cycle?: string[];
 };
