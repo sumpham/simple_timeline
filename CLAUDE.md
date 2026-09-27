@@ -9,7 +9,8 @@ projects book them for date ranges; the board surfaces **double-bookings** — s
 more projects hold an environment than its capacity allows. That detection is the product;
 everything else supports it.
 
-`reqs.md` holds the requirements and the answered scoping questions.
+`reqs.md` holds the requirements and the answered scoping questions; `reqs/` holds later
+feature requirements (task management: `reqs/simple_task_management.md`).
 `DESIGN.md` holds the architecture and UI design, including why things look the way they do.
 
 ## Commands
@@ -30,6 +31,7 @@ runs through Node's built-in type stripping rather than a build step.
 
 ```
 shared/   dates.ts, conflicts.ts, types.ts — pure, imported by BOTH server and client
+          schedule.ts, taskHolds.ts, plan.ts — task scheduling, holds, impact (same rule)
 server/   Express routes over SQLite; schema.sql is the source of truth for the data model
 client/   React board; layout.ts holds the time scale and lane packing (pure, tested)
 tests/    Vitest over shared/ and client/layout + client/components/Board's pure exports
@@ -75,6 +77,34 @@ untouched booking keeps following project renames and note edits. Never store th
 
 **Conflicts are computed over the team's whole environment set, not the filtered subset.**
 Hiding a lane must not make its double-bookings disappear (see `/api/board`).
+
+## Tasks book environments
+
+`DESIGN.md` §16 has the design. The rules that break things when forgotten:
+
+**A booking's `start_date`/`end_date` are the effective span; `manual_start`/`manual_end` are
+what someone booked.** Effective is the manual span stretched over the task hold it overlaps
+(`effectiveSpan`), never shorter than manual. NULL manual dates mean an auto booking made by
+tasks alone. Never write an effective span into the manual columns: the booking dialog edits
+manual dates and sends dates only when they changed, or a note edit would lock a stretch in.
+
+**Every write that can move a plan ends in `replan`** (`server/plan.ts`), in the same
+transaction: tasks, links, project start, booking dates, holidays. It is the only writer of
+task dates, hold columns and auto bookings. A new route that changes any of those and skips
+it leaves the board wrong until something else replans.
+
+**Scheduling and holds live only in `shared/`.** The preview endpoint and the drag preview
+(`spanWithHold`) run the same functions as the write, so a prediction matches the save. Do
+not recompute a task span, a hold or a stretch in a component or a route.
+
+**Auto bookings keep their id** by overlap matching in `reconcileBookings`. Recreating them
+on every replan would silently un-resolve every accepted double-booking that involves them.
+
+**Holds are calendar spans; durations are working days.** Same split as bookings.
+
+`task.environment_id` is `ON DELETE RESTRICT`, like bookings, and the environment delete route
+names the tasks first. The network layout (`client/network.ts`) is bounded like the ruler: a
+fixed number of barycentre sweeps, one pass per rank.
 
 ## Drag-to-edit
 
@@ -175,5 +205,5 @@ is correctly hidden — see `buildRows`.
 
 ## Still to build
 
-Drag-to-edit, sub-project roll-ups, conflict acknowledgement, saved views, bulk shift,
-dependency arrows, export. `DESIGN.md` §12 has the order.
+Sub-project roll-ups, saved views, bulk shift, export; for tasks, SS/FF links, baselines,
+cross-project links. `DESIGN.md` §12 has the order.

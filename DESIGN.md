@@ -68,8 +68,13 @@ from the identical code.
 ```sql
 team(id, name, code, active, created_at)
 environment(id, team_id, name, kind, capacity DEFAULT 1, sort_order)
-project(id, team_id, parent_id, name, status, priority, owner, description, external_link)
-booking(id, project_id, environment_id, kind, start_date, end_date, confidence, optional, note, marker)
+project(id, team_id, parent_id, name, status, priority, owner, description, external_link,
+        start_date, target_date)
+booking(id, project_id, environment_id, kind, start_date, end_date, confidence, optional, note, marker,
+        timeline_text, manual_start, manual_end, hold_start, hold_end, hold_done)
+task(id, project_id, environment_id NULL, name, duration, status, not_before, assignee, note,
+     sort_order, actual_start, actual_end, start_date, end_date, total_float, critical)
+task_dependency(predecessor_id, successor_id, lag)
 holiday(date PRIMARY KEY, name)
 audit_log(id, entity, entity_id, field, old_value, new_value, actor, at)
 
@@ -99,7 +104,14 @@ PATCH  /api/teams/:id                     DELETE /api/teams/:id
 POST   /api/environments                  PATCH /api/environments/:id   DELETE /api/environments/:id
 POST   /api/projects                      PATCH /api/projects/:id       DELETE /api/projects/:id
 POST   /api/bookings                      PATCH /api/bookings/:id       DELETE /api/bookings/:id
+POST   /api/bookings/:id/release          trim a finished booking to its last task
+GET    /api/projects/:id/plan             tasks, links, schedule, holds, this project's bookings
+POST   /api/tasks                         PATCH /api/tasks/:id          DELETE /api/tasks/:id?bridge=1
+POST   /api/tasks/reorder                 POST  /api/tasks/preview      (dry run: what a change would do)
 ```
+
+Dependencies are written through a task's `predecessors` (the whole set, replaced), not a
+separate endpoint: the table edits them as one cell, and one write keeps one replan.
 
 `/api/board` returns rows already grouped and bars already positioned in date space, so the
 client never joins entities during interaction.
@@ -270,9 +282,10 @@ Four things in my first pass were defaults rather than choices, and I changed th
 7. Responsive pass, keyboard nav, reduced motion, dark theme
 
 **In MVP**: swimlane/environment mode, promoted from V2 per §1 above.
-**Built since**: full CRUD (§13), drag-to-edit (§14).
-**Still open**: sub-project roll-ups, conflict acknowledgement, saved views, bulk shift,
-dependency arrows, export.
+**Built since**: full CRUD (§13), drag-to-edit (§14), conflict resolution, task management (§16).
+**Still open**: sub-project roll-ups, saved views, bulk shift, export. For tasks: start-to-start
+and finish-to-finish links, baselines and variance, percent complete, cross-project links,
+resource levelling, a task Gantt strip in the table.
 
 ## 13. Built beyond the original MVP list
 
@@ -371,3 +384,95 @@ bounded-loop rule in `CLAUDE.md`).
 
 The board opens on today once per team and zoom, not on every data change. It used to
 re-scroll after every refresh, which made each save throw the view back to today.
+
+## 16. Task management
+
+From `reqs/simple_task_management.md`. A project gets tasks with durations and links; a task on
+an environment books it. The board's job does not change: tasks are one more way bookings are
+made, and double-bookings are still found by the same sweep over the same rows.
+
+### 16.1 Decisions
+
+| Question | Decision |
+|---|---|
+| A manual booking outlasts its tasks, which are all done | The booking stands. The board fades its tail and offers **Release**, which trims it to the last task |
+| How task dates are set | Scheduled (critical path method), never typed: duration, links, and an optional "start no earlier than" |
+| Two tasks on one environment with a gap | One hold while the gap is at most 2 working days (`HOLD_GAP_DAYS`); a longer gap frees the environment |
+| Links across projects | Same project only |
+
+### 16.2 How tasks become bookings
+
+```
+tasks ──scheduleProject──► dated tasks ──taskHolds──► holds ──reconcileBookings──► bookings
+        shared/schedule.ts               shared/taskHolds.ts                        (ordinary rows)
+```
+
+- **Schedule.** Forward and backward passes over working-day indexes from the project start.
+  Finish-to-start with a lag (negative is a lead). Done tasks sit on their actual dates, started
+  ones keep their actual start. Critical means total float ≤ 0 on work not yet done. A milestone
+  (0 days) sits on its predecessor's last day.
+- **Holds** are calendar spans, like every booking, so conflict detection needs nothing new.
+  Milestones and tasks without an environment hold nothing.
+- **The longer wins.** A booking keeps its manual span (`manual_start`/`manual_end`) beside the
+  effective one (`start_date`/`end_date`). A hold that overlaps a manual booking stretches it
+  to the hull, never below what was booked; a hold that overlaps none becomes an **auto
+  booking** (manual dates NULL) that follows its tasks. A hold attaches to the one manual
+  booking it overlaps most.
+- **Identity.** Auto bookings are matched to their previous row by overlap, then nearest start,
+  so an accepted double-booking keyed on one stays accepted as its tasks move.
+- **One write path.** Every task, link, project-start, booking and holiday write ends in
+  `replan` (`server/plan.ts`) inside the same transaction. A loop is refused by name and rolls
+  the change back.
+
+Editing a booking by hand sets its manual span. The dialog shows the manual dates, not the
+stretched ones, and sends dates only when they changed, so a note edit neither locks a stretch
+in nor turns an auto booking manual. A drag books what you see: its span becomes the manual
+one, and the preview runs it through `spanWithHold`, the same rule the server applies, so a
+bar cannot be dragged below its tasks and nothing jumps on drop. An auto booking cannot be
+deleted; the error names the tasks that would book it straight back.
+
+### 16.3 Impact before and after
+
+`POST /api/tasks/preview` runs the same pure plan over the change without writing, and
+`planImpact` compares the two: tasks moved, successors unlinked, finish and target, critical
+path, bookings created, removed, stretched or shrunk, and double-bookings added or cleared
+(compared by project pairs, so joining a clash is one new fact). Risk is **high** when it makes
+an open double-booking, pushes the finish further past target, or deletes a critical task with
+successors.
+
+The task editor shows "Saving would…" live and "Deleting it would…" before Delete is armed,
+with **keep the chain** (link its predecessors to its successors) on by default. An inline
+edit in the table saves at once and then says what it did, in a banner with Undo.
+
+### 16.4 UI
+
+**Grounding.** A scheduling instrument, not a to-do app: the question is which work holds
+which environment and what drives the dates. So there is a table to enter work fast and a
+network to see why, and no kanban.
+
+**Colour.** No new hues. The critical path is heavy ink (`--critical`); `--alarm` appears only
+on a change that would double-book. Environment hue is a stripe on a task's environment cell,
+node or lane. Status is a glyph and a word (○ ◐ ‖ ●). Late is weight and words ("5 working days
+late"). A task-made booking has a dashed edge; a releasable tail is a wash of the lane with a
+dashed ink edge where the work ended.
+
+**Plan workspace** (`#plan/<id>`, from the rail's Plan button in project mode, or the projects
+manager) replaces the board. Its header holds the project switcher, the start and target dates,
+the computed finish and the critical-path count. **Books** along the foot lists the bookings the
+plan makes or stretches, and a Release button where one is due. A plan link names a project,
+so it switches the board to that project's team.
+
+**Task table.** Edited in place. After takes row numbers with a lag (`2`, `2+3`, `3-1`). Enter
+moves on, and Enter in the add row keeps the caret there for the next task. Alt+↑/↓ reorders.
+Critical rows carry a heavy ink rule. A task that should have started says so. On a phone,
+rows become stacked cards.
+
+**Network.** Activity-on-node boxes (early start, duration, early finish / name / late start,
+float, late finish), columns by longest chain, rows by barycentre sweeps, orthogonal arrows
+turning in the gutter. **Show environments** puts each node in its environment's lane, in board
+order, with "No environment" last. **Critical path only** dims the rest. Zoom steps, never
+continuous. Arrow keys walk the graph and Enter opens a task. The one motion: critical arrows
+draw once on open, behind reduced motion.
+
+Rejected: a kanban board (wrong question), a red critical path (red is spent), coloured status
+pills (a rainbow dilutes the alarm).
