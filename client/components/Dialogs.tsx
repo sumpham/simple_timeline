@@ -3,6 +3,7 @@ import { calendarDays, isWeekend, workingDays } from '../../shared/dates.ts';
 import { defaultTimelineText, effectiveKind, timelineTextToStore } from '../../shared/bookings.ts';
 import { MARKERS, type BookingView, type Environment, type ISODate, type Marker, type Project, type Team } from '../../shared/types.ts';
 import { MarkerIcon } from './Board.tsx';
+import { formatRange as formatRangeShort } from '../layout.ts';
 
 /** A dialog that traps focus and closes on Escape, via the native element. */
 export function Modal({
@@ -104,9 +105,13 @@ export type BookingDraft = {
 const MARKER_LABEL: Record<Marker, string> = { star: 'Star', flag: 'Flag', pin: 'Pin' };
 
 export function BookingDialog({
-  draft, projects, environments, holidays, onSave, onDelete, onClose, error,
+  draft, projects, environments, holidays, onSave, onDelete, onClose, error, existing, onOpenPlan, onRelease,
 }: {
   draft: BookingDraft;
+  /** The booking as the board has it, for what its tasks hold. */
+  existing?: BookingView;
+  onOpenPlan?: (projectId: number) => void;
+  onRelease?: () => Promise<unknown> | void;
   projects: Project[];
   environments: Environment[];
   holidays: ISODate[];
@@ -166,7 +171,7 @@ export function BookingDialog({
       onClose={() => { if (!pending) onClose(); }}
       footer={
         <>
-          {onDelete && (pending === 'delete' ? (
+          {onDelete && !existing?.auto && (pending === 'delete' ? (
             <button type="button" className="btn danger" disabled><Working label="Removing…" /></button>
           ) : (
             <DangerButton
@@ -337,6 +342,19 @@ export function BookingDialog({
               : 'Follows the project name and note until you change it.'}
           </span>
         </div>
+
+        {existing?.tasks?.length ? (
+          <div className="note hold-note">
+            {existing.auto
+              ? <>Made by this project&rsquo;s tasks: {existing.tasks.map((t) => t.name).join(', ')}. It moves with them. Set dates here to book it by hand instead.</>
+              : <>Its tasks ({existing.tasks.map((t) => t.name).join(', ')}) need {formatRangeShort(existing.hold_start!, existing.hold_end!)}, so the booking covers at least that, whatever dates you set here.</>}
+            {existing.release_from && <> Every task is done, so the environment could be handed back from {formatRangeShort(existing.release_from, existing.release_from)}.</>}
+            <span className="hold-actions">
+              {onOpenPlan && <button type="button" className="link-button" onClick={() => onOpenPlan(existing.project_id)}>Open the plan</button>}
+              {onRelease && <button type="button" className="btn quiet" onClick={() => void perform('save', onRelease)}>Release now</button>}
+            </span>
+          </div>
+        ) : null}
 
         {valid && !isMilestone && (
           <p className="note">

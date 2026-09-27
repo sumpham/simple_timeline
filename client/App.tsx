@@ -11,6 +11,12 @@ import {
 } from './dragMath.ts';
 import { applyResolutions, conflictKey, detectConflicts, openConflicts } from '../shared/conflicts.ts';
 import { effectiveKind } from '../shared/bookings.ts';
+import { spanWithHold } from '../shared/taskHolds.ts';
+
+/** The hold a booking covers, as a span, if any. */
+function holdOf(b: BookingView): Span | null {
+  return b.hold_start && b.hold_end ? { start: b.hold_start, end: b.hold_end } : null;
+}
 import { OccupancyStrip } from './components/OccupancyStrip.tsx';
 import { ConflictDrawer, ConflictList } from './components/ConflictDrawer.tsx';
 import { BoardSheet, BookingSheet, EnvFilter } from './components/Sheets.tsx';
@@ -147,9 +153,10 @@ export function App() {
     // Recomputed conflicts are new objects; the accepted ones must stay accepted.
     const resolved = new Set(data.resolved ?? []);
 
+    // A pending span is the manual one being set; the bar shows what its tasks make of it.
     const bookings = data.bookings.map((b) => {
       const span = pendingSpans.get(b.id);
-      return span ? withSpan(b, span, holidaySet) : b;
+      return span ? withSpan(b, spanWithHold(span, holdOf(b)), holidaySet) : b;
     });
     if (placeholder) bookings.push(placeholder);
     return { bookings, conflicts: applyResolutions(detectConflicts(bookings), resolved) };
@@ -248,8 +255,10 @@ export function App() {
         project_id: b.project_id,
         environment_id: b.environment_id,
         kind: b.kind,
-        start_date: b.start_date,
-        end_date: b.end_date,
+        // The form edits what was booked by hand, not the span its tasks stretched it to;
+        // otherwise saving a note would lock the stretch in.
+        start_date: b.manual_start ?? b.start_date,
+        end_date: b.manual_end ?? b.end_date,
         confidence: b.confidence,
         optional: !!b.optional,
         note: b.note ?? '',
@@ -934,6 +943,10 @@ export function App() {
       {drag && (
         <DragReadout
           drag={drag}
+          held={(() => {
+            const h = spanWithHold(drag.span, holdOf(drag.booking));
+            return h.start !== drag.span.start || h.end !== drag.span.end ? h : null;
+          })()}
           holidays={holidaySet}
           clashes={unresolved.some((c) => c.booking_ids.includes(drag.booking.id))}
         />
@@ -950,21 +963,27 @@ export function App() {
           onDelete={dialog.draft.id
             ? () => run(() => api.deleteBooking(dialog.draft.id!))
             : undefined}
+          existing={dialog.existing}
+          onOpenPlan={(id) => openPlan(id)}
+          onRelease={dialog.existing?.release_from ? () => run(() => releaseBooking(dialog.existing!)) : undefined}
           onSave={(d) => run(() => {
             remember(d.project_id, d.environment_id);
+            // Dates go only when they changed: a task-made booking stays task-made
+            // through a note edit, and becomes manual only when someone books dates.
+            const was = dialog.draft;
+            const datesChanged = !d.id || d.start_date !== was.start_date || d.end_date !== was.end_date;
             const body = {
               project_id: d.project_id,
               environment_id: d.environment_id,
               kind: d.kind as BookingView['kind'],
-              start_date: d.start_date,
-              end_date: d.end_date,
+              ...(datesChanged ? { start_date: d.start_date, end_date: d.end_date } : {}),
               confidence: d.confidence as BookingView['confidence'],
               optional: d.optional ? 1 : 0,
               note: d.note.trim() || null,
               marker: d.kind === 'CUSTOM' ? d.marker : null,
               timeline_text: d.timeline_text,
             };
-            return d.id ? api.updateBooking(d.id, body) : api.createBooking(body);
+            return d.id ? api.updateBooking(d.id, body) : api.createBooking({ ...body, start_date: d.start_date, end_date: d.end_date });
           })}
         />
       )}

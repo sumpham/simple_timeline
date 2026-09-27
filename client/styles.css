@@ -2442,3 +2442,38 @@ kbd {
   .holds { padding: 8px 14px; flex-direction: column; gap: 4px; }
   .network-toolbar { padding: 8px 14px; }
 }
+
+/* ---------------------------------------------------------------- task-made bookings on the board */
+
+/* Where a booking's tasks sit: ticks along the bar's foot, in the bar's own ink. */
+.bar-task {
+  position: absolute;
+  bottom: 2px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.78);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+/* A booking made by tasks alone: the same hue, with a dashed edge that says
+   nobody booked these dates by hand. */
+.bar.is-auto {
+  outline: 1.5px dashed color-mix(in srgb, var(--env-color) 70%, var(--ink));
+  outline-offset: 1px;
+}
+
+/* Tasks done, booking still running: the tail fades, ready to hand back.
+   A wash of the lane, with a dashed edge where the work ended; never red or green. */
+.bar-release {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--lane);
+  opacity: 0.5;
+  border-left: 1.5px dashed var(--ink);
+  pointer-events: none;
+}
+
+.hold-note { display: grid; gap: 6px; }
+.hold-actions { display: flex; gap: 12px; align-items: center; }
+.hold-actions .btn { padding: 3px 10px; font-size: 12px; }

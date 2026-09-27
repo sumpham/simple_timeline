@@ -119,7 +119,7 @@ export function listBookings(filter: {
       // A release is a moment, not a span, and the renderer draws it as a diamond.
       is_milestone: r.kind === 'RELEASE' || r.start_date === r.end_date,
       auto: r.manual_start == null || r.manual_end == null,
-      tasks: held.map((t) => ({ id: t.id, name: t.name })),
+      tasks: held.map((t) => ({ id: t.id, name: t.name, start: t.span.start, end: t.span.end })),
       release_from: r.hold_end
         ? releaseFrom(r.end_date, { end: r.hold_end, done: Boolean(r.hold_done) })
         : null,

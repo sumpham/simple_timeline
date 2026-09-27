@@ -41,7 +41,9 @@ export function OccupancyStrip({
                 : `${holders.length} of ${env.capacity} booked`)}
             </div>
             <div className="strip-next">
-              {holders.length === 1
+              {holders.length === 1 && holders[0].release_from && holders[0].release_from <= today
+                ? 'tasks done, could be released'
+                : holders.length === 1
                 ? `until ${formatDate(holders[0].end_date)}, ${relativeDays(today, holders[0].end_date)}`
                 : holders.length > 1
                   ? holders.map((h) => h.project_name).join(', ')

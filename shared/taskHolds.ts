@@ -70,6 +70,17 @@ export function effectiveSpan(manual: Span | null, hold: Span | null): Span | nu
 }
 
 /**
+ * What a booking becomes when someone sets its manual span: stretched over its
+ * hold while the two still overlap, and left alone once they do not (the hold
+ * then gets an auto booking of its own). The drag preview uses this so the bar
+ * under the pointer is the bar the server saves.
+ */
+export function spanWithHold(manual: Span, hold: Span | null): Span {
+  if (!hold || overlapDays(manual.start, manual.end, hold.start, hold.end) === 0) return manual;
+  return effectiveSpan(manual, hold)!;
+}
+
+/**
  * The day the environment could be handed back: every task in the hold is done
  * and the booking runs on past the last of them. Null otherwise.
  */

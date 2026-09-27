@@ -82,7 +82,11 @@ function laneStatus(
     return { text: `${holders.length} projects, room for ${env.capacity}`, clash };
   }
   if (holders.length === 1) {
-    return { text: `${holders[0].project_name} until ${formatDate(holders[0].end_date)}`, clash: false };
+    const h = holders[0];
+    if (h.release_from && h.release_from <= today) {
+      return { text: `${h.project_name}, tasks done, could be released`, clash: false };
+    }
+    return { text: `${h.project_name} until ${formatDate(h.end_date)}`, clash: false };
   }
   if (holders.length > 1) return { text: `${holders.length} of ${env.capacity} booked`, clash: false };
   const next = nextBookingAfter(bookings, env.id, today);
@@ -557,7 +561,12 @@ function Bar({
       ? `${booking.project_name} releases to ${booking.env_name} on ${formatRange(booking.start_date, booking.end_date)}`
       : `${booking.project_name} marks ${booking.env_name} on ${formatRange(booking.start_date, booking.end_date)}`)
     : `${booking.project_name} books ${booking.env_name}, ${span}${inConflict ? ' — double-booked' : ''}`;
-  const description = booking.note ? `${what}. Note: ${booking.note}` : what;
+  const taskNames = booking.tasks?.map((t) => t.name).join(', ');
+  const why = booking.auto
+    ? `Made by tasks: ${taskNames}`
+    : taskNames ? `Held at least ${formatRange(booking.hold_start!, booking.hold_end!)} by tasks: ${taskNames}` : '';
+  const release = booking.release_from ? `Tasks done; the environment could be released from ${formatDate(booking.release_from)}` : '';
+  const description = [what, why, release, booking.note ? `Note: ${booking.note}` : ''].filter(Boolean).join('. ');
   // Belt and braces: the server already clears markers on other kinds.
   const marker = booking.kind === 'CUSTOM' ? booking.marker : null;
   // Milestone labels float beside the glyph with no bound, and collide with the
@@ -586,6 +595,7 @@ function Bar({
     dragging ? 'is-dragging' : '',
     picked ? 'is-picked' : '',
     saving ? 'is-saving' : '',
+    booking.auto ? 'is-auto' : '',
   ].filter(Boolean).join(' ');
 
   /**
@@ -638,6 +648,23 @@ function Bar({
           {saving && <span className="bar-spinner" aria-hidden="true" />}
           {marker && width >= 18 && <MarkerIcon marker={marker} className="bar-marker" />}
           {width >= 34 && <span className="bar-clip">{text}</span>}
+          {/* Where the tasks sit inside the booking, as ticks along its foot. Task
+              dates do not move with a drag, so these stay put while the bar moves. */}
+          {booking.tasks?.map((t) => (
+            <span
+              key={t.id}
+              className="bar-task"
+              aria-hidden="true"
+              style={{ left: scale.x(t.start) - left, width: scale.spanWidth(t.start, t.end) }}
+            />
+          ))}
+          {booking.release_from && booking.release_from <= booking.end_date && (
+            <span
+              className="bar-release"
+              aria-hidden="true"
+              style={{ left: scale.x(booking.release_from) - left, right: 0 }}
+            />
+          )}
         </>
       )}
 
@@ -661,13 +688,16 @@ function Bar({
 
 /** Follows the pointer during a drag, stating exactly what will be saved. */
 export function DragReadout({
-  drag, clashes, holidays,
+  drag, clashes, holidays, held,
 }: {
   drag: DragSession;
   clashes: boolean;
   holidays: ReadonlySet<ISODate>;
+  /** The span the booking will actually have once its tasks stretch it, when that differs. */
+  held?: { start: ISODate; end: ISODate } | null;
 }) {
-  const { span, booking } = drag;
+  const { booking } = drag;
+  const span = held ?? drag.span;
   // Holidays count here too, or the readout disagrees with the saved booking.
   const days = countWorkingDays(span.start, span.end, holidays);
 
@@ -686,6 +716,7 @@ export function DragReadout({
           : `${days} working day${days === 1 ? '' : 's'}`}
         {clashes && <span className="drag-readout-clash">double-booked</span>}
       </div>
+      {held && <div className="drag-readout-meta">its tasks need {formatRange(booking.hold_start!, booking.hold_end!)}</div>}
     </div>
   );
 }

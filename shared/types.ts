@@ -103,8 +103,8 @@ export type BookingView = Booking & {
   is_milestone: boolean;
   /** Made by tasks alone; its dates belong to the plan, not to a drag. */
   auto?: boolean;
-  /** The tasks that make up that hold. */
-  tasks?: { id: number; name: string }[];
+  /** The tasks that make up that hold, with the calendar span each one needs. */
+  tasks?: { id: number; name: string; start: ISODate; end: ISODate }[];
   /**
    * Every task in the hold is done and the booking runs on past them: the
    * environment could be handed back from this day.

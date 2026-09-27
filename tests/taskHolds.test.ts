@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { effectiveSpan, reconcileBookings, releaseFrom, taskHolds, type ReconcileBooking } from '../shared/taskHolds.ts';
+import { effectiveSpan, reconcileBookings, releaseFrom, spanWithHold, taskHolds, type ReconcileBooking } from '../shared/taskHolds.ts';
 import { planImpact, planProject, type PlanOutcome } from '../shared/plan.ts';
 import type { BookingView, Environment, Task, TaskDependency } from '../shared/types.ts';
 
@@ -58,6 +58,20 @@ describe('effectiveSpan: the longer wins', () => {
   it('stretches a manual booking shorter than its tasks', () => {
     expect(effectiveSpan({ start: '2026-03-02', end: '2026-04-30' }, { start: '2026-02-23', end: '2026-05-29' }))
       .toEqual({ start: '2026-02-23', end: '2026-05-29' });
+  });
+});
+
+describe('spanWithHold: what a drag previews', () => {
+  const hold = { start: '2026-03-09', end: '2026-03-13' };
+  it('stretches a dragged span over the hold while they overlap', () => {
+    expect(spanWithHold({ start: '2026-03-11', end: '2026-03-12' }, hold)).toEqual(hold);
+    expect(spanWithHold({ start: '2026-03-12', end: '2026-03-20' }, hold)).toEqual({ start: '2026-03-09', end: '2026-03-20' });
+  });
+  it('lets go of the hold once the span is dragged clear of it, as the server does', () => {
+    expect(spanWithHold({ start: '2026-03-16', end: '2026-03-20' }, hold)).toEqual({ start: '2026-03-16', end: '2026-03-20' });
+    const r = reconcileBookings([manual(1, '2026-03-16', '2026-03-20')], taskHolds([task(1, '2026-03-09', '2026-03-13')]));
+    expect(r.bookings.find((b) => b.id === 1)).toMatchObject({ start_date: '2026-03-16', end_date: '2026-03-20' });
+    expect(r.create).toHaveLength(1);
   });
 });
 
