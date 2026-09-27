@@ -998,6 +998,9 @@ body {
 
 .btn.quiet:hover { color: var(--ink); border-color: var(--ink); filter: none; }
 
+/* A quiet button that is a place you are in, like Plans while a plan is open. */
+.btn.quiet[aria-pressed='true'] { color: var(--ink); border-color: var(--ink); font-weight: 600; }
+
 /* Unarmed, a destructive button is quiet: --alarm means double-booking, and a
    row of red Remove buttons would dilute it. The colour arrives with the danger. */
 .btn.danger {

@@ -439,7 +439,15 @@ export function App() {
     setSheet({ kind: 'none' });
     window.location.hash = id == null ? '' : `plan/${id}`;
     setPlanId(id);
+    if (id != null) lastUsed.current = { ...lastUsed.current, project: id };
   }, []);
+
+  /** The top bar's way in: the plan last worked with, else the team's first project. */
+  const openPlans = () => {
+    const projects = data?.projects ?? [];
+    const id = projects.find((p) => p.id === lastUsed.current.project)?.id ?? projects[0]?.id;
+    if (id != null) openPlan(id);
+  };
 
   // A plan link names a project, not a team: follow it to its team, once.
   const followedPlan = useRef<number | null>(null);
@@ -709,6 +717,17 @@ export function App() {
           </button>
         )}
         {team && data?.projects.length ? (
+          <button
+            type="button"
+            className="btn quiet"
+            aria-pressed={planView != null}
+            title={planView != null ? 'Back to the board' : 'Tasks, schedule and critical path for each project'}
+            onClick={planView != null ? () => openPlan(null) : openPlans}
+          >
+            Plans
+          </button>
+        ) : null}
+        {team && data?.projects.length ? (
           <button type="button" className="btn" onClick={() => openNewBooking()}>Book environment</button>
         ) : null}
 
@@ -927,6 +946,7 @@ export function App() {
           onSelectTeam={(id) => { switchTeam(id); setSheet({ kind: 'none' }); }}
           onToggleEnv={toggleEnv}
           onManage={(what) => { setSheet({ kind: 'none' }); setDialog({ kind: what }); }}
+          onPlans={data?.projects.length ? openPlans : undefined}
           onClose={() => setSheet({ kind: 'none' })}
         />
       )}

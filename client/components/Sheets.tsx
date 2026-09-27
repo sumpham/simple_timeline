@@ -184,7 +184,7 @@ export function EnvFilter({
 
 /** Team, environment filter and the managers: everything the phone's top bar folds away. */
 export function BoardSheet({
-  teams, teamId, environments, hidden, conflicts, onSelectTeam, onToggleEnv, onManage, onClose,
+  teams, teamId, environments, hidden, conflicts, onSelectTeam, onToggleEnv, onManage, onPlans, onClose,
 }: {
   teams: Team[];
   teamId: number | null;
@@ -194,6 +194,8 @@ export function BoardSheet({
   onSelectTeam: (id: number) => void;
   onToggleEnv: (id: number) => void;
   onManage: (what: 'teams' | 'projects' | 'environments') => void;
+  /** Open the plans; absent when the team has no projects to plan. */
+  onPlans?: () => void;
   onClose: () => void;
 }) {
   return (
@@ -227,6 +229,7 @@ export function BoardSheet({
           <>
             <button type="button" className="btn quiet" onClick={() => onManage('projects')}>Projects</button>
             <button type="button" className="btn quiet" onClick={() => onManage('environments')}>Environments</button>
+            {onPlans && <button type="button" className="btn quiet" onClick={onPlans}>Plans</button>}
           </>
         )}
       </div>
