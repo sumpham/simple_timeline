@@ -4,6 +4,7 @@ import type {
   BookingView, Environment, ISODate, PlanImpact, Project, Task, TaskSchedule, TaskStatus,
 } from '../../shared/types.ts';
 import { formatDate, formatRange } from '../layout.ts';
+import { isWorkingDay, isValidISODate, workingDays } from '../../shared/dates.ts';
 import { formatPredecessors, parsePredecessors } from '../predecessors.ts';
 import { ENV_COLOR } from './Board.tsx';
 import { DangerButton, Modal } from './Dialogs.tsx';
@@ -31,9 +32,11 @@ const SCHEDULE_FIELDS: (keyof TaskInput)[] = [
 type Tab = 'tasks' | 'network';
 
 export function PlanView({
-  projectId, projects, environments, today, onBack, onSwitchProject, onChanged, onRelease,
+  projectId, projects, environments, holidays, today, onBack, onSwitchProject, onChanged, onRelease,
 }: {
   projectId: number;
+  /** Non-working days besides weekends; a typed finish counts working days around them. */
+  holidays: ReadonlySet<ISODate>;
   projects: readonly Project[];
   environments: readonly Environment[];
   today: ISODate;
@@ -52,6 +55,8 @@ export function PlanView({
   const [saving, setSaving] = useState(false);
   /** What the last change did, with a way to take it back. */
   const [outcome, setOutcome] = useState<{ title: string; impact: PlanImpact; undo?: () => Promise<void> } | null>(null);
+  /** A typed date the schedule could not honour exactly, and why. */
+  const [notice, setNotice] = useState<string | null>(null);
   const addRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -80,8 +85,9 @@ export function PlanView({
    * Save a change. Anything that can move dates is previewed first, so the
    * outcome can say what it did (and a loop is refused before it is written).
    */
-  const save = async (change: TaskChange, title: string, undo?: () => Promise<void>): Promise<boolean> => {
-    if (!plan) return false;
+  const save = async (change: TaskChange, title: string, undo?: () => Promise<void>): Promise<PlanData | null> => {
+    if (!plan) return null;
+    setNotice(null);
     setSaving(true);
     try {
       const fields = change.op === 'delete' ? null : change.fields;
@@ -89,7 +95,7 @@ export function PlanView({
       const impact = moves ? await api.previewTask(projectId, change) : null;
       if (impact?.cycle) {
         setError(`That would make a loop: ${impact.cycle.join(' → ')}.`);
-        return false;
+        return null;
       }
       let res: { plan: PlanData; id?: number };
       if (change.op === 'create') res = await api.createTask(projectId, { name: 'New task', ...change.fields } as TaskInput & { name: string }, change.after_id);
@@ -99,10 +105,10 @@ export function PlanView({
       setError(null);
       if (impact && impact.risk !== 'low') setOutcome({ title, impact, undo });
       else setOutcome(null);
-      return true;
+      return res.plan;
     } catch (err) {
       fail(err);
-      return false;
+      return null;
     } finally {
       setSaving(false);
     }
@@ -121,6 +127,50 @@ export function PlanView({
     return save({ op: 'update', id: t.id, fields }, title, async () => {
       try { accept((await api.updateTask(t.id, back)).plan); setOutcome(null); } catch (err) { fail(err); }
     });
+  };
+
+  /**
+   * A typed start. Dates are scheduled, so it becomes the floor the task may not
+   * start before (or, once work has begun, the day it actually started). The task
+   * keeps its length, so its finish moves with it.
+   */
+  const setStart = async (t: Task, date: ISODate): Promise<boolean> => {
+    const started = (t.status === 'in_progress' || t.status === 'done') && t.actual_start;
+    const fields: TaskInput = started ? { actual_start: date } : { not_before: date };
+    const next = await updateTask(t, fields, `Moved ${t.name} to start ${formatDate(date)}`);
+    const got = next?.schedule.find((x) => x.id === t.id)?.start;
+    if (got && got !== date && !started) {
+      setNotice(!isWorkingDay(date, holidays)
+        ? `${t.name} starts ${formatDate(got)}: ${formatDate(date)} is not a working day.`
+        : `${t.name} starts ${formatDate(got)}, not ${formatDate(date)}: a task it comes after finishes later. Clear After to pin it to the date.`);
+    }
+    return !!next;
+  };
+
+  /**
+   * A typed finish sets the length: the working days from the start to that day,
+   * weekends and holidays left out. A finished task records it as its actual finish.
+   */
+  const setFinish = async (t: Task, date: ISODate): Promise<boolean> => {
+    const start = schedule.get(t.id)?.start;
+    if (!start) return false;
+    if (date < start) {
+      setError(`${t.name} starts ${formatDate(start)}, so it cannot finish before then.`);
+      return false;
+    }
+    let fields: TaskInput;
+    if (t.status === 'done') fields = { actual_end: date };
+    else if (t.duration === 0) fields = { not_before: date };
+    else fields = { duration: Math.max(1, workingDays(start, date, holidays)) };
+    const days = fields.duration;
+    const next = await updateTask(t, fields, days != null
+      ? `${t.name} now takes ${days} working day${days === 1 ? '' : 's'}`
+      : `Moved ${t.name} to finish ${formatDate(date)}`);
+    const got = next?.schedule.find((x) => x.id === t.id)?.end;
+    if (got && got !== date && !isWorkingDay(date, holidays)) {
+      setNotice(`${t.name} finishes ${formatDate(got)}: ${formatDate(date)} is not a working day, so it is not counted.`);
+    }
+    return !!next;
   };
 
   const addTask = async (name: string) => {
@@ -196,6 +246,13 @@ export function PlanView({
         )}
       </header>
 
+      {notice && (
+        <div className="impact-banner" role="status">
+          <div className="impact-banner-text">{notice}</div>
+          <button type="button" className="link-button" onClick={() => setNotice(null)}>Dismiss</button>
+        </div>
+      )}
+
       {error && <div className="error-bar" role="alert">{error}<button type="button" className="link-button" onClick={() => setError(null)}>Dismiss</button></div>}
 
       {outcome && (
@@ -219,8 +276,10 @@ export function PlanView({
             today={today}
             saving={saving}
             addRef={addRef}
-            onUpdate={(t, f) => updateTask(t, f)}
-            onAdd={addTask}
+            onUpdate={(t, f) => updateTask(t, f).then(Boolean)}
+            onSetStart={setStart}
+            onSetFinish={setFinish}
+            onAdd={(name) => addTask(name).then(Boolean)}
             onMove={move}
             onOpen={setEditing}
             onError={setError}
@@ -282,7 +341,7 @@ export function PlanView({
 // ---------------------------------------------------------------- task table
 
 function TaskTable({
-  plan, schedule, rowOf, environments, today, saving, addRef, onUpdate, onAdd, onMove, onOpen, onError,
+  plan, schedule, rowOf, environments, today, saving, addRef, onUpdate, onSetStart, onSetFinish, onAdd, onMove, onOpen, onError,
 }: {
   plan: PlanData;
   schedule: ReadonlyMap<number, TaskSchedule>;
@@ -292,6 +351,8 @@ function TaskTable({
   saving: boolean;
   addRef: React.RefObject<HTMLInputElement>;
   onUpdate: (t: Task, fields: TaskInput) => Promise<boolean>;
+  onSetStart: (t: Task, date: ISODate) => Promise<boolean>;
+  onSetFinish: (t: Task, date: ISODate) => Promise<boolean>;
   onAdd: (name: string) => Promise<boolean>;
   onMove: (t: Task, delta: -1 | 1) => Promise<void>;
   onOpen: (id: number) => void;
@@ -405,8 +466,12 @@ function TaskTable({
                     }}
                   />
                 </td>
-                <td className="c-date" data-label="Start">{s ? formatDate(s.start) : '—'}</td>
-                <td className="c-date" data-label="Finish">{s ? formatDate(s.end) : '—'}</td>
+                <td className="c-date" data-label="Start">
+                  {s ? <DateCell field="start" label={`Start of ${t.name}`} value={s.start} onCommit={(d) => onSetStart(t, d)} /> : '—'}
+                </td>
+                <td className="c-date" data-label="Finish">
+                  {s ? <DateCell field="finish" label={`Finish of ${t.name}`} value={s.end} onCommit={(d) => onSetFinish(t, d)} /> : '—'}
+                </td>
                 <td className="c-num c-float" data-label="Float">
                   {s ? (s.critical ? <strong>critical</strong> : `${s.total_float}d`) : '—'}
                 </td>
@@ -446,6 +511,7 @@ function TaskTable({
       </table>
       <p className="table-hint">
         Enter moves on, Alt+↑/↓ reorders. In After, write rows: <kbd>2</kbd>, or <kbd>2+3</kbd> to wait three working days.
+        A typed finish sets Days, counting working days only; a typed start is the earliest the task may begin.
       </p>
     </div>
   );
@@ -493,6 +559,57 @@ function CellInput({
       onKeyDown={(e) => {
         if (e.key === 'Enter') { e.preventDefault(); void commit().then(() => onEnter?.()); }
         if (e.key === 'Escape') { setText(value); setInvalid(false); }
+      }}
+    />
+  );
+}
+
+/**
+ * A scheduled date you can overwrite. The picker commits at once; typing waits
+ * until the date is whole (a four-digit year) and the caret has rested, so a
+ * half-typed year never reschedules the plan.
+ */
+function DateCell({ field, label, value, onCommit }: {
+  field: string;
+  label: string;
+  value: ISODate;
+  onCommit: (d: ISODate) => Promise<boolean>;
+}) {
+  const [text, setText] = useState(value);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const committing = useRef(false);
+  // The schedule may not land where you typed (a weekend, a later predecessor), and
+  // then `value` does not change; the cell must still show the date that holds.
+  const latest = useRef(value);
+  latest.current = value;
+  useEffect(() => { setText(value); }, [value]);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const commit = async (d: string) => {
+    if (timer.current) clearTimeout(timer.current);
+    if (committing.current || d === value || !isValidISODate(d) || d < '2000-01-01') return;
+    committing.current = true;
+    await onCommit(d);
+    committing.current = false;
+    setText(latest.current);
+  };
+
+  return (
+    <input
+      type="date"
+      data-field={field}
+      aria-label={label}
+      value={text}
+      onChange={(e) => {
+        const d = e.target.value;
+        setText(d);
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(() => void commit(d), 700);
+      }}
+      onBlur={() => void commit(text)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') { e.preventDefault(); void commit(text); }
+        if (e.key === 'Escape') { if (timer.current) clearTimeout(timer.current); setText(value); }
       }}
     />
   );

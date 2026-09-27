@@ -2148,12 +2148,15 @@ kbd {
 }
 
 .task-table .c-row { width: 44px; padding-left: 14px; }
-.task-table .c-name { width: 36%; min-width: 220px; }
-.task-table .c-num { width: 70px; text-align: right; }
+.task-table .c-name { min-width: 200px; }
+.task-table .c-env { width: 116px; }
+.task-table .c-num { width: 58px; text-align: right; }
 .task-table th.c-num { text-align: right; }
-.task-table .c-after { width: 96px; }
-.task-table .c-date { width: 72px; color: var(--muted); }
-.task-table .c-status { width: 170px; }
+.task-table .c-after { width: 80px; }
+.task-table .c-date { width: 124px; color: var(--muted); }
+.task-table .c-date input { color: var(--muted); font-size: 13px; padding-right: 2px; }
+.task-table .c-date input:focus { color: var(--ink); }
+.task-table .c-status { width: 150px; }
 
 /* A critical task carries a heavy ink rule down its left edge, the table's
    version of the network's heavy boxes. */

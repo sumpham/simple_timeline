@@ -769,6 +769,7 @@ export function App() {
             projectId={planView}
             projects={data.projects}
             environments={environments}
+            holidays={holidaySet}
             today={today}
             onBack={() => openPlan(null)}
             onSwitchProject={(id) => openPlan(id)}

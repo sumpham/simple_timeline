@@ -463,7 +463,12 @@ plan makes or stretches, and a Release button where one is due. A plan link name
 so it switches the board to that project's team.
 
 **Task table.** Edited in place. After takes row numbers with a lag (`2`, `2+3`, `3-1`). Enter
-moves on, and Enter in the add row keeps the caret there for the next task. Alt+↑/↓ reorders.
+moves on, and Enter in the add row keeps the caret there for the next task. Start and Finish
+can be typed over, but dates stay scheduled: a typed start becomes "start no earlier than" (or
+the actual start once work has begun) and keeps the length; a typed finish sets Days to the
+working days from the start, weekends and holidays left out (a finished task records it as
+its actual finish). When the schedule cannot land on the typed date, a note says why: not a
+working day, or a predecessor finishes later. Alt+↑/↓ reorders.
 Critical rows carry a heavy ink rule. A task that should have started says so. On a phone,
 rows become stacked cards.
 
