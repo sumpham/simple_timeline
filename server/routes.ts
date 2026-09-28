@@ -696,15 +696,58 @@ router.patch('/tasks/:id/position', handle((req, res) => {
   res.json({ id, net_x: x, net_y: y });
 }));
 
+function anchor(value: unknown, field: string): string | null {
+  if (value == null) return null;
+  if (value !== 'top' && value !== 'mid' && value !== 'bottom') throw bad(`${field} must be top, mid or bottom`);
+  return value;
+}
+
+function writeRoute(pred: number, succ: number, body: Record<string, unknown> | undefined) {
+  run(`UPDATE task_dependency SET route_out = ?, route_y = ?, route_in = ?, route_from = ?, route_to = ?
+        WHERE predecessor_id = ? AND successor_id = ?`,
+  coordinate(body?.out, 'out'), coordinate(body?.y, 'y'), coordinate(body?.in, 'in'),
+  anchor(body?.from, 'from'), anchor(body?.to, 'to'), pred, succ);
+}
+
 router.patch('/dependencies/route', handle((req, res) => {
   const pred = intParam(req.body?.predecessor_id);
   const succ = intParam(req.body?.successor_id);
   if (pred == null || succ == null || !get('SELECT 1 FROM task_dependency WHERE predecessor_id = ? AND successor_id = ?', pred, succ)) {
     throw missing('Link');
   }
-  run('UPDATE task_dependency SET route_out = ?, route_y = ?, route_in = ? WHERE predecessor_id = ? AND successor_id = ?',
-    coordinate(req.body?.out, 'out'), coordinate(req.body?.y, 'y'), coordinate(req.body?.in, 'in'), pred, succ);
+  writeRoute(pred, succ, req.body);
   res.json({ predecessor_id: pred, successor_id: succ });
+}));
+
+/**
+ * A whole arrangement at once: Smart Arrange, and putting back what it replaced.
+ * Every box and link listed is overwritten, nulls included; the rest are left alone.
+ */
+router.put('/projects/:id/layout', handle((req, res) => {
+  const id = Number(req.params.id);
+  if (!get('SELECT id FROM project WHERE id = ?', id)) throw missing('Project');
+  const tasks: unknown[] = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
+  const links: unknown[] = Array.isArray(req.body?.dependencies) ? req.body.dependencies : [];
+  const own = new Set(all<{ id: number }>('SELECT id FROM task WHERE project_id = ?', id).map((t) => t.id));
+  transaction(() => {
+    for (const raw of tasks) {
+      const t = raw as Record<string, unknown>;
+      const taskId = intParam(t?.id);
+      if (taskId == null || !own.has(taskId)) throw bad('Every task must belong to this project');
+      const x = coordinate(t.x, 'x');
+      const y = coordinate(t.y, 'y');
+      const both = x != null && y != null;
+      run('UPDATE task SET net_x = ?, net_y = ? WHERE id = ?', both ? Math.max(0, x) : null, both ? Math.max(0, y) : null, taskId);
+    }
+    for (const raw of links) {
+      const l = raw as Record<string, unknown>;
+      const pred = intParam(l?.predecessor_id);
+      const succ = intParam(l?.successor_id);
+      if (pred == null || succ == null || !own.has(succ)) throw bad('Every link must belong to this project');
+      writeRoute(pred, succ, l);
+    }
+  });
+  res.status(204).end();
 }));
 
 router.post('/projects/:id/layout/reset', handle((req, res) => {
@@ -712,7 +755,7 @@ router.post('/projects/:id/layout/reset', handle((req, res) => {
   if (!get('SELECT id FROM project WHERE id = ?', id)) throw missing('Project');
   transaction(() => {
     run('UPDATE task SET net_x = NULL, net_y = NULL WHERE project_id = ?', id);
-    run(`UPDATE task_dependency SET route_out = NULL, route_y = NULL, route_in = NULL
+    run(`UPDATE task_dependency SET route_out = NULL, route_y = NULL, route_in = NULL, route_from = NULL, route_to = NULL
           WHERE successor_id IN (SELECT id FROM task WHERE project_id = ?)`, id);
   });
   res.status(204).end();

@@ -488,7 +488,23 @@ are stored relative to the boxes (`task.net_x/net_y`, `task_dependency.route_*`)
 arrow keeps its shape when a box moves; an arrow touching a moved box but never shaped is drawn
 with sensible defaults, going round underneath when its target now sits to the left.
 Arrangement is shared with everyone and never touches the schedule. **Reset arrow** and
-**Reset layout** return to automatic. Hand arrangement applies to the plain view; with
+**Reset layout** return to automatic.
+
+**Smart Arrange** (`client/smartLayout.ts`) writes the tidiest drawing it can find as an
+ordinary hand arrangement, so it can be tweaked, shared and undone like one. It is a layered
+layout on a strict grid: columns by longest chain, with a task pulled right towards its
+successors when that shortens arrows; an arrow that skips columns rides a *lane*, a row
+reserved in every column it crosses and shared by one source's long arrows, so it is a straight
+line through empty slots; rows ordered for fewest crossings (barycentre sweeps from several
+starting orders, adjacent swaps, best kept); then whole rows chosen so arrows are level, the
+critical path weighing most so it runs as one straight line. Arrows attach at three anchors per
+side (`route_from`/`route_to`): the middle for a level arrow, the top quarter towards a row above,
+the bottom quarter towards one below. Each gutter's vertical runs get their own tracks, ordered
+for fewest crossings, and the gutter widens to fit. Arrows into one anchor from the next column
+merge on one trunk, unless that would make a line run through a turn of arrows that share
+neither a source nor a target; then they stay apart. Several candidates are scored (crossings,
+then turns, then size) and the best is saved in one write (`PUT /api/projects/:id/layout`).
+**Undo arrange** puts back exactly what it replaced, until another layout change. Hand arrangement applies to the plain view; with
 environment lanes on, the lanes lay the boxes out. Tests
 check this on the plan that first looked wrong and on random plans. **Show environments** puts each node in its environment's lane, in board
 order, with "No environment" last. **Critical path only** dims the rest. Zoom steps, never

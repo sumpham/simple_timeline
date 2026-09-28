@@ -120,6 +120,10 @@ CREATE TABLE IF NOT EXISTS task_dependency (
   route_out      REAL,
   route_y        REAL,
   route_in       REAL,
+  -- Which anchor the arrow leaves and reaches a box by: 'top', 'mid' or 'bottom'
+  -- on the box's side. NULL is the automatic port. Layout only.
+  route_from     TEXT,
+  route_to       TEXT,
   PRIMARY KEY (predecessor_id, successor_id),
   CHECK (predecessor_id <> successor_id)
 );

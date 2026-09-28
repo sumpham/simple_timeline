@@ -28,6 +28,15 @@ export type PlanData = {
   bookings: BookingView[];
 };
 
+/** A network arrow's shape as saved; see `Route` in client/network.ts. */
+export type LinkRoute = { out: number | null; y: number | null; in: number | null; from?: string | null; to?: string | null };
+
+/** Box positions and arrow shapes, for many at once. Nulls mean automatic. */
+export type SavedLayout = {
+  tasks: { id: number; x: number | null; y: number | null }[];
+  dependencies: ({ predecessor_id: number; successor_id: number } & LinkRoute)[];
+};
+
 /** What a task form sends. `predecessors` replaces the whole set when present. */
 export type TaskInput = Partial<Pick<Task,
   'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'assignee' | 'note' | 'actual_start' | 'actual_end'>>
@@ -98,11 +107,14 @@ export const api = {
     request<PlanImpact>('/api/tasks/preview', { method: 'POST', body: JSON.stringify({ project_id: projectId, change }) }),
   moveTaskBox: (id: number, pos: { x: number; y: number } | null) =>
     request<unknown>(`/api/tasks/${id}/position`, { method: 'PATCH', body: JSON.stringify(pos ?? { x: null, y: null }) }),
-  routeLink: (predecessorId: number, successorId: number, route: { out: number | null; y: number | null; in: number | null } | null) =>
+  routeLink: (predecessorId: number, successorId: number, route: LinkRoute | null) =>
     request<unknown>('/api/dependencies/route', {
       method: 'PATCH',
       body: JSON.stringify({ predecessor_id: predecessorId, successor_id: successorId, ...(route ?? { out: null, y: null, in: null }) }),
     }),
+  /** Overwrite many boxes and arrows at once; nulls put them back to automatic. */
+  saveLayout: (projectId: number, layout: SavedLayout) =>
+    request<void>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify(layout) }),
   resetLayout: (projectId: number) => request<void>(`/api/projects/${projectId}/layout/reset`, { method: 'POST' }),
   releaseBooking: (id: number) =>
     request<Booking & { previous_end: ISODate }>(`/api/bookings/${id}/release`, { method: 'POST' }),

@@ -175,6 +175,9 @@ export type TaskDependency = {
   route_out?: number | null;
   route_y?: number | null;
   route_in?: number | null;
+  /** The anchor on each box's side: 'top', 'mid' or 'bottom'; null is automatic. */
+  route_from?: string | null;
+  route_to?: string | null;
 };
 
 /** A task's computed place in the schedule. All floats are in working days. */

@@ -49,6 +49,10 @@ if (!depColumns.has('route_out')) {
   db.exec('ALTER TABLE task_dependency ADD COLUMN route_y REAL');
   db.exec('ALTER TABLE task_dependency ADD COLUMN route_in REAL');
 }
+if (!depColumns.has('route_from')) {
+  db.exec('ALTER TABLE task_dependency ADD COLUMN route_from TEXT');
+  db.exec('ALTER TABLE task_dependency ADD COLUMN route_to TEXT');
+}
 
 const projectColumns = new Set(
   db.prepare('PRAGMA table_info(project)').all().map((c) => (c as { name: string }).name),

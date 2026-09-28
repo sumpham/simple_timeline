@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { api, type PlanData, type TaskChange, type TaskInput } from '../api.ts';
+import { api, type PlanData, type SavedLayout, type TaskChange, type TaskInput } from '../api.ts';
 import type {
   BookingView, Environment, ISODate, PlanImpact, Project, Task, TaskSchedule, TaskStatus,
 } from '../../shared/types.ts';
@@ -9,6 +9,8 @@ import { formatPredecessors, parsePredecessors } from '../predecessors.ts';
 import { ENV_COLOR } from './Board.tsx';
 import { DangerButton, Modal } from './Dialogs.tsx';
 import { NetworkDiagram } from './NetworkDiagram.tsx';
+import { edgeKey, type Route } from '../network.ts';
+import type { Arrangement } from '../smartLayout.ts';
 
 /**
  * A project's plan: its tasks, what drives their dates, and the bookings they
@@ -58,6 +60,8 @@ export function PlanView({
   /** A typed date the schedule could not honour exactly, and why. */
   const [notice, setNotice] = useState<string | null>(null);
   const addRef = useRef<HTMLInputElement>(null);
+  /** What the last Smart Arrange replaced, until something else moves the layout. */
+  const [arrangeUndo, setArrangeUndo] = useState<SavedLayout | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -68,7 +72,7 @@ export function PlanView({
     }
   }, [projectId]);
 
-  useEffect(() => { setPlan(null); setEditing(null); setOutcome(null); void load(); }, [load]);
+  useEffect(() => { setPlan(null); setEditing(null); setOutcome(null); setArrangeUndo(null); void load(); }, [load]);
 
   const schedule = useMemo(() => new Map((plan?.schedule ?? []).map((s) => [s.id, s])), [plan]);
   const rowOf = useMemo(() => new Map((plan?.tasks ?? []).map((t, i) => [t.id, i + 1])), [plan]);
@@ -196,25 +200,77 @@ export function PlanView({
   // Network arrangement: layout only, so it is shown at once and saved behind the
   // scenes; a failed save reloads the plan, which puts the truth back.
   const moveTaskBox = (id: number, pos: { x: number; y: number } | null) => {
+    setArrangeUndo(null);
     setPlan((p) => p && { ...p, tasks: p.tasks.map((t) => (t.id === id ? { ...t, net_x: pos?.x ?? null, net_y: pos?.y ?? null } : t)) });
     api.moveTaskBox(id, pos).catch((err) => { fail(err); void load(); });
   };
-  const routeLink = (from: number, to: number, route: { out: number; y: number | null; in: number } | null) => {
+  const routeLink = (from: number, to: number, route: Route | null) => {
+    setArrangeUndo(null);
     setPlan((p) => p && {
       ...p,
       dependencies: p.dependencies.map((d) => (d.predecessor_id === from && d.successor_id === to
-        ? { ...d, route_out: route?.out ?? null, route_y: route?.y ?? null, route_in: route?.in ?? null }
+        ? {
+          ...d, route_out: route?.out ?? null, route_y: route?.y ?? null, route_in: route?.in ?? null,
+          route_from: route?.from ?? null, route_to: route?.to ?? null,
+        }
         : d)),
     });
     api.routeLink(from, to, route).catch((err) => { fail(err); void load(); });
   };
   const resetLayout = () => {
+    setArrangeUndo(null);
     setPlan((p) => p && {
       ...p,
       tasks: p.tasks.map((t) => ({ ...t, net_x: null, net_y: null })),
-      dependencies: p.dependencies.map((d) => ({ ...d, route_out: null, route_y: null, route_in: null })),
+      dependencies: p.dependencies.map((d) => ({ ...d, route_out: null, route_y: null, route_in: null, route_from: null, route_to: null })),
     });
     api.resetLayout(projectId).catch((err) => { fail(err); void load(); });
+  };
+  /** Show a whole layout at once and save it in one write. */
+  const applyLayout = (layout: SavedLayout) => {
+    const pos = new Map(layout.tasks.map((t) => [t.id, t]));
+    const shape = new Map(layout.dependencies.map((d) => [edgeKey(d.predecessor_id, d.successor_id), d]));
+    setPlan((p) => p && {
+      ...p,
+      tasks: p.tasks.map((t) => {
+        const q = pos.get(t.id);
+        return q ? { ...t, net_x: q.x, net_y: q.y } : t;
+      }),
+      dependencies: p.dependencies.map((d) => {
+        const r = shape.get(edgeKey(d.predecessor_id, d.successor_id));
+        return r ? { ...d, route_out: r.out, route_y: r.y, route_in: r.in, route_from: r.from ?? null, route_to: r.to ?? null } : d;
+      }),
+    });
+    api.saveLayout(projectId, layout).catch((err) => { fail(err); void load(); });
+  };
+  const arrangeNetwork = (a: Arrangement) => {
+    if (!plan) return;
+    // Keep exactly what is replaced, automatic places included, so Undo is exact.
+    setArrangeUndo({
+      tasks: plan.tasks.map((t) => ({ id: t.id, x: t.net_x ?? null, y: t.net_y ?? null })),
+      dependencies: plan.dependencies.map((d) => ({
+        predecessor_id: d.predecessor_id, successor_id: d.successor_id,
+        out: d.route_out ?? null, y: d.route_y ?? null, in: d.route_in ?? null, from: d.route_from ?? null, to: d.route_to ?? null,
+      })),
+    });
+    applyLayout({
+      tasks: plan.tasks.map((t) => {
+        const p = a.positions.get(t.id);
+        return { id: t.id, x: p?.x ?? null, y: p?.y ?? null };
+      }),
+      dependencies: plan.dependencies.map((d) => {
+        const r = a.routes.get(edgeKey(d.predecessor_id, d.successor_id));
+        return {
+          predecessor_id: d.predecessor_id, successor_id: d.successor_id,
+          out: r?.out ?? null, y: r?.y ?? null, in: r?.in ?? null, from: r?.from ?? null, to: r?.to ?? null,
+        };
+      }),
+    });
+  };
+  const undoArrange = () => {
+    if (!arrangeUndo) return;
+    applyLayout(arrangeUndo);
+    setArrangeUndo(null);
   };
 
   const setProjectDate = async (field: 'start_date' | 'target_date', value: string) => {
@@ -332,6 +388,8 @@ export function PlanView({
               onMoveTask={moveTaskBox}
               onRouteEdge={routeLink}
               onResetLayout={resetLayout}
+              onArrange={arrangeNetwork}
+              onUndoArrange={arrangeUndo ? undoArrange : undefined}
             />
           </>
         ) : (

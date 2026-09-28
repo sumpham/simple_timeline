@@ -107,6 +107,12 @@ are written by their own endpoints, never replan, and are never read by scheduli
 `writeState` deletes and reinserts a project's links on every task edit, so it copies the
 route columns across; drop that and every hand-shaped arrow resets on the next edit.
 
+**Smart Arrange is a hand arrangement, not a second automatic layout.** `client/smartLayout.ts`
+returns positions and routes (with `from`/`to` anchors) that are saved through the same columns
+as dragging, so every existing edit path works on them. `writeState` must copy `route_from` and
+`route_to` along with the other route columns. `tests/smartLayout.test.ts` checks random plans
+for lines through boxes, unrelated arrows sharing a line, and false junctions; keep all three.
+
 `task.environment_id` is `ON DELETE RESTRICT`, like bookings, and the environment delete route
 refuses while tasks use it, saying how many. The network layout (`client/network.ts`) is bounded like the ruler: a
 fixed number of barycentre sweeps, one pass per rank.

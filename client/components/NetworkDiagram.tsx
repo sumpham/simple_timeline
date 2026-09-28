@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type Keyboard
 import type { Environment, Task, TaskDependency, TaskSchedule } from '../../shared/types.ts';
 import { formatDate } from '../layout.ts';
 import {
-  edgeKey, layoutNetwork, NODE_H, NODE_W, roundedPath, routeOf, STUB, type LayoutLane, type Route,
+  edgeKey, layoutNetwork, NODE_H, NODE_W, roundedPath, routeOf, STUB, type Anchor, type LayoutLane, type Route,
 } from '../network.ts';
+import { smartArrange, type Arrangement } from '../smartLayout.ts';
 import { ENV_COLOR } from './Board.tsx';
 
 /** Zoom runs in fixed steps, like the board's grains, never continuously. */
@@ -33,7 +34,7 @@ type Drag =
  */
 export function NetworkDiagram({
   tasks, deps, schedule, order, environments, showEnvironments, criticalOnly, onOpenTask,
-  onMoveTask, onRouteEdge, onResetLayout,
+  onMoveTask, onRouteEdge, onResetLayout, onArrange, onUndoArrange,
 }: {
   tasks: readonly Task[];
   deps: readonly TaskDependency[];
@@ -49,6 +50,10 @@ export function NetworkDiagram({
   /** Save an arrow's shape; null makes it automatic again. */
   onRouteEdge: (from: number, to: number, route: Route | null) => void;
   onResetLayout: () => void;
+  /** Save a whole arrangement from Smart Arrange. */
+  onArrange: (arrangement: Arrangement) => void;
+  /** Put back what the last Smart Arrange replaced; absent when there is nothing to undo. */
+  onUndoArrange?: () => void;
 }) {
   const [zoom, setZoom] = useState(3);
   /** The task under the pointer or the keyboard: its own arrows come forward, the rest recede. */
@@ -80,9 +85,12 @@ export function NetworkDiagram({
 
   const saved = useMemo(() => ({
     positions: new Map(tasks.filter((t) => t.net_x != null && t.net_y != null).map((t) => [t.id, { x: t.net_x!, y: t.net_y! }])),
-    routes: new Map(deps.filter((d) => d.route_out != null).map((d) => [
+    routes: new Map<string, Route>(deps.filter((d) => d.route_out != null).map((d) => [
       edgeKey(d.predecessor_id, d.successor_id),
-      { out: d.route_out!, y: d.route_y ?? null, in: d.route_in ?? STUB },
+      {
+        out: d.route_out!, y: d.route_y ?? null, in: d.route_in ?? STUB,
+        from: (d.route_from as Anchor | null) ?? undefined, to: (d.route_to as Anchor | null) ?? undefined,
+      },
     ])),
   }), [tasks, deps]);
 
@@ -196,9 +204,20 @@ export function NetworkDiagram({
     e.preventDefault();
     const edge = layout.edges.find((x) => edgeKey(x.from, x.to) === key);
     if (!edge) return;
-    const orig = routeOf(edge.points, layout.nodes.get(edge.from)!, layout.nodes.get(edge.to)!);
+    // Reshaping keeps the anchors the arrow is attached by.
+    const kept = saved.routes.get(key);
+    const orig = { ...routeOf(edge.points, layout.nodes.get(edge.from)!, layout.nodes.get(edge.to)!), from: kept?.from, to: kept?.to };
     const baseY = edge.points[edge.points.length - 1][1];
     setDrag({ kind: 'handle', key, from: edge.from, to: edge.to, which, startX: e.clientX, startY: e.clientY, orig, baseY, route: orig });
+  };
+
+  const arrange = () => {
+    setSelected(null);
+    onArrange(smartArrange(
+      tasks.map((t) => ({ id: t.id, start: schedule.get(t.id)?.start ?? '', critical: critical(t.id) })),
+      deps,
+      order,
+    ));
   };
 
   if (!tasks.length) return null;
@@ -243,6 +262,21 @@ export function NetworkDiagram({
         {selectedEdge && saved.routes.has(selected!) && (
           <button type="button" className="btn quiet" onClick={() => { onRouteEdge(selectedEdge.from, selectedEdge.to, null); }}>
             Reset arrow
+          </button>
+        )}
+        {arrangeable && onUndoArrange && (
+          <button type="button" className="btn quiet" onClick={() => { setSelected(null); onUndoArrange(); }}>
+            Undo arrange
+          </button>
+        )}
+        {arrangeable && (
+          <button
+            type="button"
+            className="btn quiet"
+            onClick={arrange}
+            title="Line the boxes up on a grid and route every arrow clear of the others. Undo puts back what was there."
+          >
+            Smart Arrange
           </button>
         )}
         {hasArrangement && arrangeable && (

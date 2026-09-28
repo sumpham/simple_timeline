@@ -257,9 +257,10 @@ export function writeState(before: PlanState, next: PlanState): number | null {
     if (!taskIds.includes(idOf(d.predecessor_id)) || !taskIds.includes(idOf(d.successor_id))) continue;
     // Links are rewritten wholesale; a hand-shaped arrow must survive an unrelated edit.
     const kept = before.deps.find((b) => b.predecessor_id === d.predecessor_id && b.successor_id === d.successor_id);
-    run('INSERT INTO task_dependency (predecessor_id, successor_id, lag, route_out, route_y, route_in) VALUES (?, ?, ?, ?, ?, ?)',
+    run(`INSERT INTO task_dependency (predecessor_id, successor_id, lag, route_out, route_y, route_in, route_from, route_to)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       idOf(d.predecessor_id), idOf(d.successor_id), d.lag,
-      kept?.route_out ?? null, kept?.route_y ?? null, kept?.route_in ?? null);
+      kept?.route_out ?? null, kept?.route_y ?? null, kept?.route_in ?? null, kept?.route_from ?? null, kept?.route_to ?? null);
   }
   return createdId;
 }

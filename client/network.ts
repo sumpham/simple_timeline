@@ -33,7 +33,25 @@ export type LaneBand = { id: number | null; name: string; y: number; height: num
  * left of its target the last vertical run sits. Offsets are relative to the boxes
  * so a shaped arrow keeps its shape when a box is dragged.
  */
-export type Route = { out: number; y: number | null; in: number };
+export type Route = { out: number; y: number | null; in: number; from?: Anchor; to?: Anchor };
+
+/**
+ * Where on a box's side an arrow attaches: a quarter down, the middle, or three
+ * quarters down. Without one, an arrow leaves just above the middle and arrives
+ * just below it (the automatic router's ports). Outgoing and incoming quarter
+ * anchors sit a few pixels apart, so a line leaving one box never lies on a line
+ * arriving at a box level with it; the middle is kept for straight arrows.
+ */
+export type Anchor = 'top' | 'mid' | 'bottom';
+const OUT_ANCHOR: Record<Anchor, number> = { top: 14, mid: NODE_H / 2, bottom: NODE_H - 20 };
+const IN_ANCHOR: Record<Anchor, number> = { top: 20, mid: NODE_H / 2, bottom: NODE_H - 14 };
+export const ANCHORS: readonly Anchor[] = ['top', 'mid', 'bottom'];
+
+/** The height an arrow leaves (`out`) or reaches (`in`) a box at. */
+export function anchorY(box: { y: number }, side: 'out' | 'in', anchor?: Anchor | null): number {
+  if (anchor) return box.y + (side === 'out' ? OUT_ANCHOR : IN_ANCHOR)[anchor];
+  return box.y + NODE_H / 2 + (side === 'out' ? -6 : 6);
+}
 
 export type LayoutOverrides = {
   /** Dragged boxes, by task id, in layout coordinates. */
@@ -372,9 +390,9 @@ function routeEdges(
  */
 export function manualPoints(a: { x: number; y: number }, b: { x: number; y: number }, route: Route | null): [number, number][] {
   const x1 = a.x + NODE_W;
-  const y1 = a.y + NODE_H / 2 - 6;
+  const y1 = anchorY(a, 'out', route?.from);
   const x2 = b.x;
-  const y2 = b.y + NODE_H / 2 + 6;
+  const y2 = anchorY(b, 'in', route?.to);
   const backward = x2 < x1 + STUB * 2;
   const out = x1 + (route?.out ?? (backward ? STUB : Math.max(STUB, (x2 - x1) / 2)));
   // A target to the left is reached by going round underneath both boxes.
