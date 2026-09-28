@@ -2116,7 +2116,6 @@ kbd {
 
 /* ---------------------------------------------------------------- task table */
 
-.task-table-wrap { padding: 0 0 12px; }
 
 .task-table {
   width: 100%;
@@ -2227,6 +2226,106 @@ kbd {
 .task-add input:focus { border-style: solid; border-color: var(--ink); outline: none; background: var(--paper); }
 
 .table-hint { margin: 4px 20px 0; font-size: 12px; color: var(--muted); }
+
+/* ---------------------------------------------------------------- gantt
+
+   The table and its chart share one scroller, so rows line up and both
+   headers stick. The table is pinned on the left; the chart scrolls sideways
+   beneath it. */
+
+.task-table-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 0 0 12px; }
+.task-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  overscroll-behavior-x: contain;
+}
+.task-split-table {
+  flex: none;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--lane);
+  box-shadow: 1px 0 0 var(--rule), 6px 0 8px -6px rgba(22, 32, 43, 0.18);
+}
+/* Fixed layout, so the chart gets the room the inputs would otherwise claim. */
+.task-split .task-table { width: 884px; table-layout: fixed; }
+.task-split .task-table .c-name { width: auto; min-width: 0; }
+.task-split .task-table .c-env { width: 104px; }
+.task-split .task-table .c-num { width: 52px; }
+.task-split .task-table .c-after { width: 64px; }
+.task-split .task-table .c-date { width: 114px; }
+.task-split .task-table .c-status { width: 140px; }
+.task-split .task-table td { overflow: hidden; }
+/* Tall enough for the chart's two header rows, week over day. */
+.task-split .task-table thead th { height: 48px; vertical-align: bottom; }
+
+.gantt {
+  flex: 1 0 auto;
+  position: relative;
+  background: var(--lane);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.gantt-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: var(--gantt-head);
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  background: var(--lane-alt);
+  border-bottom: 1px solid var(--rule);
+  font-family: 'Archivo Narrow', 'Archivo', sans-serif;
+}
+.gantt-weeks, .gantt-days { display: flex; }
+.gantt-weeks span {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-left: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule-soft);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.gantt-weeks strong { font-weight: 600; color: var(--ink); }
+.gantt-days span {
+  flex: none;
+  width: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-left: 1px solid var(--rule-soft);
+}
+.gantt-days span:nth-child(5n + 1) { border-left-color: var(--rule); }
+.gantt-days .is-holiday { background: var(--shade-holiday); }
+.gantt-days .is-today { color: var(--today); font-weight: 700; }
+
+.gantt-body { display: block; }
+.gantt-day-line { stroke: var(--rule-soft); stroke-width: 1; }
+.gantt-week-line { stroke: var(--rule); stroke-width: 1; }
+.gantt-row-line { stroke: var(--rule-soft); stroke-width: 1; }
+.gantt-holiday { fill: var(--shade-holiday); }
+.gantt-today { stroke: var(--today); stroke-width: 1; }
+.gantt-target { stroke: var(--ink); stroke-width: 1.25; stroke-dasharray: 4 3; }
+
+/* Bars carry the environment hue; a task on no environment books nothing, so it is hollow. */
+.gantt-task { cursor: pointer; }
+.gantt-task rect, .gantt-task path { fill: var(--env-color); stroke: none; }
+.gantt-task.is-unbooked rect, .gantt-task.is-unbooked path { fill: var(--lane); stroke: var(--muted); stroke-width: 1.25; }
+.gantt-task.is-critical rect, .gantt-task.is-critical path { stroke: var(--critical); stroke-width: 2; }
+.gantt-task.is-done { opacity: 0.45; }
+.gantt-task:hover rect, .gantt-task:hover path { filter: brightness(1.12); }
+
+/* Links in ink, never orange or red: warm hues sit too near the alarm. */
+.gantt-link { fill: none; stroke: var(--muted); stroke-width: 1.1; }
+.gantt-link.is-critical { stroke: var(--critical); stroke-width: 1.6; }
+#gantt-arrow path { fill: var(--muted); }
+#gantt-arrow-critical path { fill: var(--critical); }
 
 /* ---------------------------------------------------------------- impact */
 
@@ -2466,6 +2565,12 @@ kbd {
   .task-add { display: block !important; padding: 4px 14px !important; }
   .task-add td:first-child { display: none; }
   .table-hint { display: none; }
+  .task-table-wrap { flex: none; }
+  .task-split { display: block; overflow: visible; }
+  .task-split-table { position: static; box-shadow: none; }
+  .task-split .task-table { width: 100%; }
+  .task-split .task-table .c-name { width: auto; min-width: 0; }
+  .gantt { display: none; }
   .holds { padding: 8px 14px; flex-direction: column; gap: 4px; }
   .network-toolbar { padding: 8px 14px; }
 }

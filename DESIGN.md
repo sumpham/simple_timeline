@@ -472,6 +472,18 @@ working day, or a predecessor finishes later. Alt+↑/↓ reorders.
 Critical rows carry a heavy ink rule. A task that should have started says so. On a phone,
 rows become stacked cards.
 
+**Gantt beside the table** (`client/components/Gantt.tsx`, scale in `client/gantt.ts`). The
+table is pinned on the left and the chart scrolls sideways under it; both share one scroller,
+so their headers stick together. Columns are weekdays only (week over day, Monday to Friday):
+task spans are working days, so a Friday bar meets the Monday bar after it. Holidays keep their
+column, shaded. The chart does not lay out rows: the table measures its own rows and the chart
+draws at those heights, so a taller row never drifts. Bars carry the environment hue; a task
+on no environment is hollow; critical bars and links are heavy ink; done is faded; a milestone
+is a diamond. Links are ink, not orange: warm hues sit too near the alarm. The target is a
+dashed ink line, today the thin red one. It opens on this week. Clicking a bar opens the task;
+the chart is hidden from assistive tech because the table already says everything it shows.
+On a phone it is hidden.
+
 **Network.** Activity-on-node boxes (early start, duration, early finish / name / late start,
 float, late finish), columns by longest chain, rows by barycentre sweeps. Arrows are routed so
 the drawing cannot lie: each source has its own vertical track in the gutter after it and each

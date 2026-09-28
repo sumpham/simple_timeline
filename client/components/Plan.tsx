@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { api, type PlanData, type SavedLayout, type TaskChange, type TaskInput } from '../api.ts';
 import type {
   BookingView, Environment, ISODate, PlanImpact, Project, Task, TaskSchedule, TaskStatus,
@@ -9,6 +9,7 @@ import { formatPredecessors, parsePredecessors } from '../predecessors.ts';
 import { ENV_COLOR } from './Board.tsx';
 import { DangerButton, Modal } from './Dialogs.tsx';
 import { NetworkDiagram } from './NetworkDiagram.tsx';
+import { Gantt, type RowBox } from './Gantt.tsx';
 import { edgeKey, type Route } from '../network.ts';
 import type { Arrangement } from '../smartLayout.ts';
 
@@ -353,6 +354,7 @@ export function PlanView({
             schedule={schedule}
             rowOf={rowOf}
             environments={environments}
+            holidays={holidays}
             today={today}
             saving={saving}
             addRef={addRef}
@@ -426,12 +428,13 @@ export function PlanView({
 // ---------------------------------------------------------------- task table
 
 function TaskTable({
-  plan, schedule, rowOf, environments, today, saving, addRef, onUpdate, onSetStart, onSetFinish, onAdd, onMove, onOpen, onError,
+  plan, schedule, rowOf, environments, holidays, today, saving, addRef, onUpdate, onSetStart, onSetFinish, onAdd, onMove, onOpen, onError,
 }: {
   plan: PlanData;
   schedule: ReadonlyMap<number, TaskSchedule>;
   rowOf: ReadonlyMap<number, number>;
   environments: readonly Environment[];
+  holidays: ReadonlySet<ISODate>;
   today: ISODate;
   saving: boolean;
   addRef: React.RefObject<HTMLInputElement>;
@@ -445,6 +448,28 @@ function TaskTable({
 }) {
   const [draft, setDraft] = useState('');
   const tableRef = useRef<HTMLTableElement>(null);
+  /** Where each row sits, so the chart beside the table draws at the table's heights. */
+  const [geometry, setGeometry] = useState<{ rows: Map<number, RowBox>; head: number; height: number }>(
+    { rows: new Map(), head: 0, height: 0 },
+  );
+
+  useLayoutEffect(() => {
+    const table = tableRef.current;
+    if (!table) return;
+    const measure = () => {
+      const rows = new Map<number, RowBox>();
+      for (const tr of table.querySelectorAll<HTMLTableRowElement>('tr[data-task]')) {
+        rows.set(Number(tr.dataset.task), { top: tr.offsetTop, height: tr.offsetHeight });
+      }
+      const head = table.tHead?.offsetHeight ?? 0;
+      const height = table.offsetHeight;
+      setGeometry((g) => (g.head === head && g.height === height && sameRows(g.rows, rows) ? g : { rows, head, height }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(table);
+    return () => ro.disconnect();
+  }, [plan]);
 
   /** Alt+arrows reorder the row under the caret, and keep it there. */
   const rowKeys = (e: KeyboardEvent, t: Task) => {
@@ -465,6 +490,8 @@ function TaskTable({
 
   return (
     <div className="task-table-wrap">
+      <div className="task-split">
+      <div className="task-split-table">
       <table className="task-table" ref={tableRef}>
         <thead>
           <tr>
@@ -594,12 +621,39 @@ function TaskTable({
           </tr>
         </tbody>
       </table>
+      </div>
+      {plan.tasks.length > 0 && (
+        <Gantt
+          tasks={plan.tasks}
+          deps={plan.dependencies}
+          schedule={schedule}
+          environments={environments}
+          holidays={holidays}
+          today={today}
+          start={plan.project.start_date ?? null}
+          target={plan.project.target_date ?? null}
+          rows={geometry.rows}
+          head={geometry.head}
+          height={geometry.height}
+          onOpen={onOpen}
+        />
+      )}
+      </div>
       <p className="table-hint">
         Enter moves on, Alt+↑/↓ reorders. In After, write rows: <kbd>2</kbd>, or <kbd>2+3</kbd> to wait three working days.
         A typed finish sets Days, counting working days only; a typed start is the earliest the task may begin.
       </p>
     </div>
   );
+}
+
+function sameRows(a: ReadonlyMap<number, RowBox>, b: ReadonlyMap<number, RowBox>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [id, r] of a) {
+    const q = b.get(id);
+    if (!q || q.top !== r.top || q.height !== r.height) return false;
+  }
+  return true;
 }
 
 /**
