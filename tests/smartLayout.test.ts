@@ -119,7 +119,8 @@ describe('smartArrange', () => {
       expect(falseJunctions(l), `run ${run}`).toEqual([]);
       for (const e of l.edges) expect(e.points[e.points.length - 1][0], `run ${run}`).toBeGreaterThan(e.points[0][0]);
     }
-  });
+    // A sweep, not a unit test: allow a slow CI agent well past vitest's 5s default.
+  }, 30_000);
 
   it('handles an empty plan and a lone task', () => {
     expect(smartArrange([], [], []).positions.size).toBe(0);

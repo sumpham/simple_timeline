@@ -229,19 +229,45 @@ function orderColumns(
     (rightN[g].get(p.u) ?? rightN[g].set(p.u, []).get(p.u)!).push(p);
   }));
 
-  const ranks = (c: number) => new Map(ord[c].map((it, i) => [it, i]));
+  // Each item's place in each column, kept current as columns are reordered.
+  const rank = Array.from({ length: columns }, () => new Int32Array(items.length));
+  const reindex = (c: number) => ord[c].forEach((it, i) => { rank[c][it] = i; });
+  const reindexAll = () => { for (let c = 0; c < columns; c++) reindex(c); };
+  reindexAll();
   const crossGutter = (g: number) => {
     if (g < 0 || g >= pairs.length) return 0;
-    const ra = ranks(g);
-    const rb = ranks(g + 1);
+    const ra = rank[g];
+    const rb = rank[g + 1];
     const ps = pairs[g];
     let x = 0;
     for (let i = 0; i < ps.length; i++) {
       for (let j = i + 1; j < ps.length; j++) {
-        if ((ra.get(ps[i].u)! - ra.get(ps[j].u)!) * (rb.get(ps[i].v)! - rb.get(ps[j].v)!) < 0) x += ps[i].w * ps[j].w;
+        if ((ra[ps[i].u] - ra[ps[j].u]) * (rb[ps[i].v] - rb[ps[j].v]) < 0) x += ps[i].w * ps[j].w;
       }
     }
     return x;
+  };
+  /**
+   * What swapping a (just above) with b in column c does to crossings. Only the
+   * links of a against the links of b can change, so only those are counted.
+   */
+  const swapGain = (c: number, a: number, b: number) => {
+    let before = 0;
+    let after = 0;
+    for (const [nb, other] of [[rightN[c], rank[c + 1]], [leftN[c], rank[c - 1]]] as const) {
+      if (!other) continue;
+      const pa = nb.get(a) ?? [];
+      const pb = nb.get(b) ?? [];
+      const far = (p: Pair, self: number) => other[p.u === self ? p.v : p.u];
+      for (const p of pa) {
+        for (const q of pb) {
+          const d = far(p, a) - far(q, b);
+          if (d > 0) before += p.w * q.w;
+          else if (d < 0) after += p.w * q.w;
+        }
+      }
+    }
+    return before - after;
   };
   const crossings = () => pairs.reduce((s, _, g) => s + crossGutter(g), 0);
 
@@ -261,6 +287,7 @@ function orderColumns(
       const sorted = slots.map((i) => c[i]).sort((a, b) => gkey.get(a)! - gkey.get(b)! || a - b);
       slots.forEach((i, k) => { c[i] = sorted[k]; });
     }
+    reindexAll();
   };
 
   const transpose = () => {
@@ -272,10 +299,10 @@ function orderColumns(
           const b = ord[c][i + 1];
           if (items[a].kind === 'lane' && items[b].kind === 'lane') continue;
           if (items[a].lonely !== items[b].lonely) continue;
-          const before = crossGutter(c - 1) + crossGutter(c);
+          if (swapGain(c, a, b) <= 0) continue;
           ord[c][i] = b; ord[c][i + 1] = a;
-          if (crossGutter(c - 1) + crossGutter(c) < before) improved = true;
-          else { ord[c][i] = a; ord[c][i + 1] = b; }
+          rank[c][a] = i + 1; rank[c][b] = i;
+          improved = true;
         }
       }
       if (!improved) break;
@@ -290,18 +317,19 @@ function orderColumns(
     const down = sweep % 2 === 0;
     for (let k = 1; k < columns; k++) {
       const c = down ? k : columns - 1 - k;
-      const ref = ranks(down ? c - 1 : c + 1);
-      const here = ranks(c);
+      const ref = rank[down ? c - 1 : c + 1];
+      const here = rank[c];
       const nb = down ? leftN[c] : rightN[c];
       const score = new Map(ord[c].map((it) => {
         const ns = nb.get(it);
-        if (!ns?.length) return [it, here.get(it)!];
+        if (!ns?.length) return [it, here[it]];
         let sw = 0;
         let s = 0;
-        for (const p of ns) { sw += p.w; s += p.w * ref.get(down ? p.u : p.v)!; }
+        for (const p of ns) { sw += p.w; s += p.w * ref[down ? p.u : p.v]; }
         return [it, s / sw];
       }));
-      ord[c].sort((a, b) => lonelyLast(a, b) || score.get(a)! - score.get(b)! || here.get(a)! - here.get(b)!);
+      ord[c].sort((a, b) => lonelyLast(a, b) || score.get(a)! - score.get(b)! || here[a] - here[b]);
+      reindex(c);
     }
     reconcile();
     transpose();
