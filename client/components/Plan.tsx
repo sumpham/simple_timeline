@@ -447,6 +447,50 @@ function TaskTable({
   onError: (msg: string | null) => void;
 }) {
   const [draft, setDraft] = useState('');
+  const splitRef = useRef<HTMLDivElement>(null);
+  /** The table's share of the split, in pixels; null is the table's full width. */
+  const [tableWidth, setTableWidth] = useState<number | null>(readSplit);
+  useEffect(() => {
+    try {
+      if (tableWidth == null) localStorage.removeItem(SPLIT_KEY);
+      else localStorage.setItem(SPLIT_KEY, String(tableWidth));
+    } catch { /* a remembered width is a convenience */ }
+  }, [tableWidth]);
+
+  /** Keep the divider where both sides still show something. */
+  const clampSplit = (w: number) => {
+    const room = splitRef.current?.clientWidth ?? w + SPLIT_MIN_CHART;
+    return Math.round(Math.max(SPLIT_MIN_TABLE, Math.min(w, room - SPLIT_MIN_CHART)));
+  };
+  const currentSplit = () => tableRef.current?.parentElement?.offsetWidth ?? TABLE_WIDTH;
+
+  const startSplitDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    const x0 = e.clientX;
+    const w0 = currentSplit();
+    const move = (ev: PointerEvent) => setTableWidth(clampSplit(w0 + ev.clientX - x0));
+    const end = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', end);
+      handle.removeEventListener('pointercancel', end);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  };
+
+  const splitKeys = (e: KeyboardEvent<HTMLDivElement>) => {
+    const step = e.shiftKey ? 80 : 16;
+    if (e.key === 'ArrowLeft') setTableWidth(clampSplit(currentSplit() - step));
+    else if (e.key === 'ArrowRight') setTableWidth(clampSplit(currentSplit() + step));
+    else if (e.key === 'Home') setTableWidth(SPLIT_MIN_TABLE);
+    else if (e.key === 'End' || e.key === 'Enter') setTableWidth(null);
+    else return;
+    e.preventDefault();
+  };
   const tableRef = useRef<HTMLTableElement>(null);
   /** Where each row sits, so the chart beside the table draws at the table's heights. */
   const [geometry, setGeometry] = useState<{ rows: Map<number, RowBox>; head: number; height: number }>(
@@ -490,8 +534,11 @@ function TaskTable({
 
   return (
     <div className="task-table-wrap">
-      <div className="task-split">
-      <div className="task-split-table">
+      <div className="task-split" ref={splitRef}>
+      <div
+        className={`task-split-table${tableWidth != null && plan.tasks.length ? ' is-sized' : ''}`}
+        style={tableWidth != null && plan.tasks.length ? { width: tableWidth } : undefined}
+      >
       <table className="task-table" ref={tableRef}>
         <thead>
           <tr>
@@ -621,6 +668,21 @@ function TaskTable({
           </tr>
         </tbody>
       </table>
+      {plan.tasks.length > 0 && (
+        <div
+          className="split-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize table and chart"
+          aria-valuenow={tableWidth ?? TABLE_WIDTH}
+          aria-valuemin={SPLIT_MIN_TABLE}
+          tabIndex={0}
+          title="Drag to resize. Double-click to show the whole table."
+          onPointerDown={startSplitDrag}
+          onDoubleClick={() => setTableWidth(null)}
+          onKeyDown={splitKeys}
+        />
+      )}
       </div>
       {plan.tasks.length > 0 && (
         <Gantt
@@ -645,6 +707,22 @@ function TaskTable({
       </p>
     </div>
   );
+}
+
+/** The table's natural width in the split; keep in step with `.task-split .task-table`. */
+const TABLE_WIDTH = 884;
+/** Row number and task name: never hide those. */
+const SPLIT_MIN_TABLE = 240;
+const SPLIT_MIN_CHART = 160;
+const SPLIT_KEY = 'plan.tableWidth';
+
+function readSplit(): number | null {
+  try {
+    const n = Number(localStorage.getItem(SPLIT_KEY));
+    return Number.isFinite(n) && n >= SPLIT_MIN_TABLE ? n : null;
+  } catch {
+    return null;
+  }
 }
 
 function sameRows(a: ReadonlyMap<number, RowBox>, b: ReadonlyMap<number, RowBox>): boolean {

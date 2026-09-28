@@ -2249,9 +2249,40 @@ kbd {
   z-index: 2;
   background: var(--lane);
   box-shadow: 1px 0 0 var(--rule), 6px 0 8px -6px rgba(22, 32, 43, 0.18);
+  /* Narrowed by the divider, the right-hand columns tuck under the chart.
+     clip, not hidden: hidden would make this a scroller and unstick the header. */
+  overflow-x: clip;
 }
+
+/* The divider: a wide, invisible grip over a one-pixel rule. */
+.split-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 3;
+  cursor: col-resize;
+  touch-action: none;
+}
+.split-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms;
+}
+.split-handle:hover::after,
+.split-handle:active::after,
+.split-handle:focus-visible::after { background: var(--focus); }
+.split-handle:focus-visible { outline: none; }
 /* Fixed layout, so the chart gets the room the inputs would otherwise claim. */
 .task-split .task-table { width: 884px; table-layout: fixed; }
+/* Once the divider sets a width, a wider table gives the room to the task name. */
+.task-split-table.is-sized .task-table { width: max(884px, 100%); }
 .task-split .task-table .c-name { width: auto; min-width: 0; }
 .task-split .task-table .c-env { width: 104px; }
 .task-split .task-table .c-num { width: 52px; }
@@ -2567,7 +2598,8 @@ kbd {
   .table-hint { display: none; }
   .task-table-wrap { flex: none; }
   .task-split { display: block; overflow: visible; }
-  .task-split-table { position: static; box-shadow: none; }
+  .task-split-table { position: static; box-shadow: none; width: auto !important; }
+  .split-handle { display: none; }
   .task-split .task-table { width: 100%; }
   .task-split .task-table .c-name { width: auto; min-width: 0; }
   .gantt { display: none; }

@@ -474,7 +474,10 @@ rows become stacked cards.
 
 **Gantt beside the table** (`client/components/Gantt.tsx`, scale in `client/gantt.ts`). The
 table is pinned on the left and the chart scrolls sideways under it; both share one scroller,
-so their headers stick together. Columns are weekdays only (week over day, Monday to Friday):
+so their headers stick together. A divider between them drags (or takes ←/→, Shift for bigger
+steps); narrowing tucks the right-hand columns under the chart, widening gives the room to the
+task name, and a double-click or End restores the whole table. The width is remembered per
+browser. Columns are weekdays only (week over day, Monday to Friday):
 task spans are working days, so a Friday bar meets the Monday bar after it. Holidays keep their
 column, shaded. The chart does not lay out rows: the table measures its own rows and the chart
 draws at those heights, so a taller row never drifts. Bars carry the environment hue; a task
