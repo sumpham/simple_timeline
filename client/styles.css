@@ -2516,7 +2516,7 @@ kbd {
 .gantt-link-hit { fill: none; stroke: transparent; stroke-width: 9; cursor: pointer; }
 .gantt-link-g:hover .gantt-link { stroke: var(--focus); stroke-width: 2; }
 #gantt-arrow path, #pf-arrow path { fill: var(--muted); }
-#gantt-arrow-critical path { fill: var(--critical-outline); }
+#gantt-arrow-critical path, #pf-arrow-critical path { fill: var(--critical-outline); }
 .gantt-rubber { stroke: var(--focus); stroke-width: 1.5; stroke-dasharray: 4 3; pointer-events: none; }
 
 /* Pointing at a task keeps its chain and fades the rest. */
@@ -2637,8 +2637,8 @@ kbd {
 .portfolio-task { overflow: hidden; text-overflow: ellipsis; }
 .portfolio-row.is-summary .portfolio-task { font-weight: 600; }
 .portfolio-fact { margin-left: auto; display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
+/* Neutral bars; a critical one takes the chart's red outline (.gantt-task.is-critical). */
 .pf-task .gantt-shape { fill: var(--env-other); }
-.pf-task.is-critical .gantt-shape { fill: var(--ink); }
 
 /* ---------------------------------------------------------------- print
 

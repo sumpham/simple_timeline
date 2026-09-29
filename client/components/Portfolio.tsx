@@ -159,6 +159,9 @@ export function Portfolio({ teamId, currentId, holidays, today, onOpen }: {
               <marker id="pf-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                 <path d="M0 0 8 4 0 8z" />
               </marker>
+              <marker id="pf-arrow-critical" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0 0 8 4 0 8z" />
+              </marker>
             </defs>
             {days.map((d, i) => holidays.has(d) && <rect key={`h${d}`} className="gantt-holiday" x={i * dayW} y={0} width={dayW} height={height} />)}
             {grid.map(({ col, strong }) => (
@@ -167,12 +170,19 @@ export function Portfolio({ teamId, currentId, holidays, today, onOpen }: {
             {rows.map((r, i) => (
               <line key={`r${i}`} className={r.kind === 'project' && i > 0 ? 'gantt-week-line' : 'gantt-row-line'} x1={0} x2={width} y1={i * ROW + 0.5} y2={i * ROW + 0.5} />
             ))}
-            {data.projects.flatMap((p) => p.dependencies.map((d) => {
-              const a = at.get(d.predecessor_id);
-              const b = at.get(d.successor_id);
-              if (!a || !b) return null;
-              return <path key={`${d.predecessor_id}-${d.successor_id}`} className="gantt-link" d={linkPath(a, b, d.type ?? 'FS')} markerEnd="url(#pf-arrow)" />;
-            }))}
+            {data.projects.flatMap((p) => {
+              const critical = new Set(p.schedule.filter((s) => s.critical).map((s) => s.id));
+              return p.dependencies.map((d) => {
+                const a = at.get(d.predecessor_id);
+                const b = at.get(d.successor_id);
+                if (!a || !b) return null;
+                const onPath = critical.has(d.predecessor_id) && critical.has(d.successor_id);
+                return (
+                  <path key={`${d.predecessor_id}-${d.successor_id}`} className={`gantt-link${onPath ? ' is-critical' : ''}`}
+                    d={linkPath(a, b, d.type ?? 'FS')} markerEnd={`url(#pf-arrow${onPath ? '-critical' : ''})`} />
+                );
+              });
+            })}
             {rows.map((r, i) => {
               const mid = i * ROW + ROW / 2;
               if (r.kind === 'project') {

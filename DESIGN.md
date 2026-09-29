@@ -452,8 +452,8 @@ which environment and what drives the dates. So there is a table to enter work f
 network to see why, and no kanban.
 
 **Colour.** No new hues. The critical path is heavy ink (`--critical`), except its lines: a
-critical bar's outline on the Gantt chart and a critical arrow on the chart and in the network
-are red (`--critical-outline`, by request; lines only, never a fill). Otherwise `--alarm` appears
+critical bar's outline on the Gantt chart and in the portfolio, and a critical arrow on the chart,
+in the network and in the portfolio, are red (`--critical-outline`, by request; lines only, never a fill). Otherwise `--alarm` appears
 only on a change that would double-book. Environment hue is a stripe on a task's environment cell,
 node or lane. Status is a glyph and a word (○ ◐ ‖ ●). Late is weight and words ("5 working days
 late"). A task-made booking has a dashed edge; a releasable tail is a wash of the lane with a
