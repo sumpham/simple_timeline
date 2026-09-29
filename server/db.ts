@@ -41,6 +41,10 @@ if (!taskColumns.has('net_x')) {
   db.exec('ALTER TABLE task ADD COLUMN net_x REAL');
   db.exec('ALTER TABLE task ADD COLUMN net_y REAL');
 }
+if (!taskColumns.has('parent_id')) {
+  db.exec('ALTER TABLE task ADD COLUMN parent_id INTEGER REFERENCES task(id) ON DELETE SET NULL');
+  db.exec('ALTER TABLE task ADD COLUMN progress INTEGER CHECK (progress IS NULL OR progress BETWEEN 0 AND 100)');
+}
 const depColumns = new Set(
   db.prepare('PRAGMA table_info(task_dependency)').all().map((c) => (c as { name: string }).name),
 );
@@ -48,6 +52,9 @@ if (!depColumns.has('route_out')) {
   db.exec('ALTER TABLE task_dependency ADD COLUMN route_out REAL');
   db.exec('ALTER TABLE task_dependency ADD COLUMN route_y REAL');
   db.exec('ALTER TABLE task_dependency ADD COLUMN route_in REAL');
+}
+if (!depColumns.has('type')) {
+  db.exec("ALTER TABLE task_dependency ADD COLUMN type TEXT NOT NULL DEFAULT 'FS' CHECK (type IN ('FS','SS','FF'))");
 }
 if (!depColumns.has('route_from')) {
   db.exec('ALTER TABLE task_dependency ADD COLUMN route_from TEXT');
@@ -59,6 +66,7 @@ const projectColumns = new Set(
 );
 if (!projectColumns.has('start_date')) db.exec('ALTER TABLE project ADD COLUMN start_date TEXT');
 if (!projectColumns.has('target_date')) db.exec('ALTER TABLE project ADD COLUMN target_date TEXT');
+if (!projectColumns.has('baseline_at')) db.exec('ALTER TABLE project ADD COLUMN baseline_at TEXT');
 
 // One-day bookings are CUSTOM events (see shared/bookings.ts); bring older
 // rows into line. Idempotent, so it is safe on every start.

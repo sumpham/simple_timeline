@@ -283,9 +283,10 @@ Four things in my first pass were defaults rather than choices, and I changed th
 
 **In MVP**: swimlane/environment mode, promoted from V2 per §1 above.
 **Built since**: full CRUD (§13), drag-to-edit (§14), conflict resolution, task management (§16).
-**Still open**: sub-project roll-ups, saved views, bulk shift, export. For tasks: start-to-start
-and finish-to-finish links, baselines and variance, percent complete, cross-project links,
-resource levelling, a task Gantt strip in the table.
+**Still open**: sub-project roll-ups, saved views, bulk shift. For tasks: cross-project links
+(the portfolio shows plans side by side, but a replan does not cascade between them), resource
+levelling, start-to-finish links, more than one baseline, and a virtualised chart for plans of
+several hundred rows.
 
 ## 13. Built beyond the original MVP list
 
@@ -472,20 +473,77 @@ working day, or a predecessor finishes later. Alt+↑/↓ reorders.
 Critical rows carry a heavy ink rule. A task that should have started says so. On a phone,
 rows become stacked cards.
 
-**Gantt beside the table** (`client/components/Gantt.tsx`, scale in `client/gantt.ts`). The
-table is pinned on the left and the chart scrolls sideways under it; both share one scroller,
-so their headers stick together. A divider between them drags (or takes ←/→, Shift for bigger
-steps); narrowing tucks the right-hand columns under the chart, widening gives the room to the
-task name, and a double-click or End restores the whole table. The width is remembered per
-browser. Columns are weekdays only (week over day, Monday to Friday):
-task spans are working days, so a Friday bar meets the Monday bar after it. Holidays keep their
-column, shaded. The chart does not lay out rows: the table measures its own rows and the chart
-draws at those heights, so a taller row never drifts. Bars carry the environment hue; a task
-on no environment is hollow; critical bars and links are heavy ink; done is faded; a milestone
-is a diamond. Links are ink, not orange: warm hues sit too near the alarm. The target is a
-dashed ink line, today the thin red one. It opens on this week. Clicking a bar opens the task;
-the chart is hidden from assistive tech because the table already says everything it shows.
-On a phone it is hidden.
+**Gantt beside the table** (`client/components/Gantt.tsx`, pure helpers in `client/gantt.ts`).
+The table is pinned on the left and the chart scrolls sideways under it; both share one
+scroller, so their headers stick together. A divider between them drags (or takes ←/→, Shift
+for bigger steps); narrowing tucks the right-hand columns under the chart, widening gives the
+room to the task name, and a double-click or End restores the whole table. The chart does not
+lay out rows: the table measures its own rows and the chart draws at those heights, so a taller
+row never drifts, and a row the table hides is not drawn.
+
+*Scale.* Columns are weekdays only: task spans are working days, so a Friday bar meets the
+Monday bar after it. Holidays keep their column, shaded. Three zoom steps, never continuous:
+**Days** (22px a day; week over weekday), **Weeks** (8px; month over week), **Months** (3px;
+quarter over month). Changing step keeps the same day at the left edge. **Fit** picks the widest
+step that shows the whole plan; **Today** scrolls to this week, which is also where it opens.
+
+*Marks.* Bars carry the environment hue; a task on no environment is hollow; critical bars and
+links are heavy ink; done is faded; a milestone is a diamond; a summary is an ink bracket.
+Progress is an ink band along the foot of the bar. **Float** is a thin tail to the last day the
+task may finish. **Baseline** is a grey rule under each bar, with the finish variance in working
+days after the label (`+3d`). **Bookings** washes each task's row with the booking it belongs to,
+dashed when tasks made it, and a releasable tail is a lane wash with a dashed ink edge that
+releases on click. Links are ink, never orange: warm hues sit too near the alarm. The target is
+a dashed ink line; today is the board's thin red line and flag. Pointing at or focusing a task
+keeps its chain (everything it waits on and everything waiting on it) and fades the rest.
+Labels, float, baseline, bookings and the strip are switched under **Show** and remembered.
+
+*Environments strip.* Under the chart, one lane per environment the plan uses, across the whole
+team: how full it is in quiet ink, and each double-booking over it, red when open, green when
+accepted. It comes from `/api/board` and the shared conflict engine, never a count of its own.
+
+*Editing on the chart.* Drag a bar to move it, its right end to change its length, or the dot
+after it onto another task to link them; click a link to change its type or lag, or remove it.
+Alt+←/→ on a focused bar moves it and Alt+Shift+←/→ resizes it, settling into one write. A drop
+lands on working days (`draggedStart`, `draggedFinish`) and becomes exactly the fields a typed
+date does (`startFields`, `finishFields`), saved through the same setStart / setFinish, so the
+impact banner, notes and Undo are the same. While dragging, the plan is re-run in the browser
+with `planProject`, `bookingsFor` and `conflictsFor` from `shared/plan.ts`: successors move, the
+strip redraws, and a double-booking the drop would make is named in red beside the bar before
+anything is saved. Summaries are opened, not dragged. On a phone the chart and its controls are
+hidden.
+
+**Outline.** A task can sit under another (`task.parent_id`), which makes that one a summary
+(`shared/wbs.ts`). The outline is always read depth-first, `sort_order` ordering siblings only,
+so a summary's tasks follow it by construction. Alt+Shift+→ puts a task under the one above it,
+Alt+Shift+← takes it out a level, Alt+↑/↓ swaps it (with everything under it) with a sibling;
+the task editor's **Part of** does the same. A summary is not scheduled: its dates, float and
+criticality roll up from its tasks, it books nothing (its environment is cleared), and its own
+length stops counting. A link to a summary holds every task under it and a link from one waits
+for all of them (`expandLinks`); such links are finish-to-start only, and a link between a task
+and its own summary is refused, or dropped when an outline move creates it. Deleting a summary
+lifts its tasks a level. Summaries fold in the table, and the network draws only working tasks.
+
+**Link types.** FS, SS and FF, with lag, in the After column as `2`, `2SS`, `2FF+1`. Scheduling
+and float follow the type in both passes; the chart draws SS round the left and FF round the
+right. The network still draws every link one way.
+
+**Baseline and progress.** **Save baseline** copies every task's current dates into
+`task_baseline`; scheduling never reads it. Progress is typed in the editor or worked out from
+status (done 100, in progress by working days elapsed, capped at 95); a summary weighs its
+tasks by length. Neither moves a date.
+
+**Files.** Export writes CSV (the table's own columns and row numbers) or MS Project XML (MSPDI:
+outline, durations, links with type and lag, progress, "start no earlier than"). Import reads
+either, parsed in the browser (`client/planIO.ts`), and appends the rows in one transaction and
+one replan (`POST /api/projects/:id/import`), with the same outline and link rules as a hand
+edit; an unknown environment books nothing and says so. Print uses a print stylesheet:
+landscape, no toolbars, nothing sticky.
+
+**Portfolio** (third tab). Every plan of the team on one chart: a project runs as a summary bar
+from its first task to its last, with its target and how late it is, and opens to its tasks.
+Read-only, computed without writing (`GET /api/teams/:id/portfolio`). Links between projects
+are not modelled, so each project's arrows stay inside it.
 
 **Network.** Activity-on-node boxes (early start, duration, early finish / name / late start,
 float, late finish), columns by longest chain, rows by barycentre sweeps. Arrows are routed so

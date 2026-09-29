@@ -39,7 +39,8 @@ export function planProject(input: PlanInput): PlanOutcome | { cycle: number[] }
     const s = schedule.tasks.get(t.id)!;
     return { ...t, start_date: s.start, end_date: s.end, total_float: s.total_float, critical: s.critical ? 1 : 0 };
   });
-  const holds = taskHolds(tasks, input.holidays);
+  // A summary is a roll-up, not work: it never books an environment itself.
+  const holds = taskHolds(tasks.filter((t) => !schedule.tasks.get(t.id)!.summary), input.holidays);
   return { schedule, deps: input.deps, tasks, holds, reconciliation: reconcileBookings(input.bookings, holds) };
 }
 
@@ -164,8 +165,12 @@ function bookingChanges(before: PlanOutcome, after: PlanOutcome, ctx: ImpactCont
   return out;
 }
 
-/** The team's open double-bookings with this project's bookings as each outcome has them. */
-function openFor(outcome: PlanOutcome, ctx: ImpactContext): Conflict[] {
+/**
+ * The team's bookings with this project's as an outcome would leave them. The
+ * chart's drag preview and occupancy strip read this, so they show what the
+ * impact check and the save would.
+ */
+export function bookingsFor(outcome: PlanOutcome, ctx: ImpactContext): BookingView[] {
   const mine = new Map(ctx.teamBookings.filter((b) => b.project_id === ctx.project.id).map((b) => [b.id, b]));
   const others = ctx.teamBookings.filter((b) => b.project_id !== ctx.project.id);
   let temp = -1;
@@ -191,10 +196,20 @@ function openFor(outcome: PlanOutcome, ctx: ImpactContext): Conflict[] {
   const managed = new Set(outcome.reconciliation.bookings.map((d) => d.id));
   const untouched = [...mine.values()].filter((b) => !managed.has(b.id) && !outcome.reconciliation.remove.includes(b.id));
 
-  return openConflicts(applyResolutions(detectConflicts([...others, ...untouched, ...planned]), ctx.resolved));
+  return [...others, ...untouched, ...planned];
 }
 
-function conflictChanges(before: PlanOutcome, after: PlanOutcome, ctx: ImpactContext) {
+/** Every double-booking under an outcome, accepted ones stamped resolved. */
+export function conflictsFor(outcome: PlanOutcome, ctx: ImpactContext): Conflict[] {
+  return applyResolutions(detectConflicts(bookingsFor(outcome, ctx)), ctx.resolved);
+}
+
+/** The team's open double-bookings with this project's bookings as each outcome has them. */
+function openFor(outcome: PlanOutcome, ctx: ImpactContext): Conflict[] {
+  return openConflicts(conflictsFor(outcome, ctx));
+}
+
+export function conflictChanges(before: PlanOutcome, after: PlanOutcome, ctx: ImpactContext) {
   // Compare by which pairs of projects clash on which environment, not by booking ids
   // (a new booking has none) or by whole groups (two clashes merging into one three-way
   // clash is one new fact, not a clash cleared and another made).

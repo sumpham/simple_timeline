@@ -101,6 +101,15 @@ export type ReconcileBooking = {
   hold_done?: number | null;
 };
 
+/**
+ * Bookings a plan may reshape: auto ones, and manual spans. Releases and one-day
+ * events are moments. The server's replan and the chart's drag preview both ask this.
+ */
+export function isManaged(b: { manual_start?: ISODate | null; manual_end?: ISODate | null; kind: BookingKind }): boolean {
+  if (b.manual_start == null || b.manual_end == null) return true;
+  return b.kind !== 'RELEASE' && b.manual_start !== b.manual_end;
+}
+
 /** One booking as the plan wants it. `id` null means it is new. */
 export type DesiredBooking = {
   id: number | null;

@@ -1,23 +1,34 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { api, type PlanData, type SavedLayout, type TaskChange, type TaskInput } from '../api.ts';
+import { api, type BoardData, type PlanData, type SavedLayout, type TaskChange, type TaskInput } from '../api.ts';
 import type {
-  BookingView, Environment, ISODate, PlanImpact, Project, Task, TaskSchedule, TaskStatus,
+  BookingView, Environment, ISODate, LinkType, PlanImpact, Project, Task, TaskDependency, TaskSchedule, TaskStatus,
 } from '../../shared/types.ts';
 import { formatDate, formatRange } from '../layout.ts';
-import { isWorkingDay, isValidISODate, workingDays } from '../../shared/dates.ts';
+import { addDays, isWorkingDay, isValidISODate, maxDate, workingDays } from '../../shared/dates.ts';
 import { formatPredecessors, parsePredecessors } from '../predecessors.ts';
 import { ENV_COLOR } from './Board.tsx';
 import { DangerButton, Modal } from './Dialogs.tsx';
 import { NetworkDiagram } from './NetworkDiagram.tsx';
-import { Gantt, type RowBox } from './Gantt.tsx';
+import { Gantt, STRIP_HEAD, STRIP_LANE, type GanttCommand, type GanttPreview, type GanttShow, type RowBox, type StripData } from './Gantt.tsx';
+import { Portfolio } from './Portfolio.tsx';
 import { edgeKey, type Route } from '../network.ts';
 import type { Arrangement } from '../smartLayout.ts';
+import {
+  descendants, indent, inOutlineOrder, leavesOf, moveAmongSiblings, outdent, outline, type OutlinePlacement, type OutlineRow,
+} from '../../shared/wbs.ts';
+import { expandLinks } from '../../shared/schedule.ts';
+import { bookingsFor, conflictChanges, conflictsFor, planProject, type ImpactContext } from '../../shared/plan.ts';
+import { isManaged, type ReconcileBooking } from '../../shared/taskHolds.ts';
+import {
+  finishFields, progressOf, rolledProgress, startFields, visibleRows, zoomToFit, ZOOM_LABEL, ZOOMS, type Zoom,
+} from '../gantt.ts';
+import { fromCsv, fromMspdi, toCsv, toMspdi } from '../planIO.ts';
 
 /**
  * A project's plan: its tasks, what drives their dates, and the bookings they
  * make. A scheduling instrument rather than a to-do list, so there is no
- * kanban here: a table to enter work fast, and a network to see why the dates
- * are what they are.
+ * kanban here: a table and its Gantt chart to enter and shape work, a network
+ * to see why the dates are what they are, and the team's portfolio.
  */
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
@@ -29,10 +40,15 @@ const STATUSES: TaskStatus[] = ['todo', 'in_progress', 'blocked', 'done'];
 
 /** Fields that move dates. Changing only a name or a note needs no impact check. */
 const SCHEDULE_FIELDS: (keyof TaskInput)[] = [
-  'duration', 'environment_id', 'predecessors', 'status', 'not_before', 'actual_start', 'actual_end',
+  'duration', 'environment_id', 'predecessors', 'status', 'not_before', 'actual_start', 'actual_end', 'parent_id',
 ];
 
-type Tab = 'tasks' | 'network';
+type Tab = 'tasks' | 'network' | 'portfolio';
+
+/** Tasks in outline order, so row numbers, the table and the chart all agree. */
+function normalize(p: PlanData): PlanData {
+  return { ...p, tasks: inOutlineOrder(p.tasks), baseline: p.baseline ?? [] };
+}
 
 export function PlanView({
   projectId, projects, environments, holidays, today, onBack, onSwitchProject, onChanged, onRelease,
@@ -49,7 +65,7 @@ export function PlanView({
   onChanged: () => void;
   onRelease: (b: BookingView) => Promise<void>;
 }) {
-  const [plan, setPlan] = useState<PlanData | null>(null);
+  const [plan, setPlanRaw] = useState<PlanData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('tasks');
   const [showEnvs, setShowEnvs] = useState(false);
@@ -63,24 +79,40 @@ export function PlanView({
   const addRef = useRef<HTMLInputElement>(null);
   /** What the last Smart Arrange replaced, until something else moves the layout. */
   const [arrangeUndo, setArrangeUndo] = useState<SavedLayout | null>(null);
+  /** The team's bookings around this plan, for the chart's occupancy strip and drag preview. */
+  const [board, setBoard] = useState<BoardData | null>(null);
+
+  const setPlan = (next: PlanData | null | ((p: PlanData | null) => PlanData | null)) => setPlanRaw(next as never);
 
   const load = useCallback(async () => {
     try {
-      setPlan(await api.plan(projectId));
+      setPlanRaw(normalize(await api.plan(projectId)));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load the plan');
     }
   }, [projectId]);
 
-  useEffect(() => { setPlan(null); setEditing(null); setOutcome(null); setArrangeUndo(null); void load(); }, [load]);
+  useEffect(() => { setPlanRaw(null); setBoard(null); setEditing(null); setOutcome(null); setArrangeUndo(null); void load(); }, [load]);
+
+  // The strip and the drag preview need everyone's bookings, not just this plan's.
+  const teamId = plan?.project.team_id;
+  useEffect(() => {
+    if (!plan || teamId == null) return;
+    const from = addDays(plan.project.start_date ?? today, -60);
+    const to = addDays(maxDate(plan.finish ?? today, plan.project.target_date ?? today), 180);
+    let live = true;
+    api.board({ team: teamId, from, to }).then((b) => { if (live) setBoard(b); }).catch(() => { if (live) setBoard(null); });
+    return () => { live = false; };
+  }, [plan?.schedule, plan?.bookings, teamId]);
 
   const schedule = useMemo(() => new Map((plan?.schedule ?? []).map((s) => [s.id, s])), [plan]);
   const rowOf = useMemo(() => new Map((plan?.tasks ?? []).map((t, i) => [t.id, i + 1])), [plan]);
+  const outlineRows = useMemo(() => new Map(outline(plan?.tasks ?? []).map((r) => [r.id, r])), [plan]);
 
   /** Apply a server answer: the new plan, and a nudge to the board behind us. */
   const accept = (next: PlanData) => {
-    setPlan(next);
+    setPlanRaw(normalize(next));
     onChanged();
   };
 
@@ -95,7 +127,7 @@ export function PlanView({
     setNotice(null);
     setSaving(true);
     try {
-      const fields = change.op === 'delete' ? null : change.fields;
+      const fields = change.op === 'create' || change.op === 'update' ? change.fields : null;
       const moves = change.op !== 'update' || SCHEDULE_FIELDS.some((f) => fields && f in fields);
       const impact = moves ? await api.previewTask(projectId, change) : null;
       if (impact?.cycle) {
@@ -105,6 +137,7 @@ export function PlanView({
       let res: { plan: PlanData; id?: number };
       if (change.op === 'create') res = await api.createTask(projectId, { name: 'New task', ...change.fields } as TaskInput & { name: string }, change.after_id);
       else if (change.op === 'update') res = await api.updateTask(change.id, change.fields);
+      else if (change.op === 'outline') res = await api.outlineTasks(projectId, change.placements);
       else res = await api.deleteTask(change.id, !!change.bridge);
       accept(res.plan);
       setError(null);
@@ -124,9 +157,10 @@ export function PlanView({
     const back: TaskInput = {};
     for (const k of Object.keys(fields) as (keyof TaskInput)[]) {
       if (k === 'predecessors') {
-        back.predecessors = plan!.dependencies.filter((d) => d.successor_id === t.id).map((d) => ({ id: d.predecessor_id, lag: d.lag }));
+        back.predecessors = plan!.dependencies.filter((d) => d.successor_id === t.id)
+          .map((d) => ({ id: d.predecessor_id, lag: d.lag, type: d.type ?? 'FS' }));
       } else {
-        (back as Record<string, unknown>)[k] = t[k as keyof Task];
+        (back as Record<string, unknown>)[k] = t[k as keyof Task] ?? null;
       }
     }
     return save({ op: 'update', id: t.id, fields }, title, async () => {
@@ -135,16 +169,15 @@ export function PlanView({
   };
 
   /**
-   * A typed start. Dates are scheduled, so it becomes the floor the task may not
-   * start before (or, once work has begun, the day it actually started). The task
-   * keeps its length, so its finish moves with it.
+   * A typed or dragged start. Dates are scheduled, so it becomes the floor the
+   * task may not start before (or, once work has begun, the day it actually
+   * started). The task keeps its length, so its finish moves with it.
    */
   const setStart = async (t: Task, date: ISODate): Promise<boolean> => {
-    const started = (t.status === 'in_progress' || t.status === 'done') && t.actual_start;
-    const fields: TaskInput = started ? { actual_start: date } : { not_before: date };
+    const fields = startFields(t, date);
     const next = await updateTask(t, fields, `Moved ${t.name} to start ${formatDate(date)}`);
     const got = next?.schedule.find((x) => x.id === t.id)?.start;
-    if (got && got !== date && !started) {
+    if (got && got !== date && !('actual_start' in fields)) {
       setNotice(!isWorkingDay(date, holidays)
         ? `${t.name} starts ${formatDate(got)}: ${formatDate(date)} is not a working day.`
         : `${t.name} starts ${formatDate(got)}, not ${formatDate(date)}: a task it comes after finishes later. Clear After to pin it to the date.`);
@@ -153,20 +186,18 @@ export function PlanView({
   };
 
   /**
-   * A typed finish sets the length: the working days from the start to that day,
-   * weekends and holidays left out. A finished task records it as its actual finish.
+   * A typed or dragged finish sets the length: the working days from the start
+   * to that day, weekends and holidays left out. A finished task records it as
+   * its actual finish.
    */
   const setFinish = async (t: Task, date: ISODate): Promise<boolean> => {
     const start = schedule.get(t.id)?.start;
     if (!start) return false;
-    if (date < start) {
+    const fields = finishFields(t, start, date, holidays);
+    if (!fields) {
       setError(`${t.name} starts ${formatDate(start)}, so it cannot finish before then.`);
       return false;
     }
-    let fields: TaskInput;
-    if (t.status === 'done') fields = { actual_end: date };
-    else if (t.duration === 0) fields = { not_before: date };
-    else fields = { duration: Math.max(1, workingDays(start, date, holidays)) };
     const days = fields.duration;
     const next = await updateTask(t, fields, days != null
       ? `${t.name} now takes ${days} working day${days === 1 ? '' : 's'}`
@@ -183,20 +214,131 @@ export function PlanView({
     return save({ op: 'create', fields: { name }, after_id: last?.id ?? null }, `Added ${name}`);
   };
 
-  const move = async (t: Task, delta: -1 | 1) => {
+  /** Outline moves, undone by putting every touched task back where it was. */
+  const reshape = async (placements: OutlinePlacement[] | null, title: string) => {
     if (!plan) return;
-    const ids = plan.tasks.map((x) => x.id);
-    const i = ids.indexOf(t.id);
-    const j = i + delta;
-    if (j < 0 || j >= ids.length) return;
-    [ids[i], ids[j]] = [ids[j], ids[i]];
-    try { accept((await api.reorderTasks(projectId, ids)).plan); } catch (err) { fail(err); }
+    if (!placements) return;
+    const was = placements.map((p) => {
+      const t = plan.tasks.find((x) => x.id === p.id)!;
+      return { id: t.id, parent_id: t.parent_id ?? null, sort_order: t.sort_order };
+    });
+    await save({ op: 'outline', placements }, title, async () => {
+      try { accept((await api.outlineTasks(projectId, was)).plan); setOutcome(null); } catch (err) { fail(err); }
+    });
+  };
+  const move = (t: Task, delta: -1 | 1) => reshape(plan && moveAmongSiblings(plan.tasks, t.id, delta), `Moved ${t.name}`);
+  const indentTask = (t: Task) => {
+    const p = plan && indent(plan.tasks, t.id);
+    if (!p) { setNotice(`${t.name} has no task above it at its level to go under.`); return Promise.resolve(); }
+    return reshape(p, `Put ${t.name} under ${plan!.tasks.find((x) => x.id === p.find((q) => q.id === t.id)!.parent_id)?.name}`);
+  };
+  const outdentTask = (t: Task) => reshape(plan && outdent(plan.tasks, t.id), `Moved ${t.name} out a level`);
+
+  /** A link drawn on the chart: the successor also waits for the predecessor to finish. */
+  const addLink = (predId: number, succId: number) => {
+    if (!plan) return Promise.resolve(null);
+    const succ = plan.tasks.find((t) => t.id === succId)!;
+    const pred = plan.tasks.find((t) => t.id === predId)!;
+    const current = plan.dependencies.filter((d) => d.successor_id === succId);
+    if (current.some((d) => d.predecessor_id === predId)) { setNotice(`${succ.name} already comes after ${pred.name}.`); return Promise.resolve(null); }
+    return updateTask(succ, {
+      predecessors: [...current.map((d) => ({ id: d.predecessor_id, lag: d.lag, type: d.type ?? 'FS' })), { id: predId, lag: 0, type: 'FS' }],
+    }, `${succ.name} now comes after ${pred.name}`);
+  };
+  const changeLink = (dep: TaskDependency, next: { type: LinkType; lag: number } | null) => {
+    if (!plan) return Promise.resolve(null);
+    const succ = plan.tasks.find((t) => t.id === dep.successor_id)!;
+    const pred = plan.tasks.find((t) => t.id === dep.predecessor_id)!;
+    const preds = plan.dependencies.filter((d) => d.successor_id === succ.id)
+      .filter((d) => next || d.predecessor_id !== dep.predecessor_id)
+      .map((d) => (d.predecessor_id === dep.predecessor_id && next
+        ? { id: d.predecessor_id, lag: next.lag, type: next.type }
+        : { id: d.predecessor_id, lag: d.lag, type: d.type ?? 'FS' }));
+    return updateTask(succ, { predecessors: preds }, next ? `Changed the link from ${pred.name} to ${succ.name}` : `Removed the link from ${pred.name} to ${succ.name}`);
+  };
+
+  // ---------------------------------------------------------------- the would-be plan
+
+  const impactCtx = useMemo<ImpactContext | null>(() => (plan && board ? {
+    project: { id: plan.project.id, name: plan.project.name, priority: plan.project.priority, target_date: plan.project.target_date },
+    teamBookings: board.bookings,
+    environments,
+    resolved: new Set(board.resolved ?? []),
+    holidays,
+  } : null), [plan, board, environments, holidays]);
+
+  const planInput = (tasks: Task[]) => ({
+    projectStart: plan!.project.start_date ?? today,
+    tasks,
+    deps: plan!.dependencies,
+    bookings: plan!.bookings.filter((b) => isManaged(b)) as unknown as ReconcileBooking[],
+    holidays,
+  });
+  const baseOutcome = useMemo(() => (plan ? planProject(planInput(plan.tasks)) : null), [plan, holidays]);
+
+  /** The plan as a drag would leave it: the shared scheduler and conflict engine, never a copy. */
+  const preview = (t: Task, fields: TaskInput): GanttPreview | null => {
+    if (!plan) return null;
+    const { predecessors: _, ...rest } = fields;
+    const after = planProject(planInput(plan.tasks.map((x) => (x.id === t.id ? { ...x, ...rest } : x))));
+    if ('cycle' in after) return null;
+    if (!impactCtx || !baseOutcome || 'cycle' in baseOutcome) return { schedule: after.schedule.tasks, bookings: [], conflicts: [], added: [] };
+    return {
+      schedule: after.schedule.tasks,
+      bookings: bookingsFor(after, impactCtx),
+      conflicts: conflictsFor(after, impactCtx),
+      added: conflictChanges(baseOutcome, after, impactCtx).added,
+    };
+  };
+
+  // ---------------------------------------------------------------- baseline, files
+
+  const saveBaseline = async () => {
+    try { accept((await api.saveBaseline(projectId)).plan); setNotice('Baseline saved: every task’s dates as they stand now.'); } catch (err) { fail(err); }
+  };
+  const clearBaseline = async () => {
+    try { accept((await api.clearBaseline(projectId)).plan); } catch (err) { fail(err); }
+  };
+
+  const fileData = () => ({
+    tasks: plan!.tasks,
+    outline: [...outlineRows.values()],
+    schedule,
+    deps: plan!.dependencies,
+    environments,
+  });
+  const exportCsv = () => download(`${slug(plan!.project.name)}-plan.csv`, toCsv(fileData()), 'text/csv');
+  const exportXml = () => download(`${slug(plan!.project.name)}-plan.xml`,
+    toMspdi({ ...fileData(), projectName: plan!.project.name, projectStart: plan!.project.start_date ?? null }), 'application/xml');
+  const importFile = async (file: File) => {
+    const text = await file.text();
+    const parsed = /^\s*</.test(text) ? fromMspdi(text) : fromCsv(text);
+    if (!parsed.ok) { setError(`Could not import ${file.name}: ${parsed.error}`); return; }
+    setSaving(true);
+    try {
+      const res = await api.importTasks(projectId, parsed.rows);
+      accept(res.plan);
+      const warnings = [...parsed.warnings, ...res.warnings];
+      setNotice(`Imported ${res.created} task${res.created === 1 ? '' : 's'} from ${file.name}, added after the plan’s last row.${warnings.length ? ` ${warnings.slice(0, 3).join('. ')}${warnings.length > 3 ? ` and ${warnings.length - 3} more notes` : ''}.` : ''}`);
+      setError(null);
+    } catch (err) { fail(err); } finally { setSaving(false); }
   };
 
   const project = plan?.project ?? projects.find((p) => p.id === projectId);
   const editingTask = editing != null ? plan?.tasks.find((t) => t.id === editing) ?? null : null;
   const criticalCount = plan?.critical_path.length ?? 0;
   const envById = (id: number | null) => environments.find((e) => e.id === id);
+
+  // The network draws the working tasks; a link to a summary reaches each task under it.
+  const network = useMemo(() => {
+    if (!plan) return null;
+    const summaries = new Set([...outlineRows.values()].filter((r) => r.summary).map((r) => r.id));
+    if (!summaries.size) return { tasks: plan.tasks, deps: plan.dependencies, order: plan.order };
+    const stored = new Map(plan.dependencies.map((d) => [edgeKey(d.predecessor_id, d.successor_id), d]));
+    const deps = expandLinks(plan.tasks, plan.dependencies, summaries)
+      .map((d) => stored.get(edgeKey(d.predecessor_id, d.successor_id)) ?? d);
+    return { tasks: plan.tasks.filter((t) => !summaries.has(t.id)), deps, order: plan.order.filter((id) => !summaries.has(id)) };
+  }, [plan, outlineRows]);
 
   // Network arrangement: layout only, so it is shown at once and saved behind the
   // scenes; a failed save reloads the plan, which puts the truth back.
@@ -245,7 +387,7 @@ export function PlanView({
     api.saveLayout(projectId, layout).catch((err) => { fail(err); void load(); });
   };
   const arrangeNetwork = (a: Arrangement) => {
-    if (!plan) return;
+    if (!plan || !network) return;
     // Keep exactly what is replaced, automatic places included, so Undo is exact.
     setArrangeUndo({
       tasks: plan.tasks.map((t) => ({ id: t.id, x: t.net_x ?? null, y: t.net_y ?? null })),
@@ -255,7 +397,7 @@ export function PlanView({
       })),
     });
     applyLayout({
-      tasks: plan.tasks.map((t) => {
+      tasks: network.tasks.map((t) => {
         const p = a.positions.get(t.id);
         return { id: t.id, x: p?.x ?? null, y: p?.y ?? null };
       }),
@@ -299,10 +441,11 @@ export function PlanView({
           <div className="segmented" role="group" aria-label="View">
             <button type="button" aria-pressed={tab === 'tasks'} onClick={() => setTab('tasks')}>Tasks</button>
             <button type="button" aria-pressed={tab === 'network'} onClick={() => setTab('network')}>Network</button>
+            <button type="button" aria-pressed={tab === 'portfolio'} onClick={() => setTab('portfolio')}>Portfolio</button>
           </div>
         </div>
 
-        {plan && (
+        {plan && tab !== 'portfolio' && (
           <dl className="plan-facts">
             <div>
               <dt><label htmlFor="plan-start">Starts</label></dt>
@@ -323,6 +466,12 @@ export function PlanView({
               <dt>Critical path</dt>
               <dd>{criticalCount ? `${criticalCount} task${criticalCount === 1 ? '' : 's'}` : '—'}</dd>
             </div>
+            {plan.project.baseline_at && (
+              <div>
+                <dt>Baseline</dt>
+                <dd>{formatDate(plan.project.baseline_at.slice(0, 10))}</dd>
+              </div>
+            )}
           </dl>
         )}
       </header>
@@ -346,27 +495,50 @@ export function PlanView({
       )}
 
       <div className="plan-body">
-        {!plan ? (
+        {tab === 'portfolio' ? (
+          teamId != null || project ? (
+            <Portfolio
+              teamId={(teamId ?? project!.team_id)}
+              currentId={projectId}
+              holidays={holidays}
+              today={today}
+              onOpen={(id) => { setTab('tasks'); if (id !== projectId) onSwitchProject(id); }}
+            />
+          ) : null
+        ) : !plan ? (
           <div className="empty"><p>Loading the plan…</p></div>
         ) : tab === 'tasks' ? (
           <TaskTable
             plan={plan}
             schedule={schedule}
             rowOf={rowOf}
+            outlineRows={outlineRows}
             environments={environments}
             holidays={holidays}
             today={today}
             saving={saving}
             addRef={addRef}
+            board={board}
+            preview={preview}
             onUpdate={(t, f) => updateTask(t, f).then(Boolean)}
             onSetStart={setStart}
             onSetFinish={setFinish}
             onAdd={(name) => addTask(name).then(Boolean)}
             onMove={move}
+            onIndent={indentTask}
+            onOutdent={outdentTask}
+            onLink={addLink}
+            onLinkChange={changeLink}
             onOpen={setEditing}
             onError={setError}
+            onRelease={async (b) => { await onRelease(b); await load(); }}
+            onSaveBaseline={saveBaseline}
+            onClearBaseline={clearBaseline}
+            onExportCsv={exportCsv}
+            onExportXml={exportXml}
+            onImport={importFile}
           />
-        ) : plan.tasks.length ? (
+        ) : network && network.tasks.length ? (
           <>
             <div className="network-toolbar">
               <label className="check">
@@ -379,10 +551,10 @@ export function PlanView({
               </label>
             </div>
             <NetworkDiagram
-              tasks={plan.tasks}
-              deps={plan.dependencies}
+              tasks={network.tasks}
+              deps={network.deps}
               schedule={schedule}
-              order={plan.order}
+              order={network.order}
               environments={environments}
               showEnvironments={showEnvs}
               criticalOnly={criticalOnly}
@@ -403,17 +575,20 @@ export function PlanView({
         )}
       </div>
 
-      {plan && <Holds bookings={plan.bookings} environments={environments} onRelease={async (b) => { await onRelease(b); await load(); }} />}
+      {plan && tab !== 'portfolio' && <Holds bookings={plan.bookings} environments={environments} onRelease={async (b) => { await onRelease(b); await load(); }} />}
 
       {editingTask && plan && (
         <TaskEditor
           task={editingTask}
           plan={plan}
           rowOf={rowOf}
+          outlineRows={outlineRows}
           schedule={schedule.get(editingTask.id)}
           environments={environments}
           envName={(id) => envById(id)?.name}
           saving={saving}
+          today={today}
+          holidays={holidays}
           onClose={() => setEditing(null)}
           onSave={async (fields) => { if (await updateTask(editingTask, fields)) setEditing(null); }}
           onDelete={async (bridge) => {
@@ -425,29 +600,118 @@ export function PlanView({
   );
 }
 
+function slug(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'plan';
+}
+
+/** Hand the browser a file to save. */
+function download(name: string, text: string, type: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: `${type};charset=utf-8` }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---------------------------------------------------------------- chart settings
+
+type ChartPrefs = { zoom: Zoom; show: GanttShow };
+const PREFS_KEY = 'plan.chart';
+const DEFAULT_PREFS: ChartPrefs = {
+  zoom: 'day',
+  show: { float: true, labels: true, baseline: true, bookings: false, strip: true },
+};
+
+function readPrefs(): ChartPrefs {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? 'null');
+    if (!raw || !ZOOMS.includes(raw.zoom)) return DEFAULT_PREFS;
+    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show } };
+  } catch {
+    return DEFAULT_PREFS;
+  }
+}
+
+function readCollapsed(projectId: number): Set<number> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(`plan.collapsed.${projectId}`) ?? '[]');
+    return new Set(Array.isArray(raw) ? raw.filter((x) => Number.isInteger(x)) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const SHOW_LABEL: Record<keyof GanttShow, string> = {
+  labels: 'Labels', float: 'Float', baseline: 'Baseline', bookings: 'Bookings', strip: 'Environments',
+};
+const SHOW_HINT: Record<keyof GanttShow, string> = {
+  labels: 'Task names beside the bars',
+  float: 'How far a task can slip before it moves the finish',
+  baseline: 'The saved plan under each bar, and how far each finish has moved from it',
+  bookings: 'The environment bookings behind the bars they come from',
+  strip: 'How full each environment is, across the whole team',
+};
+
 // ---------------------------------------------------------------- task table
 
 function TaskTable({
-  plan, schedule, rowOf, environments, holidays, today, saving, addRef, onUpdate, onSetStart, onSetFinish, onAdd, onMove, onOpen, onError,
+  plan, schedule, rowOf, outlineRows, environments, holidays, today, saving, addRef, board, preview,
+  onUpdate, onSetStart, onSetFinish, onAdd, onMove, onIndent, onOutdent, onLink, onLinkChange, onOpen, onError, onRelease,
+  onSaveBaseline, onClearBaseline, onExportCsv, onExportXml, onImport,
 }: {
   plan: PlanData;
   schedule: ReadonlyMap<number, TaskSchedule>;
   rowOf: ReadonlyMap<number, number>;
+  outlineRows: ReadonlyMap<number, OutlineRow>;
   environments: readonly Environment[];
   holidays: ReadonlySet<ISODate>;
   today: ISODate;
   saving: boolean;
   addRef: React.RefObject<HTMLInputElement>;
+  board: BoardData | null;
+  preview: (t: Task, fields: TaskInput) => GanttPreview | null;
   onUpdate: (t: Task, fields: TaskInput) => Promise<boolean>;
   onSetStart: (t: Task, date: ISODate) => Promise<boolean>;
   onSetFinish: (t: Task, date: ISODate) => Promise<boolean>;
   onAdd: (name: string) => Promise<boolean>;
   onMove: (t: Task, delta: -1 | 1) => Promise<void>;
+  onIndent: (t: Task) => Promise<void>;
+  onOutdent: (t: Task) => Promise<void>;
+  onLink: (predecessorId: number, successorId: number) => Promise<unknown>;
+  onLinkChange: (dep: TaskDependency, next: { type: LinkType; lag: number } | null) => Promise<unknown>;
   onOpen: (id: number) => void;
   onError: (msg: string | null) => void;
+  onRelease: (b: BookingView) => Promise<void>;
+  onSaveBaseline: () => Promise<void>;
+  onClearBaseline: () => Promise<void>;
+  onExportCsv: () => void;
+  onExportXml: () => void;
+  onImport: (file: File) => Promise<void>;
 }) {
   const [draft, setDraft] = useState('');
+  const tableRef = useRef<HTMLTableElement>(null);
   const splitRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [prefs, setPrefs] = useState<ChartPrefs>(readPrefs);
+  const [query, setQuery] = useState('');
+  const [criticalOnly, setCriticalOnly] = useState(false);
+  const [command, setCommand] = useState<GanttCommand | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<number>>(() => readCollapsed(plan.project.id));
+
+  useEffect(() => { setCollapsed(readCollapsed(plan.project.id)); }, [plan.project.id]);
+  useEffect(() => {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* a remembered view is a convenience */ }
+  }, [prefs]);
+  const toggle = (id: number) => setCollapsed((c) => {
+    const next = new Set(c);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    try { localStorage.setItem(`plan.collapsed.${plan.project.id}`, JSON.stringify([...next])); } catch { /* convenience */ }
+    return next;
+  });
+
   /** The table's share of the split, in pixels; null is the table's full width. */
   const [tableWidth, setTableWidth] = useState<number | null>(readSplit);
   useEffect(() => {
@@ -456,6 +720,72 @@ function TaskTable({
       else localStorage.setItem(SPLIT_KEY, String(tableWidth));
     } catch { /* a remembered width is a convenience */ }
   }, [tableWidth]);
+
+  // ------------------------------------------------------------ what shows
+
+  const q = query.trim().toLowerCase();
+  const visible = useMemo(() => visibleRows(
+    [...outlineRows.values()],
+    (id) => {
+      const t = plan.tasks.find((x) => x.id === id)!;
+      if (criticalOnly && !schedule.get(id)?.critical) return false;
+      return !q || t.name.toLowerCase().includes(q) || (t.assignee ?? '').toLowerCase().includes(q) || String(rowOf.get(id)) === q;
+    },
+    collapsed,
+  ), [outlineRows, plan.tasks, schedule, criticalOnly, q, collapsed, rowOf]);
+  const hiddenCount = plan.tasks.length - visible.size;
+
+  const progress = useMemo(() => {
+    const out = new Map<number, number>();
+    for (const t of plan.tasks) if (!outlineRows.get(t.id)?.summary) out.set(t.id, progressOf(t, today, holidays));
+    for (const t of plan.tasks) {
+      if (!outlineRows.get(t.id)?.summary) continue;
+      const parts = leavesOf(plan.tasks, t.id).map((id) => ({
+        progress: out.get(id) ?? 0, duration: plan.tasks.find((x) => x.id === id)?.duration ?? 0,
+      }));
+      out.set(t.id, rolledProgress(parts));
+    }
+    return out;
+  }, [plan.tasks, outlineRows, today, holidays]);
+
+  const baseline = useMemo(() => new Map(plan.baseline.map((b) => [b.task_id, { start: b.start_date, end: b.end_date }])), [plan.baseline]);
+
+  const strip = useMemo<StripData | null>(() => {
+    if (!board) return null;
+    const used = new Set<number>([
+      ...plan.tasks.map((t) => t.environment_id).filter((x): x is number => x != null),
+      ...plan.bookings.map((b) => b.environment_id),
+    ]);
+    const envs = environments.filter((e) => used.has(e.id));
+    return envs.length ? { environments: envs, bookings: board.bookings, conflicts: board.conflicts } : null;
+  }, [board, plan.tasks, plan.bookings, environments]);
+
+  // ------------------------------------------------------------ geometry
+
+  /** Where each row sits, so the chart beside the table draws at the table's heights. */
+  const [geometry, setGeometry] = useState<{ rows: Map<number, RowBox>; head: number; height: number }>(
+    { rows: new Map(), head: 0, height: 0 },
+  );
+
+  useLayoutEffect(() => {
+    const table = tableRef.current;
+    if (!table) return;
+    const measure = () => {
+      const rows = new Map<number, RowBox>();
+      for (const tr of table.querySelectorAll<HTMLTableRowElement>('tr[data-task]')) {
+        rows.set(Number(tr.dataset.task), { top: tr.offsetTop, height: tr.offsetHeight });
+      }
+      const head = table.tHead?.offsetHeight ?? 0;
+      const height = table.offsetHeight;
+      setGeometry((g) => (g.head === head && g.height === height && sameRows(g.rows, rows) ? g : { rows, head, height }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(table);
+    return () => ro.disconnect();
+  }, [plan, visible]);
+
+  // ------------------------------------------------------------ divider
 
   /** Keep the divider where both sides still show something. */
   const clampSplit = (w: number) => {
@@ -491,36 +821,28 @@ function TaskTable({
     else return;
     e.preventDefault();
   };
-  const tableRef = useRef<HTMLTableElement>(null);
-  /** Where each row sits, so the chart beside the table draws at the table's heights. */
-  const [geometry, setGeometry] = useState<{ rows: Map<number, RowBox>; head: number; height: number }>(
-    { rows: new Map(), head: 0, height: 0 },
-  );
 
-  useLayoutEffect(() => {
-    const table = tableRef.current;
-    if (!table) return;
-    const measure = () => {
-      const rows = new Map<number, RowBox>();
-      for (const tr of table.querySelectorAll<HTMLTableRowElement>('tr[data-task]')) {
-        rows.set(Number(tr.dataset.task), { top: tr.offsetTop, height: tr.offsetHeight });
-      }
-      const head = table.tHead?.offsetHeight ?? 0;
-      const height = table.offsetHeight;
-      setGeometry((g) => (g.head === head && g.height === height && sameRows(g.rows, rows) ? g : { rows, head, height }));
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(table);
-    return () => ro.disconnect();
-  }, [plan]);
+  const fit = () => {
+    const starts = [...schedule.values()].map((s) => s.start).sort();
+    const ends = [...schedule.values()].map((s) => s.end).sort();
+    if (!starts.length) return;
+    const room = (splitRef.current?.clientWidth ?? 1200) - currentSplit() - 24;
+    setPrefs((p) => ({ ...p, zoom: zoomToFit(starts[0], ends[ends.length - 1], room) }));
+    setCommand((c) => ({ kind: 'start', n: (c?.n ?? 0) + 1 }));
+  };
 
-  /** Alt+arrows reorder the row under the caret, and keep it there. */
+  // ------------------------------------------------------------ keys
+
+  /** Alt+↑/↓ reorders among siblings, Alt+Shift+→/← indents and outdents; the caret stays in its cell. */
   const rowKeys = (e: KeyboardEvent, t: Task) => {
-    if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    if (!e.altKey) return;
+    const indentKey = e.shiftKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft');
+    const moveKey = !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown');
+    if (!indentKey && !moveKey) return;
     e.preventDefault();
     const field = (e.target as HTMLElement).dataset.field;
-    void onMove(t, e.key === 'ArrowUp' ? -1 : 1).then(() => requestAnimationFrame(() => {
+    const done = moveKey ? onMove(t, e.key === 'ArrowUp' ? -1 : 1) : e.key === 'ArrowRight' ? onIndent(t) : onOutdent(t);
+    void done.then(() => requestAnimationFrame(() => {
       tableRef.current?.querySelector<HTMLElement>(`[data-task="${t.id}"] [data-field="${field}"]`)?.focus();
     }));
   };
@@ -532,8 +854,74 @@ function TaskTable({
     requestAnimationFrame(() => addRef.current?.focus());
   };
 
+  const setShow = (k: keyof GanttShow, v: boolean) => setPrefs((p) => ({ ...p, show: { ...p.show, [k]: v } }));
+  const hasBaseline = plan.baseline.length > 0;
+
   return (
     <div className="task-table-wrap">
+      <div className="gantt-toolbar" role="toolbar" aria-label="Chart">
+        <div className="segmented" role="group" aria-label="Zoom">
+          {ZOOMS.map((z) => (
+            <button key={z} type="button" aria-pressed={prefs.zoom === z} onClick={() => setPrefs((p) => ({ ...p, zoom: z }))}>{ZOOM_LABEL[z]}</button>
+          ))}
+        </div>
+        <button type="button" className="btn quiet" onClick={fit} title="Pick the zoom that shows the whole plan">Fit</button>
+        <button type="button" className="btn quiet" onClick={() => setCommand((c) => ({ kind: 'today', n: (c?.n ?? 0) + 1 }))}>Today</button>
+        <span className="toolbar-sep" aria-hidden="true" />
+        <details className="menu">
+          <summary className="btn quiet">Show</summary>
+          <div className="menu-list gantt-show" role="group" aria-label="Show on the chart">
+            {(Object.keys(SHOW_LABEL) as (keyof GanttShow)[]).map((k) => (
+              <label key={k} className="check" title={SHOW_HINT[k]}>
+                <input type="checkbox" checked={prefs.show[k]} onChange={(e) => setShow(k, e.target.checked)} />
+                <span>{SHOW_LABEL[k]}<small>{SHOW_HINT[k]}</small></span>
+              </label>
+            ))}
+          </div>
+        </details>
+        <input
+          className="gantt-search"
+          type="search"
+          value={query}
+          placeholder="Find a task or person"
+          aria-label="Find a task or person"
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <label className="check">
+          <input type="checkbox" checked={criticalOnly} onChange={(e) => setCriticalOnly(e.target.checked)} />
+          Critical only
+        </label>
+        <span className="spacer" />
+        {hasBaseline ? (
+          <DangerButton label="Clear baseline" confirmLabel="Clear it?" onConfirm={() => void onClearBaseline()} disabled={saving} />
+        ) : null}
+        <button type="button" className="btn quiet" onClick={() => void onSaveBaseline()} disabled={saving || !plan.tasks.length}
+          title="Keep every task’s current dates to compare the plan against later">
+          {hasBaseline ? 'Update baseline' : 'Save baseline'}
+        </button>
+        <details className="menu">
+          <summary className="btn quiet">Export</summary>
+          <div className="menu-list" role="menu">
+            <button type="button" role="menuitem" onClick={onExportCsv}>CSV for spreadsheets</button>
+            <button type="button" role="menuitem" onClick={onExportXml}>MS Project XML</button>
+            <button type="button" role="menuitem" onClick={() => window.print()}>Print or save as PDF</button>
+          </div>
+        </details>
+        <button type="button" className="btn quiet" onClick={() => fileRef.current?.click()} disabled={saving}
+          title="Add tasks from a CSV or MS Project XML file">Import</button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".csv,.txt,.xml,text/csv,application/xml,text/xml"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (f) void onImport(f);
+          }}
+        />
+      </div>
+
       <div className="task-split" ref={splitRef}>
       <div
         className={`task-split-table${tableWidth != null && plan.tasks.length ? ' is-sized' : ''}`}
@@ -546,7 +934,7 @@ function TaskTable({
             <th scope="col" className="c-name">Task</th>
             <th scope="col" className="c-env">Environment</th>
             <th scope="col" className="c-num">Days</th>
-            <th scope="col" className="c-after" title="Rows this task waits for. 2+3 means three working days after row 2 ends.">After</th>
+            <th scope="col" className="c-after" title="Rows this task waits for. 2+3 means three working days after row 2 ends; 2SS starts with it, 2FF finishes with it.">After</th>
             <th scope="col" className="c-date">Start</th>
             <th scope="col" className="c-date">Finish</th>
             <th scope="col" className="c-num">Float</th>
@@ -555,24 +943,42 @@ function TaskTable({
         </thead>
         <tbody>
           {plan.tasks.map((t) => {
+            if (!visible.has(t.id)) return null;
             const s = schedule.get(t.id);
+            const o = outlineRows.get(t.id);
+            const summary = !!o?.summary;
             const env = environments.find((e) => e.id === t.environment_id);
-            const overdue = t.status !== 'done' && t.status !== 'in_progress' && s && s.start < today;
+            const overdue = !summary && t.status !== 'done' && t.status !== 'in_progress' && s && s.start < today;
+            const leaves = summary ? leavesOf(plan.tasks, t.id).map((id) => plan.tasks.find((x) => x.id === id)!) : [];
+            const rolled: TaskStatus = leaves.every((x) => x.status === 'done') ? 'done'
+              : leaves.some((x) => x.status === 'in_progress' || x.status === 'done') ? 'in_progress'
+                : leaves.some((x) => x.status === 'blocked') ? 'blocked' : 'todo';
             return (
               <tr
                 key={t.id}
                 data-task={t.id}
-                className={`${s?.critical ? 'is-critical' : ''}${t.status === 'done' ? ' is-done' : ''}`}
-                style={{ ['--env-color' as string]: env ? ENV_COLOR[env.kind] : 'transparent' } as CSSProperties}
+                className={`${s?.critical ? 'is-critical' : ''}${t.status === 'done' && !summary ? ' is-done' : ''}${summary ? ' is-summary' : ''}`}
+                style={{ ['--env-color' as string]: env ? ENV_COLOR[env.kind] : 'transparent', ['--depth' as string]: o?.depth ?? 0 } as CSSProperties}
                 onKeyDown={(e) => rowKeys(e, t)}
               >
                 <td className="c-row">
-                  <button type="button" className="row-num" onClick={() => onOpen(t.id)} aria-label={`Open ${t.name}`} title="Open task">
+                  <button type="button" className="row-num" onClick={() => onOpen(t.id)} aria-label={`Open ${t.name}`} title={`Open task ${o?.wbs ?? ''}`}>
                     {rowOf.get(t.id)}
                   </button>
                 </td>
                 <td className="c-name">
                   <div className="name-cell">
+                  {summary ? (
+                    <button
+                      type="button"
+                      className="outline-toggle"
+                      aria-expanded={!collapsed.has(t.id)}
+                      aria-label={`${collapsed.has(t.id) ? 'Show' : 'Hide'} the tasks under ${t.name}`}
+                      onClick={() => toggle(t.id)}
+                    >
+                      <svg viewBox="0 0 10 10" aria-hidden="true"><path d={collapsed.has(t.id) ? 'M3 1.5 7 5 3 8.5z' : 'M1.5 3 5 7 8.5 3z'} /></svg>
+                    </button>
+                  ) : <span className="outline-toggle is-leaf" aria-hidden="true" />}
                   <CellInput
                     field="name"
                     label="Task name"
@@ -586,28 +992,36 @@ function TaskTable({
                   </div>
                 </td>
                 <td className="c-env" data-label="Environment">
-                  <select
-                    data-field="env"
-                    aria-label="Environment"
-                    value={t.environment_id ?? ''}
-                    onChange={(e) => void onUpdate(t, { environment_id: e.target.value ? Number(e.target.value) : null })}
-                  >
-                    <option value="">None</option>
-                    {environments.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-                  </select>
+                  {summary ? <span className="cell-quiet" title="A summary books nothing; its tasks do">—</span> : (
+                    <select
+                      data-field="env"
+                      aria-label="Environment"
+                      value={t.environment_id ?? ''}
+                      onChange={(e) => void onUpdate(t, { environment_id: e.target.value ? Number(e.target.value) : null })}
+                    >
+                      <option value="">None</option>
+                      {environments.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                    </select>
+                  )}
                 </td>
                 <td className="c-num" data-label="Days">
-                  <CellInput
-                    field="duration"
-                    label="Working days"
-                    inputMode="numeric"
-                    value={String(t.duration)}
-                    onCommit={(v) => {
-                      const n = Number(v);
-                      if (!Number.isInteger(n) || n < 0) { onError('Days is a whole number of working days; 0 makes a milestone.'); return false; }
-                      return n !== t.duration ? onUpdate(t, { duration: n }) : undefined;
-                    }}
-                  />
+                  {summary ? (
+                    <span className="cell-quiet" title="Working days from its first task’s start to its last task’s finish">
+                      {s ? workingDays(s.start, s.end, holidays) : '—'}
+                    </span>
+                  ) : (
+                    <CellInput
+                      field="duration"
+                      label="Working days"
+                      inputMode="numeric"
+                      value={String(t.duration)}
+                      onCommit={(v) => {
+                        const n = Number(v);
+                        if (!Number.isInteger(n) || n < 0) { onError('Days is a whole number of working days; 0 makes a milestone.'); return false; }
+                        return n !== t.duration ? onUpdate(t, { duration: n }) : undefined;
+                      }}
+                    />
+                  )}
                 </td>
                 <td className="c-after" data-label="After">
                   <CellInput
@@ -620,32 +1034,41 @@ function TaskTable({
                       if (!parsed.ok) { onError(parsed.error); return false; }
                       if (v.trim() === formatPredecessors(plan.dependencies, t.id, rowOf)) return undefined;
                       return onUpdate(t, {
-                        predecessors: parsed.rows.map((r) => ({ id: plan.tasks[r.row - 1].id, lag: r.lag })),
+                        predecessors: parsed.rows.map((r) => ({ id: plan.tasks[r.row - 1].id, lag: r.lag, type: r.type })),
                       });
                     }}
                   />
                 </td>
                 <td className="c-date" data-label="Start">
-                  {s ? <DateCell field="start" label={`Start of ${t.name}`} value={s.start} onCommit={(d) => onSetStart(t, d)} /> : '—'}
+                  {!s ? '—' : summary ? <span className="cell-quiet">{formatDate(s.start)}</span>
+                    : <DateCell field="start" label={`Start of ${t.name}`} value={s.start} onCommit={(d) => onSetStart(t, d)} />}
                 </td>
                 <td className="c-date" data-label="Finish">
-                  {s ? <DateCell field="finish" label={`Finish of ${t.name}`} value={s.end} onCommit={(d) => onSetFinish(t, d)} /> : '—'}
+                  {!s ? '—' : summary ? <span className="cell-quiet">{formatDate(s.end)}</span>
+                    : <DateCell field="finish" label={`Finish of ${t.name}`} value={s.end} onCommit={(d) => onSetFinish(t, d)} />}
                 </td>
                 <td className="c-num c-float" data-label="Float">
                   {s ? (s.critical ? <strong>critical</strong> : `${s.total_float}d`) : '—'}
                 </td>
                 <td className="c-status" data-label="Status">
-                  <label className="status-cell">
-                    <span className="status-glyph" aria-hidden="true">{STATUS_GLYPH[t.status]}</span>
-                    <select
-                      data-field="status"
-                      aria-label="Status"
-                      value={t.status}
-                      onChange={(e) => void onUpdate(t, { status: e.target.value as TaskStatus })}
-                    >
-                      {STATUSES.map((x) => <option key={x} value={x}>{STATUS_LABEL[x]}</option>)}
-                    </select>
-                  </label>
+                  {summary ? (
+                    <span className="status-cell cell-quiet" title="Rolled up from its tasks">
+                      <span className="status-glyph" aria-hidden="true">{STATUS_GLYPH[rolled]}</span>
+                      {STATUS_LABEL[rolled]}{progress.get(t.id) ? `, ${progress.get(t.id)}%` : ''}
+                    </span>
+                  ) : (
+                    <label className="status-cell">
+                      <span className="status-glyph" aria-hidden="true">{STATUS_GLYPH[t.status]}</span>
+                      <select
+                        data-field="status"
+                        aria-label="Status"
+                        value={t.status}
+                        onChange={(e) => void onUpdate(t, { status: e.target.value as TaskStatus })}
+                      >
+                        {STATUSES.map((x) => <option key={x} value={x}>{STATUS_LABEL[x]}</option>)}
+                      </select>
+                    </label>
+                  )}
                   {overdue && <span className="overdue" title={`Scheduled to start ${formatDate(s!.start)}`}>should have started</span>}
                 </td>
               </tr>
@@ -668,6 +1091,16 @@ function TaskTable({
           </tr>
         </tbody>
       </table>
+      {strip && prefs.show.strip && plan.tasks.length > 0 && (
+        <div className="strip-labels" style={{ ['--strip-head' as string]: `${STRIP_HEAD}px`, ['--strip-lane' as string]: `${STRIP_LANE}px` } as CSSProperties}>
+          <div className="strip-labels-head">Environments, whole team</div>
+          {strip.environments.map((e) => (
+            <div key={e.id} className="strip-labels-row" style={{ ['--env-color' as string]: ENV_COLOR[e.kind] } as CSSProperties}>
+              {e.name}<span>room for {e.capacity}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {plan.tasks.length > 0 && (
         <div
           className="split-handle"
@@ -687,6 +1120,7 @@ function TaskTable({
       {plan.tasks.length > 0 && (
         <Gantt
           tasks={plan.tasks}
+          outline={outlineRows}
           deps={plan.dependencies}
           schedule={schedule}
           environments={environments}
@@ -697,13 +1131,28 @@ function TaskTable({
           rows={geometry.rows}
           head={geometry.head}
           height={geometry.height}
+          zoom={prefs.zoom}
+          show={prefs.show}
+          baseline={baseline}
+          bookings={plan.bookings}
+          progress={progress}
+          strip={strip}
+          command={command}
+          preview={preview}
           onOpen={onOpen}
+          onSetStart={onSetStart}
+          onSetFinish={onSetFinish}
+          onLink={onLink}
+          onLinkChange={onLinkChange}
+          onRelease={onRelease}
         />
       )}
       </div>
       <p className="table-hint">
-        Enter moves on, Alt+↑/↓ reorders. In After, write rows: <kbd>2</kbd>, or <kbd>2+3</kbd> to wait three working days.
-        A typed finish sets Days, counting working days only; a typed start is the earliest the task may begin.
+        {hiddenCount > 0 && <><strong>{hiddenCount} row{hiddenCount === 1 ? '' : 's'} hidden</strong> by the filter or a closed summary. </>}
+        Enter moves on, Alt+↑/↓ reorders, Alt+Shift+→/← puts a task under the one above or takes it out. In After, write rows:
+        {' '}<kbd>2</kbd>, <kbd>2+3</kbd> to wait three working days, <kbd>2SS</kbd> to start with it, <kbd>2FF</kbd> to finish with it.
+        On the chart, drag a bar to move it, its right end to change its length, or the dot after it onto another task to link them.
       </p>
     </div>
   );
@@ -835,11 +1284,14 @@ function DateCell({ field, label, value, onCommit }: {
 // ---------------------------------------------------------------- task editor
 
 function TaskEditor({
-  task, plan, rowOf, schedule, environments, envName, saving, onClose, onSave, onDelete,
+  task, plan, rowOf, outlineRows, schedule, environments, envName, saving, today, holidays, onClose, onSave, onDelete,
 }: {
   task: Task;
   plan: PlanData;
   rowOf: ReadonlyMap<number, number>;
+  outlineRows: ReadonlyMap<number, OutlineRow>;
+  today: ISODate;
+  holidays: ReadonlySet<ISODate>;
   schedule?: TaskSchedule;
   environments: readonly Environment[];
   envName: (id: number | null) => string | undefined;
@@ -858,13 +1310,19 @@ function TaskEditor({
   const [actualEnd, setActualEnd] = useState(task.actual_end ?? '');
   const [assignee, setAssignee] = useState(task.assignee ?? '');
   const [note, setNote] = useState(task.note ?? '');
+  const [parentId, setParentId] = useState<number | null>(task.parent_id ?? null);
+  const [progressText, setProgressText] = useState(task.progress == null ? '' : String(task.progress));
+  const summary = !!outlineRows.get(task.id)?.summary;
+  const under = useMemo(() => descendants(plan.tasks, task.id), [plan.tasks, task.id]);
+  const progressN = progressText.trim() === '' ? null : Number(progressText);
+  const progressOk = progressN == null || (Number.isInteger(progressN) && progressN >= 0 && progressN <= 100);
   const [bridge, setBridge] = useState(true);
   const [deleteImpact, setDeleteImpact] = useState<PlanImpact | null>(null);
   const [editImpact, setEditImpact] = useState<PlanImpact | null>(null);
 
   const parsed = parsePredecessors(after, plan.tasks.length, rowOf.get(task.id)!);
   const days = Number(duration);
-  const valid = name.trim() && Number.isInteger(days) && days >= 0 && parsed.ok;
+  const valid = name.trim() && Number.isInteger(days) && days >= 0 && parsed.ok && progressOk;
 
   /** Only what changed goes to the server, so undo and the audit log stay precise. */
   const fields = useMemo<TaskInput>(() => {
@@ -873,8 +1331,10 @@ function TaskEditor({
     if (envId !== task.environment_id) f.environment_id = envId;
     if (Number.isInteger(days) && days !== task.duration) f.duration = days;
     if (parsed.ok && after.trim() !== formatPredecessors(plan.dependencies, task.id, rowOf)) {
-      f.predecessors = parsed.rows.map((r) => ({ id: plan.tasks[r.row - 1].id, lag: r.lag }));
+      f.predecessors = parsed.rows.map((r) => ({ id: plan.tasks[r.row - 1].id, lag: r.lag, type: r.type }));
     }
+    if (parentId !== (task.parent_id ?? null)) f.parent_id = parentId;
+    if (progressOk && progressN !== (task.progress ?? null)) f.progress = progressN;
     if ((notBefore || null) !== task.not_before) f.not_before = notBefore || null;
     if (status !== task.status) f.status = status;
     if ((actualStart || null) !== task.actual_start && status !== 'todo') f.actual_start = actualStart || null;
@@ -882,7 +1342,7 @@ function TaskEditor({
     if ((assignee.trim() || null) !== task.assignee) f.assignee = assignee.trim() || null;
     if ((note.trim() || null) !== task.note) f.note = note.trim() || null;
     return f;
-  }, [name, envId, days, after, notBefore, status, actualStart, actualEnd, assignee, note, task, plan, rowOf]);
+  }, [name, envId, days, after, notBefore, status, actualStart, actualEnd, assignee, note, parentId, progressN, progressOk, task, plan, rowOf]);
 
   const dirty = Object.keys(fields).length > 0;
   const key = JSON.stringify(fields);
@@ -938,6 +1398,21 @@ function TaskEditor({
           Task
           <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
         </label>
+        <label className="stack">
+          Part of
+          <select value={parentId ?? ''} onChange={(e) => setParentId(e.target.value ? Number(e.target.value) : null)}>
+            <option value="">Nothing: a top-level task</option>
+            {plan.tasks.filter((t) => t.id !== task.id && !under.has(t.id)).map((t) => (
+              <option key={t.id} value={t.id}>{outlineRows.get(t.id)?.wbs} {t.name}</option>
+            ))}
+          </select>
+          <span className="field-hint">
+            {summary
+              ? `A summary: its dates roll up from the ${leavesOf(plan.tasks, task.id).length} tasks under it, and it books nothing.`
+              : 'Putting it under a task makes that task a summary, whose own length and environment then stop counting.'}
+          </span>
+        </label>
+        {!summary && (
         <div className="pair">
           <label className="stack">
             Environment
@@ -952,11 +1427,12 @@ function TaskEditor({
             <span className="field-hint">0 makes it a milestone.</span>
           </label>
         </div>
+        )}
         <div className="pair">
           <label className="stack">
             After rows
-            <input value={after} onChange={(e) => setAfter(e.target.value)} placeholder="e.g. 2, 3+1" aria-invalid={!parsed.ok || undefined} />
-            <span className="field-hint">{parsed.ok ? 'Starts when these rows finish, plus any lag.' : parsed.error}</span>
+            <input value={after} onChange={(e) => setAfter(e.target.value)} placeholder="e.g. 2, 3+1, 4SS" aria-invalid={!parsed.ok || undefined} />
+            <span className="field-hint">{parsed.ok ? 'Starts when these rows finish, plus any lag. SS starts with a row, FF finishes with it.' : parsed.error}</span>
           </label>
           <label className="stack">
             Start no earlier than
@@ -975,6 +1451,19 @@ function TaskEditor({
             <input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder="Who does it" />
           </label>
         </div>
+        {!summary && (
+          <label className="stack">
+            Progress, %
+            <input
+              inputMode="numeric"
+              value={progressText}
+              placeholder={`${progressOf({ ...task, status, progress: null, actual_start: actualStart || task.actual_start }, today, holidays)} worked out from its status`}
+              onChange={(e) => setProgressText(e.target.value)}
+              aria-invalid={!progressOk || undefined}
+            />
+            <span className="field-hint">Leave blank to work it out from the status. It draws on the chart; it never moves dates.</span>
+          </label>
+        )}
         {status !== 'todo' && status !== 'blocked' && (
           <div className="pair">
             <label className="stack">

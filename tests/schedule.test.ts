@@ -121,3 +121,51 @@ describe('lateBy', () => {
     expect(lateBy('2026-03-06', null)).toBe(0);
   });
 });
+
+describe('link types', () => {
+  const typed = (p: number, s: number, type: 'SS' | 'FF', lag = 0): TaskDependency => ({ predecessor_id: p, successor_id: s, lag, type });
+
+  it('starts an SS successor with its predecessor, plus lag', () => {
+    const r = ok(scheduleProject({ tasks: [task(1, 5), task(2, 2)], deps: [typed(1, 2, 'SS', 1)], projectStart: MON }));
+    expect(r.tasks.get(2)).toMatchObject({ start: '2026-03-03', end: '2026-03-04' });
+    // Task 2 can slip until it would finish past task 1: three working days.
+    expect(r.tasks.get(2)!.total_float).toBe(2);
+    expect(r.tasks.get(1)!.critical).toBe(true);
+  });
+
+  it('finishes an FF successor no earlier than its predecessor', () => {
+    const r = ok(scheduleProject({ tasks: [task(1, 5), task(2, 2)], deps: [typed(1, 2, 'FF')], projectStart: MON }));
+    expect(r.tasks.get(2)).toMatchObject({ start: '2026-03-05', end: '2026-03-06' });
+    expect(r.tasks.get(2)!.critical).toBe(true);
+  });
+
+  it('reads a link without a type as finish-to-start', () => {
+    const r = ok(scheduleProject({ tasks: [task(1, 2), task(2, 1)], deps: [{ predecessor_id: 1, successor_id: 2, lag: 0, type: null }], projectStart: MON }));
+    expect(r.tasks.get(2)!.start).toBe('2026-03-04');
+  });
+});
+
+describe('summary tasks', () => {
+  // 10 is a summary over 1 and 2; 3 comes after the summary.
+  const tasks = [task(10, 99), task(1, 2, { parent_id: 10 }), task(2, 3, { parent_id: 10 }), task(3, 1)];
+
+  it('rolls dates, float and criticality up from the tasks under it', () => {
+    const r = ok(scheduleProject({ tasks, deps: [dep(1, 2), dep(10, 3)], projectStart: MON }));
+    expect(r.tasks.get(10)).toMatchObject({ start: '2026-03-02', end: '2026-03-06', summary: true, critical: true });
+    expect(r.tasks.get(3)!.start).toBe('2026-03-09');
+    expect(r.finish).toBe('2026-03-09');
+    expect(r.critical_path).toEqual([1, 2, 3]);
+  });
+
+  it('holds every task under a summary a link points at', () => {
+    const r = ok(scheduleProject({ tasks: [...tasks], deps: [dep(3, 10)], projectStart: MON }));
+    expect(r.tasks.get(1)!.start).toBe('2026-03-03');
+    expect(r.tasks.get(2)!.start).toBe('2026-03-03');
+    expect(r.tasks.get(10)!.start).toBe('2026-03-03');
+  });
+
+  it('ignores the summary’s own duration', () => {
+    const r = ok(scheduleProject({ tasks, deps: [], projectStart: MON }));
+    expect(r.tasks.get(10)!.end).toBe('2026-03-04');
+  });
+});

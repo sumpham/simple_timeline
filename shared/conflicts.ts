@@ -163,6 +163,33 @@ export function occupancyOn(
   );
 }
 
+/**
+ * How many bookings hold an environment on each of the given days (sorted), by
+ * the same rule as `occupancyOn`. Linear in bookings and days, so a chart can
+ * redraw it on every pointer move of a drag.
+ */
+export function occupancyByDay(
+  bookings: readonly BookingView[],
+  environmentId: number,
+  days: readonly ISODate[],
+): number[] {
+  const counts = new Array<number>(days.length).fill(0);
+  const firstAtOrAfter = (d: ISODate) => {
+    let lo = 0;
+    let hi = days.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (days[mid] < d) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  };
+  for (const b of bookings) {
+    if (b.environment_id !== environmentId || b.is_milestone || b.end_date < b.start_date) continue;
+    for (let i = firstAtOrAfter(b.start_date); i < days.length && days[i] <= b.end_date; i++) counts[i]++;
+  }
+  return counts;
+}
+
 /** The next booking to start strictly after `day`, for "next: Billing, Mar 3". */
 export function nextBookingAfter(
   bookings: readonly BookingView[],

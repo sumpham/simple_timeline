@@ -51,6 +51,8 @@ export type Project = {
   start_date?: ISODate | null;
   /** The date the project has promised; a schedule that finishes later is late. */
   target_date?: ISODate | null;
+  /** When the plan's baseline was saved, if it has one. */
+  baseline_at?: string | null;
   /** Total bookings, not just those inside the current window. */
   booking_count?: number;
   task_count?: number;
@@ -163,14 +165,30 @@ export type Task = {
   /** Where the box was dragged in the network diagram; null is the automatic place. */
   net_x?: number | null;
   net_y?: number | null;
+  /**
+   * The summary task this one sits under. A task with children is a summary: its
+   * dates roll up from them, it books nothing, and its own duration is ignored.
+   */
+  parent_id?: number | null;
+  /** Percent complete as someone typed it; null means work it out from status. */
+  progress?: number | null;
 };
 
-/** Finish-to-start: the successor starts `lag` working days after the predecessor ends. */
+/**
+ * How a link constrains its successor. FS: start after the predecessor finishes.
+ * SS: start after it starts. FF: finish after it finishes. Lag applies to each.
+ */
+export type LinkType = 'FS' | 'SS' | 'FF';
+export const LINK_TYPES: readonly LinkType[] = ['FS', 'SS', 'FF'];
+
+/** A link between two tasks of one project; finish-to-start unless `type` says otherwise. */
 export type TaskDependency = {
   predecessor_id: number;
   successor_id: number;
   /** Working days; negative is a lead. */
   lag: number;
+  /** Missing or null reads as FS, so links made before types existed keep their meaning. */
+  type?: LinkType | null;
   /** A hand-shaped arrow in the network diagram; null is automatic. Layout only. */
   route_out?: number | null;
   route_y?: number | null;
@@ -190,6 +208,8 @@ export type TaskSchedule = {
   total_float: number;
   free_float: number;
   critical: boolean;
+  /** Rolled up from the tasks under it rather than scheduled. */
+  summary?: boolean;
 };
 
 /**

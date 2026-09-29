@@ -32,8 +32,11 @@ runs through Node's built-in type stripping rather than a build step.
 ```
 shared/   dates.ts, conflicts.ts, types.ts — pure, imported by BOTH server and client
           schedule.ts, taskHolds.ts, plan.ts — task scheduling, holds, impact (same rule)
+          wbs.ts — the task outline (summaries), read depth-first
 server/   Express routes over SQLite; schema.sql is the source of truth for the data model
 client/   React board; layout.ts holds the time scale and lane packing (pure, tested)
+          gantt.ts — the plan chart's scale, zoom, drag maths, progress (pure, tested)
+          planIO.ts — CSV and MS Project XML in and out (pure, tested)
 tests/    Vitest over shared/ and client/layout + client/components/Board's pure exports
 ```
 
@@ -112,6 +115,28 @@ returns positions and routes (with `from`/`to` anchors) that are saved through t
 as dragging, so every existing edit path works on them. `writeState` must copy `route_from` and
 `route_to` along with the other route columns. `tests/smartLayout.test.ts` checks random plans
 for lines through boxes, unrelated arrows sharing a line, and false junctions; keep all three.
+
+**A summary task is a roll-up, not work.** A task with children (`parent_id`, `shared/wbs.ts`)
+is left out of scheduling and holds; its dates, float and criticality roll up from the tasks
+under it, and `checkOutline` (server/plan.ts) clears its environment. Links to or from a summary
+are expanded onto its working tasks (`expandLinks`) and must be FS. The outline is read
+depth-first every time (`outline`, `inOutlineOrder`); `sort_order` only orders siblings, so never
+number rows by `sort_order` alone. Row numbers, the After column, CSV and MSPDI all use outline
+order.
+
+**Link types live in the scheduler, not the chart.** `task_dependency.type` is FS, SS or FF;
+`scheduleProject` applies it in both passes and in free float. A missing type reads as FS.
+The After column, the chart and the files only write and draw it.
+
+**The plan chart edits through the table's doors.** A drag or Alt+arrow on a Gantt bar becomes
+`startFields` / `finishFields` (client/gantt.ts) and is saved by the same `setStart` /
+`setFinish` as a typed date. Its live preview runs `planProject`, `bookingsFor` and
+`conflictsFor` from shared/plan.ts in the browser, and `isManaged` (shared/taskHolds.ts) picks
+the bookings exactly as the server does. Do not compute a span, a hold or a clash in
+`Gantt.tsx`; the environments strip counts with `occupancyByDay` from shared/conflicts.ts.
+
+**Baselines are snapshots.** `task_baseline` is written only by the baseline routes and never
+read by scheduling or replan. Progress (`task.progress`) never moves a date either.
 
 `task.environment_id` is `ON DELETE RESTRICT`, like bookings, and the environment delete route
 refuses while tasks use it, saying how many. The network layout (`client/network.ts`) is bounded like the ruler: a
@@ -216,5 +241,5 @@ is correctly hidden — see `buildRows`.
 
 ## Still to build
 
-Sub-project roll-ups, saved views, bulk shift, export; for tasks, SS/FF links, baselines,
-cross-project links. `DESIGN.md` §12 has the order.
+Sub-project roll-ups, saved views, bulk shift; for tasks, cross-project links (the portfolio is
+read-only side by side), resource levelling. `DESIGN.md` §12 has the order.

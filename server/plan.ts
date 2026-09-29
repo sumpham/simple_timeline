@@ -10,12 +10,13 @@
 import { all, audit, get, run } from './db.ts';
 import { holidaySet, listBookings, listEnvironments } from './queries.ts';
 import { planImpact, planProject, type PlanOutcome } from '../shared/plan.ts';
-import { autoBookingKind, type ReconcileBooking } from '../shared/taskHolds.ts';
+import { autoBookingKind, isManaged, type ReconcileBooking } from '../shared/taskHolds.ts';
 import { defaultProjectStart } from '../shared/schedule.ts';
+import { descendants, inOutlineOrder, MAX_DEPTH, outline, parentOf, summaryIds, type OutlinePlacement } from '../shared/wbs.ts';
 import { effectiveKind } from '../shared/bookings.ts';
 import { today } from '../shared/dates.ts';
 import type {
-  Booking, Environment, ISODate, PlanImpact, Project, Task, TaskDependency, TaskStatus,
+  Booking, Environment, ISODate, LinkType, PlanImpact, Project, Task, TaskDependency, TaskStatus,
 } from '../shared/types.ts';
 
 export class PlanError extends Error {}
@@ -27,22 +28,18 @@ export type PlanState = {
   bookings: ReconcileBooking[];
 };
 
-/** Bookings the plan may reshape: auto ones, and manual spans. Releases and one-day events are moments. */
-function managed(b: Booking): boolean {
-  if (b.manual_start == null || b.manual_end == null) return true;
-  return b.kind !== 'RELEASE' && b.manual_start !== b.manual_end;
-}
 
 export function loadState(projectId: number): PlanState {
   const project = get<Project>('SELECT * FROM project WHERE id = ?', projectId);
   if (!project) throw new PlanError('Project not found');
-  const tasks = all<Task>('SELECT * FROM task WHERE project_id = ? ORDER BY sort_order, id', projectId);
+  // Outline order, so a create placed "after" a row lands where the table shows it.
+  const tasks = inOutlineOrder(all<Task>('SELECT * FROM task WHERE project_id = ? ORDER BY sort_order, id', projectId));
   const deps = all<TaskDependency>(
     `SELECT d.* FROM task_dependency d JOIN task t ON t.id = d.successor_id WHERE t.project_id = ?`,
     projectId,
   );
   const bookings = all<Booking>('SELECT * FROM booking WHERE project_id = ? ORDER BY id', projectId)
-    .filter(managed) as ReconcileBooking[];
+    .filter((b) => isManaged(b)) as ReconcileBooking[];
   return { project, tasks, deps, bookings };
 }
 
@@ -127,16 +124,19 @@ export function replanAll() {
 
 // ---------------------------------------------------------------- changes
 
-export type Predecessor = { id: number; lag: number };
+export type Predecessor = { id: number; lag: number; type?: LinkType };
 
 export type TaskFields = Partial<Pick<Task,
-  'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'assignee' | 'note' | 'actual_start' | 'actual_end'>>
+  'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'assignee' | 'note' | 'actual_start' | 'actual_end'
+  | 'parent_id' | 'progress'>>
   & { predecessors?: Predecessor[] };
 
 export type Change =
   | { op: 'create'; fields: TaskFields & { name: string }; after_id?: number | null }
   | { op: 'update'; id: number; fields: TaskFields }
-  | { op: 'delete'; id: number; bridge?: boolean };
+  | { op: 'delete'; id: number; bridge?: boolean }
+  /** Indent, outdent or move within the outline: new parents and sibling orders. */
+  | { op: 'outline'; placements: OutlinePlacement[] };
 
 /** Temporary id for a task that has not been inserted yet. */
 export const NEW_TASK_ID = -1;
@@ -172,18 +172,29 @@ export function applyChange(state: PlanState, change: Change): PlanState {
     for (const p of preds) {
       if (seen.has(p.id)) continue;
       seen.add(p.id);
-      deps.push({ predecessor_id: p.id, successor_id: id, lag: Math.trunc(p.lag) || 0 });
+      deps.push({ predecessor_id: p.id, successor_id: id, lag: Math.trunc(p.lag) || 0, type: p.type ?? 'FS' });
     }
   };
+  /** Last among its new siblings, so a task given a parent lands at the end of it. */
+  const lastUnder = (parent: number | null, self: number) =>
+    1 + Math.max(-1, ...tasks.filter((t) => (t.parent_id ?? null) === parent && t.id !== self).map((t) => t.sort_order));
 
   if (change.op === 'create') {
-    const afterIndex = change.after_id != null ? tasks.findIndex((t) => t.id === change.after_id) : -1;
+    let afterIndex = change.after_id != null ? tasks.findIndex((t) => t.id === change.after_id) : -1;
+    // A new row joins the level of the row it follows, the way outlines behave.
+    const inherited = afterIndex >= 0 ? tasks[afterIndex].parent_id ?? null : null;
     const task: Task = {
       id: NEW_TASK_ID, project_id: state.project.id, environment_id: null, name: '', duration: 1, status: 'todo',
       not_before: null, assignee: null, note: null, sort_order: 0, actual_start: null, actual_end: null,
-      start_date: null, end_date: null, total_float: null, critical: 0,
+      start_date: null, end_date: null, total_float: null, critical: 0, parent_id: inherited, progress: null,
       ...stripPreds(change.fields),
     };
+    if ('parent_id' in change.fields && task.parent_id != null) {
+      // Given a summary, it goes last under it: after the summary's last row.
+      const under = descendants(tasks, task.parent_id);
+      afterIndex = Math.max(tasks.findIndex((t) => t.id === task.parent_id), ...tasks.map((t, n) => (under.has(t.id) ? n : -1)));
+    }
+    // tasks is in outline order, so renumbering by position keeps every sibling order.
     tasks.splice(afterIndex >= 0 ? afterIndex + 1 : tasks.length, 0, withActuals(task, now));
     tasks = tasks.map((t, i) => ({ ...t, sort_order: i }));
     setPredecessors(NEW_TASK_ID, change.fields.predecessors);
@@ -191,10 +202,24 @@ export function applyChange(state: PlanState, change: Change): PlanState {
     const i = tasks.findIndex((t) => t.id === change.id);
     if (i < 0) throw new PlanError('Task not found');
     const next = { ...tasks[i], ...stripPreds(change.fields) };
+    if ('parent_id' in change.fields && (change.fields.parent_id ?? null) !== (tasks[i].parent_id ?? null)) {
+      next.sort_order = lastUnder(next.parent_id ?? null, next.id);
+    }
     tasks[i] = next.status !== tasks[i].status ? withActuals(next, now) : next;
     setPredecessors(change.id, change.fields.predecessors);
+  } else if (change.op === 'outline') {
+    const at = new Map(change.placements.map((p) => [p.id, p]));
+    for (const id of at.keys()) if (!tasks.some((t) => t.id === id)) throw new PlanError('Task not found');
+    tasks = tasks.map((t) => (at.has(t.id) ? { ...t, parent_id: at.get(t.id)!.parent_id, sort_order: at.get(t.id)!.sort_order } : t));
   } else {
-    if (!tasks.some((t) => t.id === change.id)) throw new PlanError('Task not found');
+    const gone = tasks.find((t) => t.id === change.id);
+    if (!gone) throw new PlanError('Task not found');
+    // A deleted summary's tasks move up a level into its place, never with it.
+    const siblings = outline(tasks).filter((r) => r.parent_id === (gone.parent_id ?? null)).map((r) => r.id);
+    const children = outline(tasks).filter((r) => r.parent_id === gone.id).map((r) => r.id);
+    siblings.splice(siblings.indexOf(gone.id), 1, ...children);
+    const order = new Map(siblings.map((id, n) => [id, n]));
+    tasks = tasks.map((t) => (order.has(t.id) ? { ...t, parent_id: gone.parent_id ?? null, sort_order: order.get(t.id)! } : t));
     const into = deps.filter((d) => d.successor_id === change.id);
     const outOf = deps.filter((d) => d.predecessor_id === change.id);
     tasks = tasks.filter((t) => t.id !== change.id);
@@ -204,13 +229,55 @@ export function applyChange(state: PlanState, change: Change): PlanState {
       for (const a of into) {
         for (const b of outOf) {
           if (!deps.some((d) => d.predecessor_id === a.predecessor_id && d.successor_id === b.successor_id)) {
-            deps.push({ predecessor_id: a.predecessor_id, successor_id: b.successor_id, lag: a.lag + b.lag });
+            deps.push({ predecessor_id: a.predecessor_id, successor_id: b.successor_id, lag: a.lag + b.lag, type: 'FS' });
           }
         }
       }
     }
   }
-  return { ...state, tasks, deps };
+  // Moving a task under a summary makes any link between them meaningless (the
+  // summary is made of it), so an outline change drops it rather than refusing.
+  const moved = change.op === 'outline' || (change.op !== 'delete' && 'parent_id' in change.fields && !change.fields.predecessors);
+  if (moved) {
+    deps = deps.filter((d) => !descendants(tasks, d.predecessor_id).has(d.successor_id)
+      && !descendants(tasks, d.successor_id).has(d.predecessor_id));
+  }
+  return { ...state, ...checkOutline(tasks, deps) };
+}
+
+/**
+ * The rules an outline keeps, checked after every change: parents in the plan and
+ * never under themselves, a bounded depth, no link between a task and its own
+ * summary, only finish-to-start links on summaries, and no summary booking an
+ * environment (its tasks do that).
+ */
+export function checkOutline(tasks: Task[], deps: TaskDependency[]): { tasks: Task[]; deps: TaskDependency[] } {
+  const ids = new Set(tasks.map((t) => t.id));
+  const name = (id: number) => tasks.find((t) => t.id === id)?.name ?? `#${id}`;
+  for (const t of tasks) {
+    if (t.parent_id == null) continue;
+    if (!ids.has(t.parent_id)) throw new PlanError('A summary must be a task in the same project');
+    if (t.parent_id === t.id) throw new PlanError('A task cannot sit under itself');
+  }
+  const parent = parentOf(tasks);
+  for (const t of tasks) {
+    if ((parent.get(t.id) ?? null) !== (t.parent_id ?? null)) throw new PlanError(`${name(t.id)} cannot sit under one of its own tasks`);
+  }
+  if (outline(tasks).some((r) => r.depth >= MAX_DEPTH)) throw new PlanError(`An outline can be at most ${MAX_DEPTH} levels deep`);
+
+  const summaries = summaryIds(tasks);
+  for (const d of deps) {
+    if (descendants(tasks, d.predecessor_id).has(d.successor_id) || descendants(tasks, d.successor_id).has(d.predecessor_id)) {
+      throw new PlanError(`${name(d.successor_id)} and ${name(d.predecessor_id)} are in the same summary line; link the tasks inside it instead`);
+    }
+    if ((summaries.has(d.predecessor_id) || summaries.has(d.successor_id)) && (d.type ?? 'FS') !== 'FS') {
+      throw new PlanError('Links to or from a summary task are finish-to-start only');
+    }
+  }
+  return {
+    tasks: tasks.map((t) => (summaries.has(t.id) && t.environment_id != null ? { ...t, environment_id: null } : t)),
+    deps,
+  };
 }
 
 function stripPreds(fields: TaskFields): Partial<Task> {
@@ -228,11 +295,11 @@ export function writeState(before: PlanState, next: PlanState): number | null {
 
   for (const t of next.tasks) {
     const cols = [t.environment_id, t.name, t.duration, t.status, t.not_before, t.assignee, t.note, t.sort_order,
-      t.actual_start, t.actual_end];
+      t.actual_start, t.actual_end, t.parent_id ?? null, t.progress ?? null];
     if (t.id === NEW_TASK_ID) {
       createdId = Number(run(
         `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, assignee, note, sort_order,
-                           actual_start, actual_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                           actual_start, actual_end, parent_id, progress) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         next.project.id, ...cols,
       ).lastInsertRowid);
       continue;
@@ -240,9 +307,10 @@ export function writeState(before: PlanState, next: PlanState): number | null {
     const old = was.get(t.id)!;
     if (old.status !== t.status) audit('task', t.id, 'status', old.status, t.status);
     if (old.duration !== t.duration) audit('task', t.id, 'duration', old.duration, t.duration);
+    if ((old.parent_id ?? null) !== (t.parent_id ?? null)) audit('task', t.id, 'parent_id', old.parent_id, t.parent_id);
     run(
       `UPDATE task SET environment_id = ?, name = ?, duration = ?, status = ?, not_before = ?, assignee = ?, note = ?,
-                       sort_order = ?, actual_start = ?, actual_end = ? WHERE id = ?`,
+                       sort_order = ?, actual_start = ?, actual_end = ?, parent_id = ?, progress = ? WHERE id = ?`,
       ...cols, t.id,
     );
   }
@@ -257,9 +325,9 @@ export function writeState(before: PlanState, next: PlanState): number | null {
     if (!taskIds.includes(idOf(d.predecessor_id)) || !taskIds.includes(idOf(d.successor_id))) continue;
     // Links are rewritten wholesale; a hand-shaped arrow must survive an unrelated edit.
     const kept = before.deps.find((b) => b.predecessor_id === d.predecessor_id && b.successor_id === d.successor_id);
-    run(`INSERT INTO task_dependency (predecessor_id, successor_id, lag, route_out, route_y, route_in, route_from, route_to)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      idOf(d.predecessor_id), idOf(d.successor_id), d.lag,
+    run(`INSERT INTO task_dependency (predecessor_id, successor_id, lag, type, route_out, route_y, route_in, route_from, route_to)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      idOf(d.predecessor_id), idOf(d.successor_id), d.lag, d.type ?? 'FS',
       kept?.route_out ?? null, kept?.route_y ?? null, kept?.route_in ?? null, kept?.route_from ?? null, kept?.route_to ?? null);
   }
   return createdId;

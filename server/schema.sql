@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS project (
   external_link TEXT,
   -- Where the task schedule starts, and the date the project has promised.
   start_date    TEXT,
-  target_date   TEXT
+  target_date   TEXT,
+  -- When the task baseline (task_baseline) was last saved; NULL when there is none.
+  baseline_at   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS booking (
@@ -103,17 +105,25 @@ CREATE TABLE IF NOT EXISTS task (
   -- Where someone dragged the task's box in the network diagram. Layout only:
   -- NULL means the automatic place. Never read by scheduling.
   net_x          REAL,
-  net_y          REAL
+  net_y          REAL,
+  -- The summary task this one sits under (shared/wbs.ts). A task with children is
+  -- a summary: dates roll up, it books nothing. Deleting a summary lifts its
+  -- children a level (server/plan.ts), so SET NULL is only a safety net.
+  parent_id      INTEGER REFERENCES task(id) ON DELETE SET NULL,
+  -- Percent complete as typed; NULL means work it out from status. Not scheduling.
+  progress       INTEGER CHECK (progress IS NULL OR progress BETWEEN 0 AND 100)
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_project ON task(project_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_task_env     ON task(environment_id);
 
--- Finish-to-start, within one project. Lag in working days; negative is a lead.
+-- A link within one project: FS (finish-to-start), SS or FF. Lag in working days;
+-- negative is a lead. Links to or from a summary task are FS only.
 CREATE TABLE IF NOT EXISTS task_dependency (
   predecessor_id INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
   successor_id   INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
   lag            INTEGER NOT NULL DEFAULT 0,
+  type           TEXT    NOT NULL DEFAULT 'FS' CHECK (type IN ('FS','SS','FF')),
   -- A hand-shaped arrow in the network diagram (see routeOf in client/network.ts):
   -- first vertical run from the source's edge, detour height, last vertical run
   -- before the target. NULL means automatic. Layout only.
@@ -129,6 +139,17 @@ CREATE TABLE IF NOT EXISTS task_dependency (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dep_successor ON task_dependency(successor_id);
+
+-- A project's saved baseline: each task's dates when someone last said "this is
+-- the plan". A snapshot for comparison only; scheduling never reads it.
+CREATE TABLE IF NOT EXISTS task_baseline (
+  task_id    INTEGER PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  start_date TEXT    NOT NULL,
+  end_date   TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_baseline_project ON task_baseline(project_id);
 
 CREATE TABLE IF NOT EXISTS holiday (
   date TEXT PRIMARY KEY,

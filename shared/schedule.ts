@@ -1,5 +1,6 @@
 import { addDays, addWorkingDays, diffDays, isWorkingDay, snapToWorkingDay, workingDays, type HolidaySet } from './dates.ts';
-import type { ISODate, Task, TaskDependency, TaskSchedule } from './types.ts';
+import type { ISODate, LinkType, Task, TaskDependency, TaskSchedule } from './types.ts';
+import { leavesOf, summaryIds } from './wbs.ts';
 
 /**
  * Critical-path scheduling over one project's tasks.
@@ -13,10 +14,15 @@ import type { ISODate, Task, TaskDependency, TaskSchedule } from './types.ts';
  * successor may start at its predecessor's exclusive finish plus the lag. A
  * milestone (duration 0) sits at the end of the day before its index, which is
  * where a finish milestone belongs: on its predecessor's last day.
+ *
+ * Links are finish-to-start unless typed SS (start after start) or FF (finish
+ * after finish). A summary task is not scheduled itself: a link to it holds each
+ * of its working tasks, a link from it waits for all of them, and its dates,
+ * float and criticality roll up from them afterwards.
  */
 
 export type ScheduleInput = {
-  tasks: readonly Pick<Task, 'id' | 'duration' | 'status' | 'not_before' | 'actual_start' | 'actual_end'>[];
+  tasks: readonly (Pick<Task, 'id' | 'duration' | 'status' | 'not_before' | 'actual_start' | 'actual_end'> & { parent_id?: number | null; sort_order?: number })[];
   deps: readonly TaskDependency[];
   projectStart: ISODate;
   holidays?: HolidaySet;
@@ -62,8 +68,11 @@ function calendar(projectStart: ISODate, holidays: HolidaySet) {
 export function scheduleProject(input: ScheduleInput): ScheduleResult | ScheduleFailure {
   const holidays = input.holidays ?? new Set<ISODate>();
   const cal = calendar(input.projectStart, holidays);
-  const byId = new Map(input.tasks.map((t) => [t.id, t]));
-  const deps = input.deps.filter((d) => byId.has(d.predecessor_id) && byId.has(d.successor_id));
+  const outlineTasks = input.tasks.map((t) => ({ ...t, sort_order: t.sort_order ?? 0 }));
+  const summaries = summaryIds(outlineTasks);
+  const byId = new Map(input.tasks.filter((t) => !summaries.has(t.id)).map((t) => [t.id, t]));
+  const deps = expandLinks(outlineTasks, input.deps, summaries)
+    .filter((d) => byId.has(d.predecessor_id) && byId.has(d.successor_id));
 
   const order = topologicalOrder([...byId.keys()], deps);
   if ('cycle' in order) return order;
@@ -98,7 +107,9 @@ export function scheduleProject(input: ScheduleInput): ScheduleResult | Schedule
     }
 
     let start = 0;
-    for (const d of preds.get(id) ?? []) start = Math.max(start, ef.get(d.predecessor_id)! + d.lag);
+    for (const d of preds.get(id) ?? []) {
+      start = Math.max(start, earliestStart(linkType(d), es.get(d.predecessor_id)!, ef.get(d.predecessor_id)!, d.lag, duration));
+    }
     if (t.not_before) {
       // A milestone's date is the day before its index, so its floor moves up one.
       start = Math.max(start, cal.indexOf(t.not_before) + (duration === 0 ? 1 : 0));
@@ -115,7 +126,15 @@ export function scheduleProject(input: ScheduleInput): ScheduleResult | Schedule
   for (let i = order.order.length - 1; i >= 0; i--) {
     const id = order.order[i];
     let finish = finishIndex;
-    for (const d of succs.get(id) ?? []) finish = Math.min(finish, ls.get(d.successor_id)! - d.lag);
+    const own = ef.get(id)! - es.get(id)!;
+    for (const d of succs.get(id) ?? []) {
+      const s = d.successor_id;
+      const type = linkType(d);
+      finish = Math.min(finish,
+        type === 'SS' ? ls.get(s)! - d.lag + own
+        : type === 'FF' ? lf.get(s)! - d.lag
+        : ls.get(s)! - d.lag);
+    }
     lf.set(id, finish);
     ls.set(id, finish - (ef.get(id)! - es.get(id)!));
   }
@@ -127,7 +146,14 @@ export function scheduleProject(input: ScheduleInput): ScheduleResult | Schedule
     const finish = ef.get(id)!;
     const total = ls.get(id)! - start;
     let free = finishIndex - finish;
-    for (const d of succs.get(id) ?? []) free = Math.min(free, es.get(d.successor_id)! - d.lag - finish);
+    for (const d of succs.get(id) ?? []) {
+      const s = d.successor_id;
+      const type = linkType(d);
+      free = Math.min(free,
+        type === 'SS' ? es.get(s)! - d.lag - start
+        : type === 'FF' ? ef.get(s)! - d.lag - finish
+        : es.get(s)! - d.lag - finish);
+    }
 
     tasks.set(id, {
       id,
@@ -141,18 +167,76 @@ export function scheduleProject(input: ScheduleInput): ScheduleResult | Schedule
     });
   }
 
+  // Summaries roll up from the tasks under them.
+  const summaryOrder: number[] = [];
+  for (const sid of summaries) {
+    const leaves = leavesOf(outlineTasks, sid).map((l) => tasks.get(l)).filter((x): x is TaskSchedule => !!x);
+    if (!leaves.length) continue;
+    const min = (f: (x: TaskSchedule) => ISODate) => leaves.reduce((m, x) => (f(x) < m ? f(x) : m), f(leaves[0]));
+    const max = (f: (x: TaskSchedule) => ISODate) => leaves.reduce((m, x) => (f(x) > m ? f(x) : m), f(leaves[0]));
+    tasks.set(sid, {
+      id: sid,
+      start: min((x) => x.start),
+      end: max((x) => x.end),
+      late_start: min((x) => x.late_start),
+      late_end: max((x) => x.late_end),
+      total_float: Math.min(...leaves.map((x) => x.total_float)),
+      free_float: Math.min(...leaves.map((x) => x.free_float)),
+      critical: leaves.some((x) => x.critical),
+      summary: true,
+    });
+    summaryOrder.push(sid);
+  }
+
   const critical_path = order.order
     .filter((id) => tasks.get(id)!.critical)
     .sort((a, b) => es.get(a)! - es.get(b)! || ef.get(a)! - ef.get(b)! || a - b);
 
-  const all = [...tasks.values()];
+  const all = [...tasks.values()].filter((t) => !t.summary);
   return {
     tasks,
     start: all.length ? all.reduce((m, t) => (t.start < m ? t.start : m), all[0].start) : cal.base,
     finish: all.length ? all.reduce((m, t) => (t.end > m ? t.end : m), all[0].end) : cal.base,
     critical_path,
-    order: order.order,
+    order: [...order.order, ...summaryOrder.sort((a, b) => a - b)],
   };
+}
+
+export function linkType(d: Pick<TaskDependency, 'type'>): LinkType {
+  return d.type === 'SS' || d.type === 'FF' ? d.type : 'FS';
+}
+
+/** The earliest index a successor may start at, given one link. */
+function earliestStart(type: LinkType, predStart: number, predFinish: number, lag: number, duration: number): number {
+  if (type === 'SS') return predStart + lag;
+  if (type === 'FF') return predFinish + lag - duration;
+  return predFinish + lag;
+}
+
+/**
+ * Links as the working tasks feel them: a link to a summary holds every task
+ * under it, a link from a summary waits for every task under it.
+ */
+export function expandLinks(
+  tasks: readonly { id: number; sort_order: number; parent_id?: number | null }[],
+  deps: readonly TaskDependency[],
+  summaries: ReadonlySet<number> = summaryIds(tasks),
+): TaskDependency[] {
+  if (!summaries.size) return [...deps];
+  const leaves = new Map<number, number[]>();
+  const leafList = (id: number) => {
+    if (!summaries.has(id)) return [id];
+    return leaves.get(id) ?? leaves.set(id, leavesOf(tasks, id)).get(id)!;
+  };
+  const out: TaskDependency[] = [];
+  for (const d of deps) {
+    for (const p of leafList(d.predecessor_id)) {
+      for (const s of leafList(d.successor_id)) {
+        if (p !== s) out.push({ predecessor_id: p, successor_id: s, lag: d.lag, type: d.type });
+      }
+    }
+  }
+  return out;
 }
 
 /** Dates for the half-open index range [start, finish). A milestone is the day before its index. */

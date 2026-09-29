@@ -2231,9 +2231,69 @@ kbd {
 
    The table and its chart share one scroller, so rows line up and both
    headers stick. The table is pinned on the left; the chart scrolls sideways
-   beneath it. */
+   beneath it. Colour follows the board's rule: environment hues on bars, ink
+   for structure, red only for an open double-booking (and the thin today line). */
 
 .task-table-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 0 0 12px; }
+
+.gantt-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 13px;
+}
+.gantt-toolbar .btn { padding-top: 3px; padding-bottom: 3px; }
+.gantt-toolbar .spacer { flex: 1 1 auto; }
+.toolbar-sep { width: 1px; align-self: stretch; background: var(--rule-soft); }
+.toolbar-note { color: var(--muted); font-size: 12px; }
+.menu-list.gantt-show { left: 0; right: auto; min-width: 280px; gap: 2px; padding: 6px; }
+.gantt-show .check { align-items: flex-start; padding: 5px 6px; border-radius: 3px; }
+.gantt-show .check:hover { background: var(--paper); }
+.gantt-show .check span { display: grid; gap: 1px; }
+.gantt-show small { font-size: 11.5px; color: var(--muted); }
+.gantt-search {
+  width: 170px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--lane);
+  padding: 3px 8px;
+  font-size: 13px;
+}
+.gantt-search:focus { border-color: var(--ink); outline: none; }
+
+/* A small dropdown made of <details>, so it needs no script and never traps focus. */
+.menu { position: relative; }
+.menu > summary { list-style: none; cursor: pointer; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu > summary::after { content: ' ▾'; font-size: 10px; }
+.menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  display: grid;
+  min-width: 190px;
+  background: var(--lane);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(22, 32, 43, 0.16);
+  padding: 4px;
+}
+.menu-list button {
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.menu-list button:hover, .menu-list button:focus-visible { background: var(--paper); outline: none; }
+
 .task-split {
   flex: 1 1 auto;
   min-height: 0;
@@ -2290,8 +2350,60 @@ kbd {
 .task-split .task-table .c-date { width: 114px; }
 .task-split .task-table .c-status { width: 140px; }
 .task-split .task-table td { overflow: hidden; }
-/* Tall enough for the chart's two header rows, week over day. */
+/* Tall enough for the chart's two header rows. */
 .task-split .task-table thead th { height: 48px; vertical-align: bottom; }
+
+/* ---- outline in the table */
+
+.task-table .name-cell { padding-left: calc(var(--depth, 0) * 18px); }
+.outline-toggle {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  margin-right: -6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.outline-toggle svg { width: 10px; height: 10px; fill: currentColor; }
+.outline-toggle:hover:not(:disabled) { border-color: var(--rule); color: var(--ink); }
+.outline-toggle.is-leaf { cursor: default; }
+.task-table tr.is-summary td { background: var(--lane-alt); }
+.task-table tr.is-summary .c-name input { font-weight: 650; }
+.cell-quiet { color: var(--muted); padding: 4px 6px; font-size: 13px; display: inline-block; }
+.task-table .status-cell.cell-quiet { display: flex; gap: 2px; padding-left: 0; }
+
+/* ---- occupancy strip labels, under the table */
+
+.strip-labels { border-top: 1px solid var(--rule); }
+.strip-labels-head {
+  height: var(--strip-head);
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  font-family: 'Archivo Narrow', 'Archivo', sans-serif;
+  font-size: 12px;
+  color: var(--muted);
+}
+.strip-labels-row {
+  height: var(--strip-lane);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 0 18px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--rule-soft);
+  box-shadow: inset 4px 0 0 var(--env-color);
+}
+.strip-labels-row span { font-weight: 400; color: var(--muted); font-size: 12px; }
+
+/* ---- the chart */
 
 .gantt {
   flex: 1 0 auto;
@@ -2302,6 +2414,7 @@ kbd {
 }
 .gantt-head {
   position: sticky;
+  /* sticky already positions it, so the today mark can hang from it. */
   top: 0;
   z-index: 1;
   height: var(--gantt-head);
@@ -2311,52 +2424,235 @@ kbd {
   border-bottom: 1px solid var(--rule);
   font-family: 'Archivo Narrow', 'Archivo', sans-serif;
 }
-.gantt-weeks, .gantt-days { display: flex; }
-.gantt-weeks span {
-  flex: none;
+.gantt-band-row { position: relative; border-bottom: 1px solid var(--rule-soft); }
+.gantt-band-row > span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
   border-left: 1px solid var(--rule);
-  border-bottom: 1px solid var(--rule-soft);
   white-space: nowrap;
   overflow: hidden;
 }
-.gantt-weeks strong { font-weight: 600; color: var(--ink); }
-.gantt-days span {
-  flex: none;
-  width: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-left: 1px solid var(--rule-soft);
-}
-.gantt-days span:nth-child(5n + 1) { border-left-color: var(--rule); }
-.gantt-days .is-holiday { background: var(--shade-holiday); }
-.gantt-days .is-today { color: var(--today); font-weight: 700; }
+.gantt-band-row strong { font-weight: 600; color: var(--ink); }
+.gantt-band-row.is-small > span { border-left-color: var(--rule-soft); }
+.gantt-band-row .is-holiday { background: var(--shade-holiday); }
+.gantt-band-row .is-today { color: var(--today); font-weight: 700; }
 
-.gantt-body { display: block; }
+.gantt-body { display: block; touch-action: pan-y; }
+.gantt-body.is-dragging { cursor: grabbing; }
 .gantt-day-line { stroke: var(--rule-soft); stroke-width: 1; }
 .gantt-week-line { stroke: var(--rule); stroke-width: 1; }
 .gantt-row-line { stroke: var(--rule-soft); stroke-width: 1; }
 .gantt-holiday { fill: var(--shade-holiday); }
-.gantt-today { stroke: var(--today); stroke-width: 1; }
 .gantt-target { stroke: var(--ink); stroke-width: 1.25; stroke-dasharray: 4 3; }
 
+/* Same as the board's: a thin red line and a small flag, never a band that could read as a clash. */
+.gantt-today { stroke: var(--today); stroke-width: 2; opacity: 0.85; pointer-events: none; }
+.gantt-today-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--today);
+  opacity: 0.85;
+  pointer-events: none;
+}
+.gantt-today-flag {
+  position: absolute;
+  top: 0;
+  left: 1px;
+  transform: translateX(-50%);
+  background: var(--today);
+  color: var(--lane);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 15px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
 /* Bars carry the environment hue; a task on no environment books nothing, so it is hollow. */
-.gantt-task { cursor: pointer; }
-.gantt-task rect, .gantt-task path { fill: var(--env-color); stroke: none; }
-.gantt-task.is-unbooked rect, .gantt-task.is-unbooked path { fill: var(--lane); stroke: var(--muted); stroke-width: 1.25; }
-.gantt-task.is-critical rect, .gantt-task.is-critical path { stroke: var(--critical); stroke-width: 2; }
-.gantt-task.is-done { opacity: 0.45; }
-.gantt-task:hover rect, .gantt-task:hover path { filter: brightness(1.12); }
+.gantt-task { cursor: grab; outline: none; }
+.gantt-task .gantt-shape { fill: var(--env-color); stroke: none; }
+.gantt-task.is-unbooked .gantt-shape { fill: var(--lane); stroke: var(--muted); stroke-width: 1.25; }
+.gantt-task.is-critical .gantt-shape { stroke: var(--critical); stroke-width: 2; }
+.gantt-task.is-done { opacity: 0.5; }
+.gantt-task:hover .gantt-shape { filter: brightness(1.1); }
+.gantt-task:focus-visible .gantt-shape,
+.gantt-task:focus-visible .gantt-summary { stroke: var(--focus); stroke-width: 2.5; }
+.gantt-task.is-moving .gantt-shape { filter: drop-shadow(0 2px 3px rgba(22, 32, 43, 0.35)); }
+.gantt-task.is-link-target .gantt-shape,
+.gantt-task.is-link-target .gantt-summary { stroke: var(--focus); stroke-width: 2.5; }
+/* Summaries are ink brackets; their dates are their tasks', so they are not dragged. */
+.gantt-task.is-summary { cursor: pointer; }
+.gantt-summary { fill: var(--ink); }
+/* Done so far: a band of ink along the bar's foot, readable on every hue. */
+.gantt-progress { fill: var(--ink); opacity: 0.55; pointer-events: none; }
+.gantt-task.is-summary .gantt-progress { fill: var(--lane); opacity: 0.6; }
+.gantt-grip { fill: transparent; cursor: ew-resize; }
+.gantt-link-handle {
+  fill: var(--lane);
+  stroke: var(--ink);
+  stroke-width: 1.25;
+  opacity: 0;
+  cursor: crosshair;
+  transition: opacity 120ms;
+}
+.gantt-task:hover .gantt-link-handle,
+.gantt-task:focus-visible .gantt-link-handle { opacity: 1; }
+.gantt-body.is-dragging .gantt-link-handle { opacity: 0; }
 
 /* Links in ink, never orange or red: warm hues sit too near the alarm. */
-.gantt-link { fill: none; stroke: var(--muted); stroke-width: 1.1; }
+.gantt-link { fill: none; stroke: var(--muted); stroke-width: 1.1; pointer-events: none; }
 .gantt-link.is-critical { stroke: var(--critical); stroke-width: 1.6; }
-#gantt-arrow path { fill: var(--muted); }
+.gantt-link-hit { fill: none; stroke: transparent; stroke-width: 9; cursor: pointer; }
+.gantt-link-g:hover .gantt-link { stroke: var(--focus); stroke-width: 2; }
+#gantt-arrow path, #pf-arrow path { fill: var(--muted); }
 #gantt-arrow-critical path { fill: var(--critical); }
+.gantt-rubber { stroke: var(--focus); stroke-width: 1.5; stroke-dasharray: 4 3; pointer-events: none; }
+
+/* Pointing at a task keeps its chain and fades the rest. */
+.gantt-body.is-tracing .is-faded { opacity: 0.22; }
+
+/* Float: a thin tail from the bar to the last day it may finish. */
+.gantt-float line { stroke: var(--muted); stroke-width: 1.25; }
+.gantt-float { pointer-events: visibleStroke; }
+
+/* The saved baseline: a grey rule under the bar. */
+.gantt-baseline { fill: var(--muted); opacity: 0.45; }
+
+.gantt-label { font-size: 11.5px; fill: var(--ink); pointer-events: none; }
+.gantt-label.is-summary { font-weight: 650; }
+.gantt-label-who { fill: var(--muted); }
+.gantt-variance { font-weight: 700; fill: var(--ink); pointer-events: all; }
+
+/* Bookings behind their tasks: a wash of the environment's hue; a task-made
+   one has a dashed edge, like on the board. */
+.gantt-booking { fill: var(--env-color); fill-opacity: 0.13; stroke: none; }
+.gantt-booking.is-auto { stroke: var(--env-color); stroke-opacity: 0.6; stroke-dasharray: 3 3; }
+.gantt-release { cursor: pointer; }
+.gantt-release rect { fill: var(--lane); fill-opacity: 0.75; stroke: none; }
+.gantt-release line { stroke: var(--ink); stroke-width: 1.25; stroke-dasharray: 3 2; }
+.gantt-release:hover rect, .gantt-release:focus-visible rect { fill: var(--paper); fill-opacity: 1; }
+.gantt-release:focus-visible { outline: none; }
+
+/* The environments strip, under the chart. */
+.gantt-strip { display: block; }
+.gantt-occ { fill: var(--ink); }
+/* The strip's lanes are quiet: the level in ink, the clash in the alarm. */
+.gantt-clash { fill: var(--alarm-soft); stroke: var(--alarm); stroke-width: 1.5; }
+.gantt-clash.is-resolved { fill: var(--resolved-soft); stroke: var(--resolved); }
+
+/* What a drag would do, beside the bar. Red only for a new double-booking. */
+.gantt-readout {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  background: var(--ink);
+  color: var(--lane);
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(22, 32, 43, 0.25);
+}
+.gantt-readout .is-alarm {
+  color: var(--lane);
+  background: var(--alarm);
+  margin: 3px -8px -4px;
+  padding: 3px 8px;
+  border-radius: 0 0 3px 3px;
+  font-weight: 600;
+}
+
+.gantt-link-pop {
+  position: absolute;
+  z-index: 6;
+  width: 300px;
+  background: var(--lane);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  box-shadow: 0 8px 22px rgba(22, 32, 43, 0.2);
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--ink);
+}
+.gantt-link-pop p { margin: 0 0 8px; }
+.gantt-link-fields { display: grid; grid-template-columns: 1fr 110px; gap: 8px; margin-bottom: 10px; }
+.gantt-link-fields label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+.gantt-link-fields select, .gantt-link-fields input {
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--lane);
+  padding: 4px 6px;
+  font-size: 13px;
+  color: var(--ink);
+}
+.gantt-link-actions { display: flex; gap: 6px; align-items: center; }
+.gantt-link-actions .spacer { flex: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .gantt-link-handle, .split-handle::after { transition: none; }
+}
+
+/* ---------------------------------------------------------------- portfolio */
+
+.portfolio { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.portfolio-names { width: 340px; }
+.portfolio-names-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  padding: 0 14px 6px;
+  background: var(--lane);
+  border-bottom: 1px solid var(--rule);
+  font-family: 'Archivo Narrow', 'Archivo', sans-serif;
+  font-size: 12px;
+  color: var(--muted);
+}
+.portfolio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 calc(34px + var(--depth, 0) * 16px);
+  border-top: 1px solid var(--rule-soft);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.portfolio-row.is-project { padding-left: 10px; border-top-color: var(--rule); background: var(--lane-alt); }
+.portfolio-row.is-current .portfolio-name { text-decoration: underline; text-underline-offset: 3px; }
+.portfolio-name { font-weight: 650; color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+.portfolio-task { overflow: hidden; text-overflow: ellipsis; }
+.portfolio-row.is-summary .portfolio-task { font-weight: 600; }
+.portfolio-fact { margin-left: auto; display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
+.pf-task .gantt-shape { fill: var(--env-other); }
+.pf-task.is-critical .gantt-shape { fill: var(--ink); }
+
+/* ---------------------------------------------------------------- print
+
+   Print (or save as PDF) the plan as it looks: table and chart side by side,
+   nothing sticky, no toolbars. Months zoom fits a long plan on the page. */
+
+@media print {
+  @page { size: landscape; margin: 10mm; }
+  body { background: #fff; }
+  .topbar, .m-topbar, .plan-back, .plan-title-row .segmented, .gantt-toolbar, .table-hint, .holds,
+  .impact-banner, .error-bar, .task-add, .split-handle, .rail, .drawer, .gantt-link-handle { display: none !important; }
+  .plan, .plan-body, .task-table-wrap, .task-split { overflow: visible !important; height: auto !important; display: block; }
+  .task-split { display: flex !important; }
+  .task-split-table { position: static; box-shadow: none; }
+  .task-table th, .gantt-head { position: static; }
+  .gantt-readout, .gantt-link-pop { display: none; }
+  .task-table td input, .task-table td select { border: 0 !important; appearance: none; }
+}
 
 /* ---------------------------------------------------------------- impact */
 
@@ -2600,9 +2896,17 @@ kbd {
   .task-split { display: block; overflow: visible; }
   .task-split-table { position: static; box-shadow: none; width: auto !important; }
   .split-handle { display: none; }
-  .task-split .task-table { width: 100%; }
+  /* Also over a width the divider remembered from a wider screen. */
+  .task-split .task-table, .task-split-table.is-sized .task-table { width: 100%; }
   .task-split .task-table .c-name { width: auto; min-width: 0; }
-  .gantt { display: none; }
+  .gantt, .strip-labels { display: none; }
+  .task-table tr.is-summary { background: var(--lane-alt); }
+  .task-table tr.is-summary td { background: transparent; }
+  /* The chart's controls go with the chart; the phone keeps the list. */
+  .gantt-toolbar > :not(.gantt-search):not(.check) { display: none; }
+  .gantt-toolbar { padding: 8px 14px; }
+  .gantt-search { flex: 1 1 auto; }
+  .portfolio-names { width: 220px; }
   .holds { padding: 8px 14px; flex-direction: column; gap: 4px; }
   .network-toolbar { padding: 8px 14px; }
 }

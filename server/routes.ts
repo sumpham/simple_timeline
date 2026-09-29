@@ -5,10 +5,11 @@ import { applyResolutions, conflictKey, detectConflicts } from '../shared/confli
 import { isValidISODate, isWorkingDay, snapToWorkingDay } from '../shared/dates.ts';
 import { effectiveKind } from '../shared/bookings.ts';
 import { holidaySet, listTasks } from './queries.ts';
-import { applyChange, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
+import { applyChange, checkOutline, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
 import { lateBy } from '../shared/schedule.ts';
 import {
-  MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
+  LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
+  type Task,
 } from '../shared/types.ts';
 
 export const router = Router();
@@ -552,6 +553,9 @@ function planResponse(projectId: number) {
     late_by: lateBy(finish, state.project.target_date, holidays),
     holds: outcome.holds,
     bookings: listBookings({ teamId: state.project.team_id }).filter((b) => b.project_id === projectId),
+    baseline: all<{ task_id: number; start_date: ISODate; end_date: ISODate }>(
+      'SELECT task_id, start_date, end_date FROM task_baseline WHERE project_id = ?', projectId,
+    ),
   };
 }
 
@@ -592,13 +596,31 @@ function taskFields(body: Record<string, unknown> | undefined, teamId: number): 
   if (body.actual_end !== undefined) f.actual_end = optionalDate(body.actual_end, 'actual_end');
   if (body.assignee !== undefined) f.assignee = typeof body.assignee === 'string' && body.assignee.trim() ? body.assignee.trim() : null;
   if (body.note !== undefined) f.note = noteValue(body.note);
+  if (body.parent_id !== undefined) {
+    // Which project it belongs to is checked with the rest of the outline (checkOutline).
+    if (body.parent_id == null || body.parent_id === '') f.parent_id = null;
+    else {
+      const pid = intParam(body.parent_id);
+      if (pid == null) throw bad('parent_id must be a task id');
+      f.parent_id = pid;
+    }
+  }
+  if (body.progress !== undefined) {
+    if (body.progress == null || body.progress === '') f.progress = null;
+    else {
+      const n = intParam(body.progress);
+      if (n == null || n < 0 || n > 100) throw bad('Progress is a whole percentage, 0 to 100');
+      f.progress = n;
+    }
+  }
   if (body.predecessors !== undefined) {
     if (!Array.isArray(body.predecessors)) throw bad('predecessors must be a list');
     f.predecessors = body.predecessors.map((p) => {
       const id = intParam((p as { id?: unknown })?.id);
       const lag = intParam((p as { lag?: unknown })?.lag ?? 0);
       if (id == null || lag == null) throw bad('Each predecessor needs a task id and a whole-day lag');
-      return { id, lag };
+      const type = oneOf((p as { type?: unknown })?.type ?? 'FS', LINK_TYPES, 'link type');
+      return { id, lag, type };
     });
   }
   if (f.actual_start && f.actual_end && f.actual_end < f.actual_start) throw bad('A task cannot finish before it starts');
@@ -628,12 +650,13 @@ function changeFrom(req: Request, projectId: number): Change {
   if (change.op === 'create') {
     return { op: 'create', fields: { name: 'New task', ...taskFields(change.fields, project.team_id) } as TaskFields & { name: string }, after_id: intParam(change.after_id) ?? null };
   }
+  if (change.op === 'outline') return { op: 'outline', placements: placementsFrom(change.placements, projectId) };
   const id = intParam(change.id);
   if (id == null) throw bad('A task id is required');
   if (taskProject(id).id !== projectId) throw bad('That task belongs to another project');
   if (change.op === 'update') return { op: 'update', id, fields: taskFields(change.fields, project.team_id) };
   if (change.op === 'delete') return { op: 'delete', id, bridge: Boolean(change.bridge) };
-  throw bad('op must be create, update or delete');
+  throw bad('op must be create, update, delete or outline');
 }
 
 router.post('/tasks', handle((req, res) => {
@@ -658,6 +681,165 @@ router.delete('/tasks/:id', handle((req, res) => {
   const project = taskProject(id);
   commit(project.id, { op: 'delete', id, bridge: req.query.bridge === '1' });
   res.json({ plan: planResponse(project.id) });
+}));
+
+/** New parents and sibling orders for some of one project's tasks. */
+function placementsFrom(raw: unknown, projectId: number) {
+  if (!Array.isArray(raw) || !raw.length) throw bad('placements must be a non-empty list');
+  const own = new Set(listTasks(projectId).map((t) => t.id));
+  return raw.map((p) => {
+    const id = intParam(p?.id);
+    const parent = p?.parent_id == null ? null : intParam(p.parent_id);
+    const order = intParam(p?.sort_order);
+    if (id == null || !own.has(id)) throw bad('Every placement must be a task of this project');
+    if (parent === undefined || (parent != null && !own.has(parent))) throw bad('A summary must be a task of this project');
+    if (order == null) throw bad('Each placement needs a sort_order');
+    return { id, parent_id: parent, sort_order: order };
+  });
+}
+
+/** Indent, outdent or move rows in the outline. Links to a summary hold its tasks, so this can move dates. */
+router.post('/tasks/outline', handle((req, res) => {
+  const projectId = intParam(req.body?.project_id);
+  if (projectId == null || !get('SELECT id FROM project WHERE id = ?', projectId)) throw bad('A valid project is required');
+  commit(projectId, { op: 'outline', placements: placementsFrom(req.body?.placements, projectId) });
+  res.json({ plan: planResponse(projectId) });
+}));
+
+// ---------------------------------------------------------------- baseline
+
+/** Save every task's current dates as the plan to compare against. Replaces any earlier baseline. */
+router.post('/projects/:id/baseline', handle((req, res) => {
+  const id = Number(req.params.id);
+  if (!get('SELECT id FROM project WHERE id = ?', id)) throw missing('Project');
+  transaction(() => {
+    run('DELETE FROM task_baseline WHERE project_id = ?', id);
+    run(`INSERT INTO task_baseline (task_id, project_id, start_date, end_date)
+         SELECT id, project_id, start_date, end_date FROM task
+         WHERE project_id = ? AND start_date IS NOT NULL AND end_date IS NOT NULL`, id);
+    run("UPDATE project SET baseline_at = datetime('now') WHERE id = ?", id);
+    audit('project', id, 'baseline', null, 'saved');
+  });
+  res.json({ plan: planResponse(id) });
+}));
+
+router.delete('/projects/:id/baseline', handle((req, res) => {
+  const id = Number(req.params.id);
+  if (!get('SELECT id FROM project WHERE id = ?', id)) throw missing('Project');
+  transaction(() => {
+    run('DELETE FROM task_baseline WHERE project_id = ?', id);
+    run('UPDATE project SET baseline_at = NULL WHERE id = ?', id);
+    audit('project', id, 'baseline', 'saved', null);
+  });
+  res.json({ plan: planResponse(id) });
+}));
+
+// ---------------------------------------------------------------- import
+
+const IMPORT_MAX = 2000;
+
+/**
+ * Append tasks from a file (CSV or MS Project XML, parsed in the browser). Rows
+ * refer to each other by their 1-based position in the import: `parent` names a
+ * row above, `predecessors` rows anywhere. All or nothing, and one replan.
+ */
+router.post('/projects/:id/import', handle((req, res) => {
+  const projectId = Number(req.params.id);
+  const project = get<Project>('SELECT * FROM project WHERE id = ?', projectId);
+  if (!project) throw missing('Project');
+  const rows: unknown[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (!rows.length) throw bad('There is nothing to import');
+  if (rows.length > IMPORT_MAX) throw bad(`Import at most ${IMPORT_MAX} tasks at once`);
+
+  const envs = listEnvironments(project.team_id);
+  const warnings: string[] = [];
+  const parsed = rows.map((raw, i) => {
+    const r = raw as Record<string, unknown>;
+    const at = `Row ${i + 1}`;
+    const name = typeof r.name === 'string' ? r.name.trim().replace(/\s+/g, ' ') : '';
+    if (!name) throw bad(`${at} has no task name`);
+    if (name.length > TASK_NAME_MAX) throw bad(`${at}: a task name can be at most ${TASK_NAME_MAX} characters`);
+    const duration = r.duration == null || r.duration === '' ? 1 : intParam(r.duration);
+    if (duration == null || duration < 0 || duration > 1000) throw bad(`${at}: duration is a whole number of working days, 0 to 1000`);
+    let environment_id: number | null = null;
+    if (typeof r.environment === 'string' && r.environment.trim()) {
+      const env = envs.find((e) => e.name.toLowerCase() === (r.environment as string).trim().toLowerCase());
+      if (env) environment_id = env.id;
+      else warnings.push(`${at}: no environment called “${r.environment}”, so it books nothing`);
+    }
+    const parent = r.parent == null || r.parent === '' ? null : intParam(r.parent);
+    if (parent !== null && (parent == null || parent < 1 || parent >= i + 1)) throw bad(`${at}: its summary must be a row above it`);
+    const preds = Array.isArray(r.predecessors) ? r.predecessors : [];
+    const predecessors = preds.map((p) => {
+      const row = intParam((p as { row?: unknown })?.row);
+      const lag = intParam((p as { lag?: unknown })?.lag ?? 0);
+      if (row == null || row < 1 || row > rows.length || row === i + 1 || lag == null) throw bad(`${at}: a predecessor must be another row of the import`);
+      return { row, lag, type: oneOf((p as { type?: unknown })?.type ?? 'FS', LINK_TYPES, 'link type') };
+    });
+    const progress = r.progress == null || r.progress === '' ? null : intParam(r.progress);
+    if (progress !== null && (progress == null || progress < 0 || progress > 100)) throw bad(`${at}: progress is 0 to 100`);
+    return {
+      name, duration, environment_id, parent, predecessors, progress,
+      status: r.status ? oneOf(r.status, TASK_STATUSES, 'status') : 'todo' as const,
+      not_before: optionalDate(r.not_before, 'not_before'),
+      assignee: typeof r.assignee === 'string' && r.assignee.trim() ? r.assignee.trim() : null,
+      note: noteValue(r.note),
+    };
+  });
+
+  transaction(() => {
+    const base = get<{ n: number }>('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM task WHERE project_id = ?', projectId)!.n;
+    const ids: number[] = [];
+    parsed.forEach((t, i) => {
+      ids.push(Number(run(
+        `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, assignee, note, sort_order, parent_id, progress)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        projectId, t.environment_id, t.name, t.duration, t.status, t.not_before, t.assignee, t.note, base + i,
+        t.parent != null ? ids[t.parent - 1] : null, t.progress,
+      ).lastInsertRowid));
+    });
+    parsed.forEach((t, i) => {
+      for (const p of t.predecessors) {
+        run('INSERT OR IGNORE INTO task_dependency (predecessor_id, successor_id, lag, type) VALUES (?, ?, ?, ?)',
+          ids[p.row - 1], ids[i], p.lag, p.type);
+      }
+    });
+    // The same rules as a hand edit: summaries book nothing, links stay legal.
+    const state = loadState(projectId);
+    const checked = checkOutline(state.tasks, state.deps);
+    for (const t of checked.tasks) if (t.environment_id == null) run('UPDATE task SET environment_id = NULL WHERE id = ?', t.id);
+    replan(projectId);
+  });
+  res.status(201).json({ plan: planResponse(projectId), created: parsed.length, warnings });
+}));
+
+// ---------------------------------------------------------------- portfolio
+
+/**
+ * Every plan of a team at once, for the portfolio chart: each project's schedule
+ * as it stands, computed like the plan page does, never written.
+ */
+router.get('/teams/:id/portfolio', handle((req, res) => {
+  const teamId = Number(req.params.id);
+  if (!get('SELECT id FROM team WHERE id = ?', teamId)) throw missing('Team');
+  const holidays = holidaySet();
+  const projects = all<Project>('SELECT * FROM project WHERE team_id = ? ORDER BY name', teamId).map((p) => {
+    const state = loadState(p.id);
+    const outcome = outcomeOf(state);
+    if ('cycle' in outcome || !state.tasks.length) {
+      return { project: p, tasks: [] as Task[], dependencies: [], schedule: [], finish: null, late_by: 0 };
+    }
+    const finish = outcome.schedule.finish;
+    return {
+      project: p,
+      tasks: outcome.tasks,
+      dependencies: state.deps.map(({ predecessor_id, successor_id, lag, type }) => ({ predecessor_id, successor_id, lag, type })),
+      schedule: [...outcome.schedule.tasks.values()],
+      finish,
+      late_by: lateBy(finish, p.target_date, holidays),
+    };
+  });
+  res.json({ projects });
 }));
 
 router.post('/tasks/reorder', handle((req, res) => {

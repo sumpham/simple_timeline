@@ -1,7 +1,9 @@
 import type {
   Booking, Conflict, Environment, Holiday, ISODate, PlanImpact, Project, Task, TaskDependency, TaskHold, TaskSchedule, Team,
 } from '../shared/types.ts';
-import type { BookingView } from '../shared/types.ts';
+import type { BookingView, LinkType } from '../shared/types.ts';
+import type { OutlinePlacement } from '../shared/wbs.ts';
+import type { ImportRow } from './planIO.ts';
 
 export type Bootstrap = { teams: Team[]; environments: Environment[]; holidays: Holiday[] };
 export type BoardData = {
@@ -26,6 +28,20 @@ export type PlanData = {
   holds: TaskHold[];
   /** This project's bookings, with the tasks each one covers. */
   bookings: BookingView[];
+  /** Each task's dates when the baseline was saved; empty without one. */
+  baseline: { task_id: number; start_date: ISODate; end_date: ISODate }[];
+};
+
+/** Every plan of a team, for the portfolio chart. Read-only. */
+export type PortfolioData = {
+  projects: {
+    project: Project;
+    tasks: Task[];
+    dependencies: TaskDependency[];
+    schedule: TaskSchedule[];
+    finish: ISODate | null;
+    late_by: number;
+  }[];
 };
 
 /** A network arrow's shape as saved; see `Route` in client/network.ts. */
@@ -39,13 +55,15 @@ export type SavedLayout = {
 
 /** What a task form sends. `predecessors` replaces the whole set when present. */
 export type TaskInput = Partial<Pick<Task,
-  'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'assignee' | 'note' | 'actual_start' | 'actual_end'>>
-  & { predecessors?: { id: number; lag: number }[] };
+  'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'assignee' | 'note' | 'actual_start' | 'actual_end'
+  | 'parent_id' | 'progress'>>
+  & { predecessors?: { id: number; lag: number; type?: LinkType }[] };
 
 export type TaskChange =
   | { op: 'create'; fields: TaskInput; after_id?: number | null }
   | { op: 'update'; id: number; fields: TaskInput }
-  | { op: 'delete'; id: number; bridge?: boolean };
+  | { op: 'delete'; id: number; bridge?: boolean }
+  | { op: 'outline'; placements: OutlinePlacement[] };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -116,6 +134,15 @@ export const api = {
   saveLayout: (projectId: number, layout: SavedLayout) =>
     request<void>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify(layout) }),
   resetLayout: (projectId: number) => request<void>(`/api/projects/${projectId}/layout/reset`, { method: 'POST' }),
+  outlineTasks: (projectId: number, placements: OutlinePlacement[]) =>
+    request<{ plan: PlanData }>('/api/tasks/outline', { method: 'POST', body: JSON.stringify({ project_id: projectId, placements }) }),
+  saveBaseline: (projectId: number) => request<{ plan: PlanData }>(`/api/projects/${projectId}/baseline`, { method: 'POST' }),
+  clearBaseline: (projectId: number) => request<{ plan: PlanData }>(`/api/projects/${projectId}/baseline`, { method: 'DELETE' }),
+  importTasks: (projectId: number, rows: ImportRow[]) =>
+    request<{ plan: PlanData; created: number; warnings: string[] }>(`/api/projects/${projectId}/import`, {
+      method: 'POST', body: JSON.stringify({ rows }),
+    }),
+  portfolio: (teamId: number) => request<PortfolioData>(`/api/teams/${teamId}/portfolio`),
   releaseBooking: (id: number) =>
     request<Booking & { previous_end: ISODate }>(`/api/bookings/${id}/release`, { method: 'POST' }),
 
