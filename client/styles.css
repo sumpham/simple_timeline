@@ -23,8 +23,9 @@
   --today: var(--alarm);
   /* The critical path is drawn in ink, by weight, never in a hue: red is spent. */
   --critical: var(--ink);
-  /* Except the outline of a critical bar on the plan's Gantt chart, red by request.
-     An outline only, never a fill or a hatch, so it does not read as a double-booking. */
+  /* Except on the plan's Gantt chart, where a critical bar's outline and a critical
+     link are red by request. Lines only, never a fill or a hatch, so they do not read
+     as a double-booking. */
   --critical-outline: var(--alarm);
 
   --env-sit:     #2e8c8c;
@@ -2509,13 +2510,13 @@ kbd {
 .gantt-task:focus-visible .gantt-link-handle { opacity: 1; }
 .gantt-body.is-dragging .gantt-link-handle { opacity: 0; }
 
-/* Links in ink, never orange or red: warm hues sit too near the alarm. */
+/* Links in ink; critical ones in the critical red (by request), as a line only. */
 .gantt-link { fill: none; stroke: var(--muted); stroke-width: 1.1; pointer-events: none; }
-.gantt-link.is-critical { stroke: var(--critical); stroke-width: 1.6; }
+.gantt-link.is-critical { stroke: var(--critical-outline); stroke-width: 1.6; }
 .gantt-link-hit { fill: none; stroke: transparent; stroke-width: 9; cursor: pointer; }
 .gantt-link-g:hover .gantt-link { stroke: var(--focus); stroke-width: 2; }
 #gantt-arrow path, #pf-arrow path { fill: var(--muted); }
-#gantt-arrow-critical path { fill: var(--critical); }
+#gantt-arrow-critical path { fill: var(--critical-outline); }
 .gantt-rubber { stroke: var(--focus); stroke-width: 1.5; stroke-dasharray: 4 3; pointer-events: none; }
 
 /* Pointing at a task keeps its chain and fades the rest. */

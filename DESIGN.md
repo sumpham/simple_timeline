@@ -489,12 +489,12 @@ step that shows the whole plan; **Today** scrolls to this week, which is also wh
 
 *Marks.* Bars carry the environment hue; a task on no environment is hollow; a critical bar or
 milestone has a red outline (`--critical-outline`, by request: an outline only, never a fill,
-so it does not read as a clash) and critical links are heavy ink; done is faded; a milestone is a diamond; a summary is an ink bracket.
+so it does not read as a clash) and critical links are red lines too; done is faded; a milestone is a diamond; a summary is an ink bracket.
 Progress is an ink band along the foot of the bar. **Float** is a thin tail to the last day the
 task may finish. **Baseline** is a grey rule under each bar, with the finish variance in working
 days after the label (`+3d`). **Bookings** washes each task's row with the booking it belongs to,
 dashed when tasks made it, and a releasable tail is a lane wash with a dashed ink edge that
-releases on click. Links are ink, never orange: warm hues sit too near the alarm. The target is
+releases on click. Other links are ink, never orange: warm hues sit too near the alarm. The target is
 a dashed ink line; today is the board's thin red line and flag. Pointing at or focusing a task
 keeps its chain (everything it waits on and everything waiting on it) and fades the rest.
 Labels, float, baseline, bookings and the strip are switched under **Show** and remembered.
