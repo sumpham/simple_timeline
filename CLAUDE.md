@@ -60,8 +60,8 @@ environment hues deliberately avoid the red family so the alarm stays pre-attent
 adding a new coloured element, check `DESIGN.md` §6 and §11. The one addition is
 `--resolved` (pale green), for a double-booking someone has accepted. The today line and
 flag are red too (`--today`, by request); keep them thin so they never read as a clash. So is
-the outline of a critical bar and a critical link on the plan's Gantt chart
-(`--critical-outline`, by request): lines only, never a fill or hatch.
+the outline of a critical bar on the Gantt chart and a critical arrow on the chart and in the
+network (`--critical-outline`, by request): lines only, never a fill or hatch.
 
 **Resolved double-bookings still exist; they just stop alarming.** A resolution is keyed by
 `conflictKey` (environment + exact booking ids, no dates), stored in `conflict_resolution`,

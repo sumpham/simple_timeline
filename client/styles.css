@@ -23,8 +23,8 @@
   --today: var(--alarm);
   /* The critical path is drawn in ink, by weight, never in a hue: red is spent. */
   --critical: var(--ink);
-  /* Except on the plan's Gantt chart, where a critical bar's outline and a critical
-     link are red by request. Lines only, never a fill or a hatch, so they do not read
+  /* Except in the plan, where a critical bar's outline on the Gantt chart and a
+     critical link on the chart and in the network are red by request. Lines only, never a fill or a hatch, so they do not read
      as a double-booking. */
   --critical-outline: var(--alarm);
 
@@ -2777,8 +2777,9 @@ kbd {
 .network-edges { position: absolute; top: 0; left: 0; overflow: visible; }
 .network-edge { fill: none; stroke: var(--muted); stroke-width: 1.2; opacity: 0.7; }
 .network-arrow { fill: var(--muted); }
-.network-edge.is-critical { stroke: var(--critical); stroke-width: 2.6; opacity: 1; }
-.network-arrow.is-critical { fill: var(--critical); }
+.network-edge.is-critical { stroke: var(--critical-outline); stroke-width: 2.6; opacity: 1; }
+.network-arrow.is-critical { fill: var(--critical-outline); }
+.network-arrow.is-related { fill: var(--ink); }
 .network-edge.is-dim { opacity: 0.18; }
 /* Arranging by hand: boxes can be picked up, arrows clicked, handles dragged. */
 .network-edges { pointer-events: none; }
@@ -2799,6 +2800,8 @@ kbd {
 
 /* Pointing at a task picks out its own arrows; everything else steps back. */
 .network-edge.is-related { stroke: var(--ink); stroke-width: 2.2; opacity: 1; }
+/* A picked-out critical arrow keeps its red. */
+.network-edge.is-critical.is-related { stroke: var(--critical-outline); stroke-width: 2.6; }
 .network-edge.is-faint { opacity: 0.14; }
 .network-edge { transition: opacity 120ms ease; }
 

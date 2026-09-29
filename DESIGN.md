@@ -451,8 +451,10 @@ edit in the table saves at once and then says what it did, in a banner with Undo
 which environment and what drives the dates. So there is a table to enter work fast and a
 network to see why, and no kanban.
 
-**Colour.** No new hues. The critical path is heavy ink (`--critical`); `--alarm` appears only
-on a change that would double-book. Environment hue is a stripe on a task's environment cell,
+**Colour.** No new hues. The critical path is heavy ink (`--critical`), except its lines: a
+critical bar's outline on the Gantt chart and a critical arrow on the chart and in the network
+are red (`--critical-outline`, by request; lines only, never a fill). Otherwise `--alarm` appears
+only on a change that would double-book. Environment hue is a stripe on a task's environment cell,
 node or lane. Status is a glyph and a word (○ ◐ ‖ ●). Late is weight and words ("5 working days
 late"). A task-made booking has a dashed edge; a releasable tail is a wash of the lane with a
 dashed ink edge where the work ended.
@@ -585,5 +587,6 @@ order, with "No environment" last. **Critical path only** dims the rest. Zoom st
 continuous. Arrow keys walk the graph and Enter opens a task. The one motion: critical arrows
 draw once on open, behind reduced motion.
 
-Rejected: a kanban board (wrong question), a red critical path (red is spent), coloured status
+Rejected: a kanban board (wrong question), a red-filled critical path (red is spent; the red
+critical lines above came later, by request), coloured status
 pills (a rainbow dilutes the alarm).

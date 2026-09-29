@@ -25,8 +25,9 @@ type Drag =
 /**
  * Activity-on-node network. Each node is the classic scheduling box: early start,
  * duration and early finish on top; late start, float and late finish beneath.
- * The critical path is the one bold thing here, drawn in heavy ink rather than
- * red, because red on this app means a double-booking and nothing else.
+ * The critical path is the one bold thing here: heavy boxes, and arrows in the
+ * critical red (by request, as on the Gantt chart). Lines only, never a fill, so
+ * they do not read as a double-booking.
  *
  * The automatic layout is a starting point. Boxes can be dragged anywhere, and an
  * arrow, once clicked, shows handles that move its runs. Both are saved with the
@@ -321,6 +322,9 @@ export function NetworkDiagram({
                 <marker id="arrow-critical" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
                   <path d="M0,0 L8,4 L0,8 z" className="network-arrow is-critical" />
                 </marker>
+                <marker id="arrow-related" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" className="network-arrow is-related" />
+                </marker>
               </defs>
               <g transform={`translate(${pad},${pad})`}>
                 {layout.edges.map((edge) => {
@@ -343,7 +347,7 @@ export function NetworkDiagram({
                           related ? 'is-related' : focused != null || selected != null ? 'is-faint' : '',
                           isSelected ? 'is-selected' : '',
                         ].filter(Boolean).join(' ')}
-                        markerEnd={`url(#${onPath || related ? 'arrow-critical' : 'arrow'})`}
+                        markerEnd={`url(#${onPath ? 'arrow-critical' : related ? 'arrow-related' : 'arrow'})`}
                       />
                       {arrangeable && (
                         // A wide, invisible twin of the arrow, so it is easy to pick up.
@@ -440,7 +444,7 @@ export function NetworkDiagram({
 
       <p className="network-key">
         Top row: early start, duration, early finish. Bottom row: late start, float, late finish.
-        Heavy boxes and arrows are the critical path. Point at a task to pick out its own arrows.{' '}
+        Heavy boxes and red arrows are the critical path. Point at a task to pick out its own arrows.{' '}
         {arrangeable
           ? 'Drag a box to move it (Alt+arrows with the keyboard). Click an arrow, then drag its square handles to reshape it.'
           : 'Turn off Show environments to arrange boxes and arrows by hand.'}
