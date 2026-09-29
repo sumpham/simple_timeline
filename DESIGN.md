@@ -487,8 +487,9 @@ Monday bar after it. Holidays keep their column, shaded. Three zoom steps, never
 quarter over month). Changing step keeps the same day at the left edge. **Fit** picks the widest
 step that shows the whole plan; **Today** scrolls to this week, which is also where it opens.
 
-*Marks.* Bars carry the environment hue; a task on no environment is hollow; critical bars and
-links are heavy ink; done is faded; a milestone is a diamond; a summary is an ink bracket.
+*Marks.* Bars carry the environment hue; a task on no environment is hollow; a critical bar or
+milestone has a red outline (`--critical-outline`, by request: an outline only, never a fill,
+so it does not read as a clash) and critical links are heavy ink; done is faded; a milestone is a diamond; a summary is an ink bracket.
 Progress is an ink band along the foot of the bar. **Float** is a thin tail to the last day the
 task may finish. **Baseline** is a grey rule under each bar, with the finish variance in working
 days after the label (`+3d`). **Bookings** washes each task's row with the booking it belongs to,
