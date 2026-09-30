@@ -45,8 +45,10 @@ export type AssistantReport = {
   findings: Finding[];
   /** The Monte Carlo forecast; null when the plan has no unfinished work to forecast. */
   forecast: Forecast | null;
-  /** Better plans; Phase 3. */
+  /** Better plans are found on request (GET …/assistant/suggestions), so always empty here. */
   suggestions: [];
+  /** Whether an LLM advisor is turned on, and which; `none` keeps everything on the machine. */
+  advisor?: { provider: string; on: boolean };
 };
 
 export type RuleSettings = { long_task_days: number; high_float_days?: number };

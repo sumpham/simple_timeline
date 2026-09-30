@@ -47,6 +47,9 @@ export type TaskFacts = {
   baseline_end: ISODate | null;
   environment_id: number | null;
   people: number[];
+  /** Best and worst case as typed; null when the forecast uses its default. */
+  best: number | null;
+  worst: number | null;
 };
 
 export type ClashFacts = {
@@ -158,6 +161,8 @@ export function planFacts(input: FactsInput): PlanFacts {
       baseline_end: input.baseline.get(t.id)?.end ?? null,
       environment_id: summary ? null : t.environment_id,
       people: [...(input.people.get(t.id) ?? [])],
+      best: summary ? null : t.duration_low ?? null,
+      worst: summary ? null : t.duration_high ?? null,
     };
   });
   const byId = new Map(tasks.map((t) => [t.id, t]));

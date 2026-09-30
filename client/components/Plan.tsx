@@ -17,6 +17,7 @@ import { AssistantDrawer, openFindings } from './Assistant.tsx';
 import type { AssistantReport, Finding } from '../../shared/assistant/rules.ts';
 import { planVersion, type SuggestionReport } from '../../shared/assistant/optimise.ts';
 import type { PlanOp } from '../../shared/assistant/moves.ts';
+import type { AdvisorReply } from '../../shared/assistant/validate.ts';
 import { edgeKey, type Route } from '../network.ts';
 import type { Arrangement } from '../smartLayout.ts';
 import {
@@ -100,6 +101,9 @@ export function PlanView({
   const [better, setBetter] = useState<SuggestionReport | null>(null);
   const [searching, setSearching] = useState(false);
   const [betterError, setBetterError] = useState<string | null>(null);
+  const [advice, setAdvice] = useState<AdvisorReply | null>(null);
+  const [asking, setAsking] = useState(false);
+  const [askError, setAskError] = useState<string | null>(null);
   /** Rows the assistant was asked to show; `at` makes asking twice show them twice. */
   const [spotlight, setSpotlight] = useState<{ ids: number[]; at: number } | null>(null);
 
@@ -138,7 +142,15 @@ export function PlanView({
       .catch((err) => { if (live) setReportError(err instanceof Error ? err.message : 'The assistant could not read this plan'); });
     return () => { live = false; };
   }, [plan, projectId]);
-  useEffect(() => { setReport(null); setSpotlight(null); setBetter(null); setBetterError(null); }, [projectId]);
+  useEffect(() => { setReport(null); setSpotlight(null); setBetter(null); setBetterError(null); setAdvice(null); setAskError(null); }, [projectId]);
+  const askAdvisor = async (question: string | null, mode: 'brief' | 'replan') => {
+    setAsking(true);
+    setAskError(null);
+    try { setAdvice(await api.ask(projectId, { question, mode })); } catch (err) {
+      setAskError(err instanceof Error ? err.message : 'The advisor did not answer');
+    } finally { setAsking(false); }
+  };
+  const reloadReport = () => { api.assistant(projectId).then(setReport).catch(() => undefined); };
   // Suggestions are worked out on one version of the plan; once it changes they are stale.
   useEffect(() => {
     if (better && plan && better.version !== planVersion({ tasks: plan.tasks, deps: plan.dependencies }, plan.project)) setBetter(null);
@@ -720,6 +732,13 @@ export function PlanView({
             onPreview: previewOps,
             onApply: (ops, version, title) => void applyOps(ops, version, title),
             renderImpact: (impact) => <ImpactList title="Applying would" impact={impact} />,
+          }}
+          advisor={{
+            reply: advice,
+            asking,
+            error: askError,
+            onAsk: (q, mode) => void askAdvisor(q, mode),
+            onSettings: reloadReport,
           }}
           onDismiss={(f) => void setAside(f, false)}
           onRestore={(f) => void setAside(f, true)}

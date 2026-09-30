@@ -205,6 +205,19 @@ the optimiser its own applier in production code: its verdict would drift from t
 `tests/assistantOptimise.test.ts` checks that on random plans, and that P80 never gets later.
 Trade-off moves (M3, M6, M7) only enter the aggressive profile and always carry a `tradeoff`.
 
+Phase 5 (the LLM seam: `digest.ts`, `budget.ts`, `validate.ts`, `server/llm/`) is built too.
+
+**The advisor advises; the engine decides.** An LLM reads `buildDigest` (never raw rows),
+answers in `ANSWER_SCHEMA`, and every move it proposes goes through `judgeMoves`, the same search
+as the engine's own. The panel shows engine numbers only. `advisorReply` never throws for an LLM
+failure: it falls back to the engine and says why. Nothing leaves the machine with the default
+provider `none`; people, other projects and notes are pseudonymised or withheld unless the
+settings say otherwise, and `unmaskText` puts the names back.
+
+**Dates in the digest are working-day offsets from the status date** (`offsetOf`,
+`dateAtOffset`), both ways. The rubric in `server/llm/orchestrate.ts` explains the notation; if
+you change a digest line, change the rubric's legend with it.
+
 **The forecast runs the scheduler's forward pass on sampled durations**, over a copy of the
 index network floored at the status date. It never reimplements float or link maths, and a zero-
 width range must give the CPM finish (a test pins it).

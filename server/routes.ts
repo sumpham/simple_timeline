@@ -10,7 +10,8 @@ import { lateBy } from '../shared/schedule.ts';
 import { TASK_CODE_MAX } from '../shared/taskCode.ts';
 import { ESTIMATE_MAX, estimateError, type Estimate } from '../shared/estimates.ts';
 import { cleanSettingsPatch } from '../shared/assistant/settings.ts';
-import { applyOps, assistantReport, assistantSettings, opsFrom, previewOps, StaleError, suggestionReport } from './assistant.ts';
+import { providerStatus } from './llm/index.ts';
+import { advisorReply, applyOps, assistantReport, assistantSettings, opsFrom, previewOps, StaleError, suggestionReport } from './assistant.ts';
 import { cleanResourceName, formatResources, parseResources, RESOURCE_NAME_MAX, resourceKey } from '../shared/resources.ts';
 import {
   LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
@@ -1154,6 +1155,9 @@ router.delete('/holidays/:date', handle((req, res) => {
 
 router.get('/assistant/settings', handle((_req, res) => res.json(assistantSettings())));
 
+/** Which LLM providers this server can use now; a real one needs its key in the environment. */
+router.get('/assistant/providers', handle((_req, res) => res.json(providerStatus())));
+
 // Settings are not plan state: no write here can move a date, so none replans.
 router.patch('/assistant/settings', handle((req, res) => {
   let patch: ReturnType<typeof cleanSettingsPatch>;
@@ -1222,6 +1226,20 @@ router.post('/projects/:id/assistant/apply', handle((req, res) => {
   const undo = applyOps(id, opsFrom(req.body?.ops), version);
   res.json({ plan: planResponse(id), undo });
 }));
+
+/**
+ * Ask the LLM advisor. With no provider turned on (the default) or when it fails,
+ * the engine answers alone and says why; nothing leaves the machine unless a
+ * provider was chosen in settings and its key set in the environment.
+ */
+router.post('/projects/:id/assistant/ask', (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = assistantProject(req);
+    const question = typeof req.body?.question === 'string' && req.body.question.trim() ? req.body.question.trim().slice(0, 500) : null;
+    const mode = req.body?.mode === 'replan' ? 'replan' : 'brief';
+    advisorReply(id, { question, mode }).then((r) => res.json(r), next);
+  } catch (err) { next(err); }
+});
 
 // ---------------------------------------------------------------- errors
 

@@ -76,7 +76,8 @@ export type Profile = 'safe' | 'balanced' | 'aggressive';
 export type Suggestion = {
   /** Stable for the same ops on the same plan. */
   id: string;
-  profile: Profile | 'tidy';
+  /** Which search found it; 'advisor' when an LLM proposed it and the engine kept it. */
+  profile: Profile | 'tidy' | 'advisor';
   title: string;
   moves: SuggestedMove[];
   ops: PlanOp[];
@@ -205,7 +206,7 @@ export function createSearch(ctx: SearchContext, start: PlanState) {
     // A created task is named by CREATED_ID until it is saved, so a path makes at most one.
     const created = n.moves.some((m) => m.ops.some((o) => o.op === 'create'));
     const c = context(n.e);
-    const all = kinds.flatMap((k) => (k === 'M5' ? [] : GENERATORS[k](c)))
+    const all = kinds.flatMap((k) => (k === 'M5' || k === 'MA' ? [] : GENERATORS[k](c)))
       .filter((m) => !used.has(m.key) && !m.task_ids.some((id) => touched.has(id) && m.kind !== 'M2'))
       .filter((m) => !created || !m.ops.some((o) => o.op === 'create'));
     // Cheapest disruption first, so the cap drops the costly moves.

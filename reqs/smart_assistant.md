@@ -726,30 +726,50 @@ and the **Better plans** section at the foot of the drawer. Where it differs fro
   keeps auto booking ids (`reconcileBookings`). That guarantee is the existing one; it is not
   tested again here.
 
-### Phase 5: LLM seam (no provider yet)
+### Phase 5: LLM seam (built 2026-09-30)
 
-- [ ] `shared/assistant/digest.ts`:
+- [x] `shared/assistant/digest.ts`:
   - Prune to critical, near-critical and flagged tasks and their predecessors; collapse the
     rest by WBS branch.
   - Compact encoding: task codes, working-day offsets from the status date, one-letter enums.
   - Privacy switches, with pseudonyms mapped back after the answer.
-- [ ] `shared/assistant/budget.ts`: estimate tokens and degrade in 4 steps until the digest
+- [x] `shared/assistant/budget.ts`: estimate tokens and degrade in 4 steps until the digest
       fits the budget.
-- [ ] `shared/assistant/validate.ts`: turn LLM moves into change ops, then check codes,
+- [x] `shared/assistant/validate.ts`: turn LLM moves into change ops, then check codes,
       loops, summary fields and the objective against engine A's result. Record why each
       rejected move was rejected.
-- [ ] `server/llm/provider.ts` (interface), `orchestrate.ts` (segments, tool loop ≤ 4 turns,
+- [x] `server/llm/provider.ts` (interface), `orchestrate.ts` (segments, tool loop ≤ 4 turns,
       capability fallbacks, one repair retry, timeout, fallback to A), and
       `providers/none.ts` and `providers/mock.ts`.
-- [ ] Add the `assistant_llm_log` table and `POST /api/projects/:id/assistant/ask`. Show
+- [x] Add the `assistant_llm_log` table and `POST /api/projects/:id/assistant/ask`. Show
       "Ask" in the panel only when the provider is not `none`.
-- [ ] Answer cache by `hash(digest + question)`, and delta digests for follow-up questions.
-- [ ] Tests:
+- [x] Answer cache by `hash(digest + question)`.
+- [ ] Delta digests for follow-up questions. **Not built:** the panel has no conversation, each Ask
+      stands alone, and the network half of the digest is a cacheable prefix, which is most of the
+      saving. Build it with a conversation, if one comes.
+- [x] Tests:
   - Digest round-trip: codes and offsets map back to the same tasks and dates.
   - A 150-task fixture's digest stays under the budget.
   - Privacy: no person or other-project name appears when the switches are on.
   - Validator: rejects bad codes, loops, summary writes and a move that makes a new clash.
   - Orchestrator with `mock`: tool loop, repair retry, and fallback on timeout.
+
+Built as: `shared/assistant/digest.ts`, `budget.ts`, `validate.ts` (the answer's schema, the two
+tools, `judgeMoves`, `AdvisorReply`), `server/llm/` (`provider.ts`, `orchestrate.ts` with the
+rubric, `index.ts` the registry, `providers/none.ts`, `providers/mock.ts`), `advisorReply` in
+server/assistant.ts, `POST /api/projects/:id/assistant/ask` (`{ question?, mode }`),
+`GET /api/assistant/providers`, the `assistant_llm_log` table, and the drawer's **Advisor** and
+**Settings** sections. Where it differs from the plan:
+
+- **The network is the second stable part of the system prompt**, after the rubric, so a
+  provider caches both. The state and the question are the only volatile text.
+- **Links in the answer are structured** (`{ task, type, lag }`), not After text: `shared/`
+  cannot use the client's parser, and a JSON schema constrains structured links better.
+- **Other projects are aliased O1, O2**, not P1, so they never read as rule P1 in the same text.
+- **A settings form** in the drawer, which the plan did not list: without it nothing in the UI
+  could choose a provider or set the privacy switches.
+- On the demo plan the digest is about 300 tokens for 7 tasks, and the rubric about 1,250, which
+  is cached after the first ask.
 
 ### Phase 6: a cloud provider (when chosen)
 

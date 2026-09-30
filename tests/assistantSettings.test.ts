@@ -29,7 +29,7 @@ describe('assistant settings', () => {
     expect(() => cleanSettingsPatch({ nope: 1 })).toThrow('Unknown setting: nope');
     expect(() => cleanSettingsPatch({ long_task_days: 0 })).toThrow(/long_task_days must be a whole number/);
     expect(() => cleanSettingsPatch({ forecast_runs: 1e6 })).toThrow(/forecast_runs/);
-    expect(() => cleanSettingsPatch({ llm_provider: 'somewhere' })).toThrow(/llm_provider must be one of none, mock/);
+    expect(() => cleanSettingsPatch({ llm_provider: 'somewhere' })).toThrow(/llm_provider must be one of none, mock, anthropic, openai-compatible/);
     expect(() => cleanSettingsPatch({ llm_send_notes: 'yes' })).toThrow(/true or false/);
     expect(() => cleanSettingsPatch([])).toThrow('Settings must be an object');
   });

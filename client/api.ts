@@ -7,6 +7,8 @@ import type { ImportRow } from './planIO.ts';
 import type { AssistantReport } from '../shared/assistant/rules.ts';
 import type { SuggestionReport } from '../shared/assistant/optimise.ts';
 import type { PlanOp } from '../shared/assistant/moves.ts';
+import type { AdvisorReply } from '../shared/assistant/validate.ts';
+import type { AssistantSettings } from '../shared/assistant/settings.ts';
 
 export type Bootstrap = { teams: Team[]; environments: Environment[]; holidays: Holiday[] };
 export type BoardData = {
@@ -176,6 +178,12 @@ export const api = {
     request<PlanImpact>(`/api/projects/${projectId}/assistant/preview`, { method: 'POST', body: JSON.stringify({ ops }) }),
   applyOps: (projectId: number, ops: PlanOp[], version: string | null) =>
     request<{ plan: PlanData; undo: PlanOp[] }>(`/api/projects/${projectId}/assistant/apply`, { method: 'POST', body: JSON.stringify({ ops, version }) }),
+  ask: (projectId: number, body: { question: string | null; mode: 'brief' | 'replan' }) =>
+    request<AdvisorReply>(`/api/projects/${projectId}/assistant/ask`, { method: 'POST', body: JSON.stringify(body) }),
+  assistantSettings: () => request<AssistantSettings>('/api/assistant/settings'),
+  updateAssistantSettings: (patch: Partial<{ [K in keyof AssistantSettings]: AssistantSettings[K] | null }>) =>
+    request<AssistantSettings>('/api/assistant/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
+  assistantProviders: () => request<{ id: string; ready: boolean; note: string | null }[]>('/api/assistant/providers'),
   restoreFinding: (projectId: number, key: string) =>
     request<AssistantReport>(`/api/projects/${projectId}/assistant/restore`, { method: 'POST', body: JSON.stringify({ key }) }),
 };

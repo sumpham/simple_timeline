@@ -3,7 +3,10 @@ import type { Forecast } from '../../shared/assistant/forecast.ts';
 import type { ISODate, PlanImpact } from '../../shared/types.ts';
 import type { Advice, Suggestion, SuggestionReport } from '../../shared/assistant/optimise.ts';
 import type { PlanOp } from '../../shared/assistant/moves.ts';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import type { AdvisorReply } from '../../shared/assistant/validate.ts';
+import { DEFAULT_ASSISTANT_SETTINGS, type AssistantSettings } from '../../shared/assistant/settings.ts';
+import { api } from '../api.ts';
 import { formatDate } from '../layout.ts';
 
 /**
@@ -42,10 +45,20 @@ export type BetterPlansProps = {
   renderImpact: (impact: PlanImpact) => ReactNode;
 };
 
+export type AdvisorProps = {
+  reply: AdvisorReply | null;
+  asking: boolean;
+  error: string | null;
+  onAsk: (question: string | null, mode: 'brief' | 'replan') => void;
+  /** Settings changed: reload what depends on them. */
+  onSettings: () => void;
+};
+
 export function AssistantDrawer({
-  report, error, busy, target, taskLabel, onClose, onShow, onShowTasks, onDismiss, onRestore, better,
+  report, error, busy, target, taskLabel, onClose, onShow, onShowTasks, onDismiss, onRestore, better, advisor,
 }: {
   better: BetterPlansProps;
+  advisor: AdvisorProps;
   report: AssistantReport | null;
   error: string | null;
   busy: boolean;
@@ -96,6 +109,18 @@ export function AssistantDrawer({
         );
       })}
       {report && <BetterPlans {...better} busy={busy} onShowTasks={onShowTasks} />}
+      {report && (
+        <AdvisorSection
+          {...advisor}
+          on={!!report.advisor?.on}
+          provider={report.advisor?.provider ?? 'none'}
+          findings={report.findings}
+          busy={busy}
+          better={better}
+          onShowTasks={onShowTasks}
+        />
+      )}
+      {report && <SettingsSection onSaved={advisor.onSettings} />}
     </aside>
   );
 }
@@ -195,7 +220,7 @@ function ForecastCard({ forecast: f, target, taskLabel, onShowTasks }: {
 }
 
 const PROFILE_WORD: Record<Suggestion['profile'], string> = {
-  safe: 'Safe', balanced: 'Balanced', aggressive: 'Aggressive', tidy: 'Tidy-up',
+  safe: 'Safe', balanced: 'Balanced', aggressive: 'Aggressive', tidy: 'Tidy-up', advisor: 'Advisor',
 };
 
 /**
@@ -324,5 +349,196 @@ function AdviceCard({ a, onShowTasks }: { a: Advice; onShowTasks: (ids: number[]
         </div>
       )}
     </article>
+  );
+}
+
+const PROVIDER_LABEL: Record<string, string> = {
+  none: 'Off: nothing leaves this machine',
+  mock: 'Mock (answers locally, for trying it out)',
+  anthropic: 'Anthropic (Claude)',
+  'openai-compatible': 'OpenAI-compatible endpoint',
+};
+
+/**
+ * Ask the advisor (reqs/smart_assistant.md §6). The LLM reads a pruned digest
+ * of the plan and answers in words; every number shown is still the engine's,
+ * and each move it proposes is kept only if the engine confirms it.
+ */
+function AdvisorSection({
+  on, provider, reply, asking, error, findings, busy, better, onAsk, onShowTasks,
+}: AdvisorProps & {
+  on: boolean;
+  provider: string;
+  findings: Finding[];
+  busy: boolean;
+  better: BetterPlansProps;
+  onShowTasks: (ids: number[]) => void;
+}) {
+  const [question, setQuestion] = useState('');
+  const byKey = new Map(findings.map((f) => [f.key, f]));
+  return (
+    <section className="advisor" aria-label="Ask the advisor">
+      <h3 className="assistant-group-title">Advisor <span className="drawer-sub">{on ? PROVIDER_LABEL[provider] ?? provider : 'Off'}</span></h3>
+      <div className="better-body">
+        {!on ? (
+          <p className="better-intro">
+            The advisor is an LLM that reads the plan’s names and notes as a PM would, ranks the warnings and proposes moves,
+            which the engine then checks. It is off, so nothing leaves this machine. Choose a provider under Settings to turn it on.
+          </p>
+        ) : (
+          <>
+            <textarea
+              className="advisor-question"
+              rows={2}
+              maxLength={500}
+              value={question}
+              placeholder="Ask about the plan, or leave blank for a briefing"
+              aria-label="Question for the advisor"
+              onChange={(e) => setQuestion(e.target.value)}
+            />
+            <div className="finding-actions advisor-actions">
+              <button type="button" className="btn quiet" disabled={asking || busy} onClick={() => onAsk(question.trim() || null, 'brief')}>
+                {asking ? 'Asking…' : 'Ask'}
+              </button>
+              <button type="button" className="btn" disabled={asking || busy} onClick={() => onAsk(question.trim() || null, 'replan')}
+                title="Uses the stronger model and asks for moves">
+                Ask for a better plan
+              </button>
+            </div>
+          </>
+        )}
+        {error && <p className="better-error" role="alert">{error}</p>}
+      </div>
+      {reply && (
+        <div className="advisor-reply">
+          <p className="advisor-source">
+            {reply.source === 'advisor' ? `Advisor (${reply.provider})${reply.cached ? ', from cache' : ''}` : 'Engine alone'}
+            {reply.note && <span className="drawer-sub"> · {reply.note}</span>}
+          </p>
+          <p className="advisor-briefing">{reply.briefing}</p>
+          {reply.risks.length > 0 && (
+            <ol className="advisor-risks">
+              {reply.risks.slice(0, 6).map((r) => {
+                const f = byKey.get(r.key);
+                return (
+                  <li key={r.key}>
+                    {f ? <button type="button" className="link-button" onClick={() => onShowTasks(f.task_ids)}>{f.title}</button> : r.key}
+                    {reply.source === 'advisor' && <span className="suggestion-reason"> {r.why}</span>}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+          {reply.suggestions.map((s) => (
+            <SuggestionCard key={s.id} s={s} busy={busy} onPreview={better.onPreview} onApply={better.onApply} renderImpact={better.renderImpact} onShowTasks={onShowTasks} />
+          ))}
+          {reply.rejected.length > 0 && (
+            <details className="advisor-rejected">
+              <summary>The engine dropped {reply.rejected.length} of the advisor’s move{reply.rejected.length === 1 ? '' : 's'}</summary>
+              <ul>{reply.rejected.map((r, i) => <li key={i}>{r.title}: {r.reason}.</li>)}</ul>
+            </details>
+          )}
+          {reply.usage && (
+            <p className="better-meta">
+              About {reply.usage.prompt_tokens.toLocaleString()} tokens of plan and rubric; {reply.usage.input.toLocaleString()} in
+              {reply.usage.cacheRead ? ` (${reply.usage.cacheRead.toLocaleString()} from cache)` : ''}, {reply.usage.output.toLocaleString()} out
+              {reply.usage.turns ? `, ${reply.usage.turns} tool turn${reply.usage.turns === 1 ? '' : 's'}` : ''}.
+              Showed {reply.usage.shown} of {reply.usage.total} tasks.
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+type SettingsDraft = Partial<{ [K in keyof AssistantSettings]: AssistantSettings[K] | null }>;
+
+/** The assistant's settings: thresholds, the forecast, and the advisor's provider and privacy. */
+function SettingsSection({ onSaved }: { onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [s, setS] = useState<AssistantSettings | null>(null);
+  const [providers, setProviders] = useState<{ id: string; ready: boolean; note: string | null }[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    api.assistantSettings().then(setS).catch((e) => setError(String(e.message ?? e)));
+    api.assistantProviders().then(setProviders).catch(() => setProviders([]));
+  }, [open]);
+
+  const save = async (patch: SettingsDraft) => {
+    setSaving(true);
+    try {
+      setS(await api.updateAssistantSettings(patch));
+      setError(null);
+      onSaved();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not save'); } finally { setSaving(false); }
+  };
+  const num = (key: 'near_critical_days' | 'long_task_days' | 'forecast_runs' | 'llm_token_budget', label: string, hint: string) => (
+    <label className="stack settings-field">
+      {label}
+      <input
+        inputMode="numeric"
+        defaultValue={s ? String(s[key]) : ''}
+        key={`${key}:${s?.[key]}`}
+        onBlur={(e) => { const n = Number(e.target.value); if (Number.isInteger(n) && n !== s?.[key]) void save({ [key]: n }); }}
+      />
+      <span className="field-hint">{hint} Default {DEFAULT_ASSISTANT_SETTINGS[key].toLocaleString()}.</span>
+    </label>
+  );
+  const flag = (key: 'llm_send_people' | 'llm_send_other_projects' | 'llm_send_notes', label: string) => (
+    <label className="check">
+      <input type="checkbox" checked={!!s?.[key]} disabled={saving} onChange={(e) => void save({ [key]: e.target.checked })} />
+      <span>{label}</span>
+    </label>
+  );
+  const ready = providers.find((p) => p.id === s?.llm_provider);
+
+  return (
+    <details className="assistant-settings" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary className="assistant-group-title">Settings</summary>
+      {s && (
+        <div className="better-body settings-body">
+          {num('near_critical_days', 'Near-critical within (working days)', 'Float at or under this is close to critical.')}
+          {num('long_task_days', 'Long task over (working days)', 'The 8/80 rule; DCMA uses 44.')}
+          {num('forecast_runs', 'Forecast runs', 'More runs, steadier percentages; 100 to 10,000.')}
+          <label className="stack settings-field">
+            Advisor
+            <select value={s.llm_provider} disabled={saving} onChange={(e) => void save({ llm_provider: e.target.value as AssistantSettings['llm_provider'] })}>
+              {['none', 'mock', 'anthropic', 'openai-compatible'].map((id) => <option key={id} value={id}>{PROVIDER_LABEL[id]}</option>)}
+            </select>
+            <span className="field-hint">
+              {ready && !ready.ready ? ready.note : s.llm_provider === 'none'
+                ? 'The engine answers on its own.'
+                : 'The endpoint and key come from the server’s environment (ASSISTANT_LLM_URL, ASSISTANT_LLM_KEY), never from here.'}
+            </span>
+          </label>
+          {s.llm_provider !== 'none' && (
+            <>
+              <label className="stack settings-field">
+                Model for briefings
+                <input defaultValue={s.llm_model_fast ?? ''} key={`f:${s.llm_model_fast}`} placeholder="Provider default"
+                  onBlur={(e) => { const v = e.target.value.trim() || null; if (v !== s.llm_model_fast) void save({ llm_model_fast: v }); }} />
+              </label>
+              <label className="stack settings-field">
+                Model for better plans
+                <input defaultValue={s.llm_model_strong ?? ''} key={`s:${s.llm_model_strong}`} placeholder="Provider default"
+                  onBlur={(e) => { const v = e.target.value.trim() || null; if (v !== s.llm_model_strong) void save({ llm_model_strong: v }); }} />
+              </label>
+              {num('llm_token_budget', 'Token budget per ask', 'The plan is pruned until it fits.')}
+              <fieldset className="settings-privacy">
+                <legend>What may leave this machine</legend>
+                <span className="field-hint">Task names, dates and environments always do. Off, these are sent as R1, O1 or not at all.</span>
+                {flag('llm_send_people', 'People’s names')}
+                {flag('llm_send_other_projects', 'Other projects’ names')}
+                {flag('llm_send_notes', 'Task notes')}
+              </fieldset>
+            </>
+          )}
+          {error && <p className="better-error" role="alert">{error}</p>}
+        </div>
+      )}
+    </details>
   );
 }

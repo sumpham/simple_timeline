@@ -219,3 +219,22 @@ CREATE TABLE IF NOT EXISTS assistant_dismissal (
   dismissed_at TEXT    NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (project_id, key)
 );
+
+-- One row per ask of the LLM advisor: how much it cost and how it ended. No prompt
+-- or answer text, so no plan data is kept. For measuring the token optimisation.
+CREATE TABLE IF NOT EXISTS assistant_llm_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id    INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  provider      TEXT    NOT NULL,
+  model         TEXT,
+  tier          TEXT    NOT NULL,
+  digest_level  INTEGER,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read    INTEGER NOT NULL DEFAULT 0,
+  cache_write   INTEGER NOT NULL DEFAULT 0,
+  turns         INTEGER NOT NULL DEFAULT 0,
+  latency_ms    INTEGER NOT NULL DEFAULT 0,
+  outcome       TEXT    NOT NULL,
+  at            TEXT    NOT NULL DEFAULT (datetime('now'))
+);

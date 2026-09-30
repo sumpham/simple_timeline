@@ -4,17 +4,23 @@
  * writes nothing but settings and dismissals; a suggestion (later phases) is
  * applied through the ordinary task routes, so it goes through replan.
  */
-import { all, transaction } from './db.ts';
+import { all, run, transaction } from './db.ts';
 import { holidaySet, listBookings, listEnvironments, listTasks, resolvedKeys } from './queries.ts';
 import { applyChange, loadState, outcomeOf, PlanError, projectStart, replan, writeState, type Change, type PlanState, type TaskFields } from './plan.ts';
-import { planImpact } from '../shared/plan.ts';
+import { conflictChanges, planImpact } from '../shared/plan.ts';
 import { CREATED_ID, predecessorsOf, type OpFields, type PlanOp } from '../shared/assistant/moves.ts';
-import { planVersion, suggest, type SearchContext, type SuggestionReport } from '../shared/assistant/optimise.ts';
+import { createSearch, planVersion, suggest, type SearchContext, type Suggestion, type SuggestionReport } from '../shared/assistant/optimise.ts';
+import { offsetOf, unmaskText } from '../shared/assistant/digest.ts';
+import { estimateTokens, fitDigest } from '../shared/assistant/budget.ts';
+import { checkMove, judgeMoves, opsOfMove, type AdvisorReply } from '../shared/assistant/validate.ts';
+import { seedOf } from '../shared/assistant/random.ts';
+import { ask, RUBRIC } from './llm/orchestrate.ts';
 import { applyResolutions, detectConflicts } from '../shared/conflicts.ts';
 import { isValidISODate, today } from '../shared/dates.ts';
 import { planFacts } from '../shared/assistant/facts.ts';
 import { assess, type AssistantReport } from '../shared/assistant/rules.ts';
 import { mergeSettings, type AssistantSettings } from '../shared/assistant/settings.ts';
+import { providerFor } from './llm/index.ts';
 import type { ISODate, LinkType, PlanImpact, Task, TaskDependency } from '../shared/types.ts';
 
 export function assistantSettings(): AssistantSettings {
@@ -29,8 +35,8 @@ export function assistantSettings(): AssistantSettings {
   return mergeSettings(stored);
 }
 
-/** Everything the assistant says about one project's plan on a status date. */
-export function assistantReport(projectId: number, statusDate: ISODate = today()): AssistantReport {
+/** The facts and warnings for one plan on a status date: what the drawer shows and the advisor reads. */
+function projectAssessment(projectId: number, statusDate: ISODate) {
   const state = loadState(projectId);
   const outcome = outcomeOf(state);
   if ('cycle' in outcome) throw new PlanError('This plan has a dependency loop. Remove one of its links.');
@@ -66,8 +72,17 @@ export function assistantReport(projectId: number, statusDate: ISODate = today()
   ).map((r) => r.key));
   const findings = assess(facts, { long_task_days: settings.long_task_days }, names)
     .map((f) => (dismissed.has(f.key) ? { ...f, dismissed: true } : f));
+  return { state, facts, findings, settings, names, holidays };
+}
 
-  return { status_date: statusDate, findings, forecast: facts.forecast, suggestions: [] };
+/** Everything the assistant says about one project's plan on a status date. */
+export function assistantReport(projectId: number, statusDate: ISODate = today()): AssistantReport {
+  const { facts, findings, settings } = projectAssessment(projectId, statusDate);
+  const { provider } = providerFor(settings);
+  return {
+    status_date: statusDate, findings, forecast: facts.forecast, suggestions: [],
+    advisor: { provider: provider.id, on: provider.id !== 'none' },
+  };
 }
 
 // ---------------------------------------------------------------- better plans
@@ -213,3 +228,142 @@ export function applyOps(projectId: number, ops: PlanOp[], version: string | nul
 }
 
 export class StaleError extends Error {}
+
+// ---------------------------------------------------------------- the LLM advisor
+
+const answers = new Map<string, AdvisorReply>();
+const ANSWER_CACHE = 30;
+
+/** Ask the advisor about a plan. Never throws for an LLM failure: the engine answers instead, saying why. */
+export async function advisorReply(projectId: number, o: { question: string | null; mode: 'brief' | 'replan' }): Promise<AdvisorReply> {
+  const statusDate = today();
+  const a = projectAssessment(projectId, statusDate);
+  const { provider, note } = providerFor(a.settings);
+
+  const engine = (why: string, usage: AdvisorReply['usage'] = null): AdvisorReply => {
+    const open = a.findings.filter((f) => !f.dismissed);
+    const fc = a.facts.forecast;
+    const lines = open.slice(0, 3).map((f) => f.text);
+    const headline = fc && fc.on_time != null ? `The plan has a ${Math.round(fc.on_time * 100)}% chance of meeting its target (P80 ${fc.p80}).` : '';
+    return {
+      source: 'engine',
+      note: why,
+      briefing: [headline, ...lines].filter(Boolean).join(' ') || 'Nothing on this plan needs attention now.',
+      risks: open.map((f, i) => ({ key: f.key, rank: i + 1, why: f.text })),
+      suggestions: o.mode === 'replan' ? suggestionReport(projectId, statusDate).suggestions : [],
+      rejected: [],
+      usage,
+      provider: provider.id,
+      cached: false,
+    };
+  };
+  if (provider.id === 'none') return engine(note ?? 'No LLM provider is turned on, so nothing left this machine. The engine answered on its own.');
+
+  // The digest, fitted to the budget after the rubric's share.
+  const tasks = a.state.tasks;
+  const parent = new Map(tasks.map((t) => [t.id, t.parent_id ?? null]));
+  const branchOf = new Map(tasks.map((t) => {
+    let top: number | null = null;
+    for (let p = parent.get(t.id) ?? null, guard = 0; p != null && guard < 64; p = parent.get(p) ?? null, guard++) top = p;
+    return [t.id, top];
+  }));
+  const digest = fitDigest({
+    facts: a.facts,
+    findings: a.findings,
+    notes: new Map(tasks.map((t) => [t.id, t.note])),
+    people: a.names,
+    environments: new Map(listEnvironments(a.state.project.team_id).map((e) => [e.id, e.name])),
+    branchOf,
+  }, {
+    sendPeople: a.settings.llm_send_people,
+    sendOtherProjects: a.settings.llm_send_other_projects,
+    sendNotes: a.settings.llm_send_notes,
+  }, a.settings.llm_token_budget, estimateTokens(RUBRIC));
+
+  const tier = o.mode === 'replan' ? 'strong' : 'fast';
+  const model = tier === 'strong' ? a.settings.llm_model_strong : a.settings.llm_model_fast;
+  const key = seedOf(JSON.stringify([provider.id, model, o.mode, o.question, digest.network, digest.state])).toString(36);
+  const hit = answers.get(key);
+  if (hit) return { ...hit, cached: true };
+
+  // The tools, answered by the engine.
+  const { state, ctx, version } = searchContext(projectId, statusDate);
+  const search = createSearch(ctx, state);
+  if (!search) return engine('This plan has a dependency loop.');
+  search.withForecast(search.root);
+  const off = (d: ISODate | null | undefined) => (d ? `${offsetOf(statusDate, d, ctx.holidays) >= 0 ? '+' : ''}${offsetOf(statusDate, d, ctx.holidays)}` : '-');
+  const byCode = new Map(search.root.facts.tasks.map((t) => [t.code, t]));
+  const tools = {
+    get_task: (args: unknown) => {
+      const t = byCode.get((args as { task?: number })?.task ?? -1);
+      if (!t) return 'There is no such task.';
+      const code = (id: number) => search.root.facts.byId.get(id)?.code ?? id;
+      const raw = tasks.find((x) => x.id === t.id);
+      const warnings = a.findings.filter((f) => !f.dismissed && f.task_ids.includes(t.id)).map((f) => `${f.key}: ${f.text}`);
+      return [
+        `Task ${t.code} "${t.name}"${t.summary ? ' (summary)' : ''}: status ${t.status}, ${t.duration} working days, best ${t.best ?? '~'}, worst ${t.worst ?? '~'}`,
+        `start ${off(t.start)}, end ${off(t.end)}, total float ${t.total_float}, free float ${t.free_float}${t.critical ? ', critical' : t.near_critical ? ', near-critical' : ''}`,
+        `waits for ${t.preds.map(code).join(', ') || 'nothing'}; feeds ${t.succs.map(code).join(', ') || 'nothing'}`,
+        ...(t.not_before ? [`start no earlier than ${off(t.not_before)}${t.driven_by_constraint ? ' (holding it back)' : ''}`] : []),
+        ...(t.progress != null ? [`${t.progress}% done${t.spi != null ? `, pace ${t.spi.toFixed(2)}` : ''}`] : []),
+        ...(a.settings.llm_send_notes && raw?.note ? [`note: ${raw.note.slice(0, 300)}`] : []),
+        ...warnings,
+      ].join('\n');
+    },
+    simulate: (args: unknown) => {
+      const moves = (args as { moves?: unknown[] })?.moves;
+      if (!Array.isArray(moves) || !moves.length) return 'Give one or more moves.';
+      const ops: PlanOp[] = [];
+      for (const m of moves.slice(0, 5)) {
+        const checked = checkMove(m as Record<string, unknown>);
+        if (typeof checked === 'string') return `Not a valid move: ${checked}.`;
+        const got = opsOfMove(search, ctx, checked);
+        if (typeof got === 'string') return `Not a valid move: ${got}.`;
+        ops.push(...got);
+      }
+      const e = search.tryOps(search.root.state, ops);
+      if (!e) return 'A save would refuse that (for example a loop, or a field a summary does not have).';
+      search.withForecast(e);
+      const r = search.root;
+      const cleared = e === r ? [] : conflictChanges(r.outcome, e.outcome, ctx.impact).cleared;
+      return [
+        `finish ${off(r.finish)} -> ${off(e.finish)}`,
+        `P80 ${off(r.forecast?.p80)} -> ${off(e.forecast?.p80)}`,
+        ...(r.forecast?.on_time != null ? [`chance on time ${Math.round(r.forecast.on_time * 100)}% -> ${Math.round((e.forecast?.on_time ?? 0) * 100)}%`] : []),
+        `new double-bookings: ${e.newClashes}${e.newClashes ? ' (the engine will drop this)' : ''}`,
+        `double-bookings of this project: ${r.clashes} -> ${e.clashes}${cleared.length ? ` (clears ${cleared.map((c) => c.env_name).join(', ')})` : ''}`,
+      ].join('\n');
+    },
+  };
+
+  const started = Date.now();
+  const result = await ask({ provider, tier, model, network: digest.network, state: digest.state, question: o.question, tools });
+  const usage = {
+    ...result.usage, prompt_tokens: digest.tokens, digest_level: digest.level, shown: digest.shown, total: digest.total,
+    turns: result.turns, tools: result.tools,
+  };
+  run(`INSERT INTO assistant_llm_log (project_id, provider, model, tier, digest_level, input_tokens, output_tokens, cache_read, cache_write, turns, latency_ms, outcome)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    projectId, provider.id, result.model ?? model, tier, digest.level, result.usage.input, result.usage.output,
+    result.usage.cacheRead ?? 0, result.usage.cacheWrite ?? 0, result.turns, Date.now() - started,
+    result.answer ? 'answered' : result.unavailable ? 'unavailable' : `failed: ${result.error ?? ''}`.slice(0, 200));
+
+  if (!result.answer) return engine(`${result.error ?? 'The advisor did not answer'}. The engine answered on its own.`, usage);
+
+  const known = new Set(a.findings.map((f) => f.key));
+  const verdicts = judgeMoves(ctx, state, version, result.answer.moves, digest.unmask);
+  const reply: AdvisorReply = {
+    source: 'advisor',
+    note: digest.over ? 'The plan was too large for the token budget even at its shortest; the advisor saw the critical path only.' : null,
+    briefing: unmaskText(result.answer.briefing, digest.unmask),
+    risks: result.answer.risks.filter((r) => known.has(r.key)).map((r) => ({ ...r, why: unmaskText(r.why, digest.unmask) })),
+    suggestions: verdicts.flatMap((v) => (v.suggestion ? [v.suggestion] : [])),
+    rejected: verdicts.flatMap((v) => (v.rejected ? [{ title: `Task ${v.move.task}: ${JSON.stringify(v.move.change)}`, reason: v.rejected }] : [])),
+    usage,
+    provider: provider.id,
+    cached: false,
+  };
+  answers.set(key, reply);
+  if (answers.size > ANSWER_CACHE) answers.delete(answers.keys().next().value!);
+  return reply;
+}

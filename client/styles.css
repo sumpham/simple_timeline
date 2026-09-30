@@ -3175,3 +3175,20 @@ kbd {
 .suggestion-reason, .suggestion-tradeoff { margin: 2px 0 0; font-size: 12.5px; line-height: 1.45; }
 .suggestion-tradeoff { color: var(--muted); }
 .suggestion .impact { margin: 6px 0; }
+
+/* The advisor and the settings. */
+.advisor { border-bottom: 1px solid var(--rule); }
+.advisor-question { width: 100%; font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 3px; background: var(--lane); color: inherit; resize: vertical; }
+.advisor-actions { justify-self: stretch; }
+.advisor-reply { padding: 0 16px 12px; display: grid; gap: 6px; font-size: 13px; }
+.advisor-source { margin: 0; font-size: 12px; font-weight: 600; }
+.advisor-briefing { margin: 0; line-height: 1.5; }
+.advisor-risks { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.advisor-rejected { font-size: 12.5px; color: var(--muted); }
+.advisor-rejected ul { margin: 4px 0 0; padding-left: 18px; }
+.advisor-reply .suggestion { margin: 0 -16px; }
+.assistant-settings > summary { cursor: pointer; list-style: revert; }
+.settings-body { justify-items: stretch; }
+.settings-field input, .settings-field select { font: inherit; font-size: 13px; }
+.settings-privacy { border: 1px solid var(--rule-soft); border-radius: 3px; padding: 8px 10px; display: grid; gap: 4px; margin: 0; }
+.settings-privacy legend { font-size: 12px; font-weight: 600; padding: 0 4px; }

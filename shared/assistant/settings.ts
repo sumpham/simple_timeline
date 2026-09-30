@@ -8,8 +8,14 @@
  * key are never settings: they come from the server's environment only.
  */
 
-/** Providers the server knows. 'none' sends nothing anywhere; 'mock' answers locally, for tests. */
-export const LLM_PROVIDERS = ['none', 'mock'] as const;
+/**
+ * Providers the server knows. 'none' sends nothing anywhere; 'mock' answers
+ * locally, for tests and trying the panel. 'anthropic' is the Messages API;
+ * 'openai-compatible' is any chat-completions endpoint (OpenAI, Azure OpenAI, a
+ * company gateway, or a local model server). A real one needs its key, and for
+ * openai-compatible its URL, in the server's environment.
+ */
+export const LLM_PROVIDERS = ['none', 'mock', 'anthropic', 'openai-compatible'] as const;
 export type LlmProviderId = (typeof LLM_PROVIDERS)[number];
 
 export type AssistantSettings = {

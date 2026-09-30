@@ -10,7 +10,8 @@ import { day, label } from './rules.ts';
  * rule a save checks is checked.
  */
 
-export type MoveKind = 'M1' | 'M2' | 'M3' | 'M4' | 'M5' | 'M6' | 'M7';
+/** M1–M7 are the engine's own moves (§4.3); MA is one an LLM advisor proposed and the engine kept. */
+export type MoveKind = 'M1' | 'M2' | 'M3' | 'M4' | 'M5' | 'M6' | 'M7' | 'MA';
 
 export type OpFields = Partial<Pick<Task, 'name' | 'duration' | 'not_before' | 'environment_id'>>
   & { predecessors?: { id: number; lag: number; type: LinkType }[] };
@@ -37,7 +38,7 @@ export type Move = {
 };
 
 /** How much a move disturbs the plan, for the last tie-break: level first, crash last. */
-export const DISRUPTION: Record<MoveKind, number> = { M1: 1, M5: 2, M4: 3, M2: 4, M3: 6, M7: 7, M6: 8 };
+export const DISRUPTION: Record<MoveKind, number> = { M1: 1, M5: 2, M4: 3, M2: 4, MA: 5, M3: 6, M7: 7, M6: 8 };
 
 export const MOVE_TITLE: Record<MoveKind, string> = {
   M1: 'Level within float',
@@ -47,6 +48,7 @@ export const MOVE_TITLE: Record<MoveKind, string> = {
   M5: 'Drop a redundant link',
   M6: 'Crash',
   M7: 'Split a long task',
+  MA: 'Advisor’s move',
 };
 
 export type MoveContext = {
@@ -270,7 +272,7 @@ export function redundantLinks(c: MoveContext): Move[] {
   return out;
 }
 
-export const GENERATORS: Record<Exclude<MoveKind, 'M5'>, (c: MoveContext) => Move[]> = {
+export const GENERATORS: Record<Exclude<MoveKind, 'M5' | 'MA'>, (c: MoveContext) => Move[]> = {
   M1: levelWithinFloat,
   M2: switchEnvironment,
   M3: fastTrack,
