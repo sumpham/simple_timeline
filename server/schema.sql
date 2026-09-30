@@ -195,3 +195,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id, at DESC);
+
+-- The smart assistant's settings (shared/assistant/settings.ts): only values someone
+-- changed, as JSON; a read merges them over the defaults there. Never the LLM
+-- endpoint or key, which come from the environment only.
+CREATE TABLE IF NOT EXISTS assistant_setting (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

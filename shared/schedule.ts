@@ -66,7 +66,44 @@ function calendar(projectStart: ISODate, holidays: HolidaySet) {
   return { base, dateOf, indexOf };
 }
 
-export function scheduleProject(input: ScheduleInput): ScheduleResult | ScheduleFailure {
+/**
+ * A project's working tasks as the forward pass sees them: positions in
+ * dependency order, links by position, and what already happened. Built once,
+ * then `forwardPass` can be run many times with different durations (the
+ * assistant's forecast samples durations this way; see reqs/smart_assistant.md).
+ */
+export type IndexNetwork = {
+  /** Working task ids in dependency order; a position is an index into this. */
+  ids: number[];
+  /** Each position's incoming links, by predecessor position. */
+  preds: { from: number; type: LinkType; lag: number }[][];
+  /**
+   * What has happened, per position. `fixed`: done on its actual dates, so its
+   * index range never moves. `started`: its actual start holds and its duration
+   * runs from there. `free`: scheduled from its links and `floor`.
+   */
+  state: ({ kind: 'fixed'; es: number; ef: number } | { kind: 'started'; es: number } | { kind: 'free'; floor: number | null })[];
+  /** Each position's planned duration in working days, never negative. */
+  durations: number[];
+  /** Index <-> date on the project's working calendar. */
+  dateOf: (i: number) => ISODate;
+  indexOf: (d: ISODate) => number;
+};
+
+/** Early start and exclusive early finish per position, and the project's finish index. */
+export type ForwardResult = { es: number[]; ef: number[]; finish: number };
+
+type Prepared = {
+  cal: ReturnType<typeof calendar>;
+  outlineTasks: (ScheduleInput['tasks'][number] & { sort_order: number })[];
+  summaries: Set<number>;
+  byId: Map<number, ScheduleInput['tasks'][number]>;
+  order: number[];
+  succs: Map<number, TaskDependency[]>;
+  net: IndexNetwork;
+};
+
+function prepare(input: ScheduleInput): Prepared | ScheduleFailure {
   const holidays = input.holidays ?? new Set<ISODate>();
   const cal = calendar(input.projectStart, holidays);
   const outlineTasks = input.tasks.map((t) => ({ ...t, sort_order: t.sort_order ?? 0 }));
@@ -80,46 +117,88 @@ export function scheduleProject(input: ScheduleInput): ScheduleResult | Schedule
   const order = topologicalOrder([...byId.keys()], deps);
   if ('cycle' in order) return order;
 
-  const preds = new Map<number, TaskDependency[]>();
   const succs = new Map<number, TaskDependency[]>();
+  for (const d of deps) (succs.get(d.predecessor_id) ?? succs.set(d.predecessor_id, []).get(d.predecessor_id)!).push(d);
+
+  const position = new Map(order.order.map((id, i) => [id, i]));
+  const preds: IndexNetwork['preds'] = order.order.map(() => []);
   for (const d of deps) {
-    (preds.get(d.successor_id) ?? preds.set(d.successor_id, []).get(d.successor_id)!).push(d);
-    (succs.get(d.predecessor_id) ?? succs.set(d.predecessor_id, []).get(d.predecessor_id)!).push(d);
+    preds[position.get(d.successor_id)!].push({ from: position.get(d.predecessor_id)!, type: linkType(d), lag: d.lag });
   }
 
-  // Forward pass: early start and exclusive early finish, as indexes.
-  const es = new Map<number, number>();
-  const ef = new Map<number, number>();
-  for (const id of order.order) {
+  const state: IndexNetwork['state'] = order.order.map((id) => {
     const t = byId.get(id)!;
-    const duration = Math.max(0, t.duration);
-
     // What has happened is not rescheduled: a done task sits on its actual dates,
     // a started one keeps its actual start.
     if (t.status === 'done' && t.actual_start && t.actual_end) {
       const s = cal.indexOf(t.actual_start);
-      es.set(id, s);
-      ef.set(id, Math.max(s, cal.indexOf(t.actual_end) + 1));
-      continue;
+      return { kind: 'fixed', es: s, ef: Math.max(s, cal.indexOf(t.actual_end) + 1) };
     }
     if ((t.status === 'in_progress' || t.status === 'done') && t.actual_start) {
-      const s = cal.indexOf(t.actual_start);
-      es.set(id, s);
-      ef.set(id, s + duration);
-      continue;
+      return { kind: 'started', es: cal.indexOf(t.actual_start) };
     }
+    return { kind: 'free', floor: t.not_before ? cal.indexOf(t.not_before) : null };
+  });
 
-    let start = 0;
-    for (const d of preds.get(id) ?? []) {
-      start = Math.max(start, earliestStart(linkType(d), es.get(d.predecessor_id)!, ef.get(d.predecessor_id)!, d.lag, duration));
-    }
-    if (t.not_before) {
+  const net: IndexNetwork = {
+    ids: order.order,
+    preds,
+    state,
+    durations: order.order.map((id) => Math.max(0, byId.get(id)!.duration)),
+    dateOf: cal.dateOf,
+    indexOf: cal.indexOf,
+  };
+  return { cal, outlineTasks, summaries, byId, order: order.order, succs, net };
+}
+
+/** The project's working tasks as an index network, or the loop that stops one being built. */
+export function indexNetwork(input: ScheduleInput): IndexNetwork | ScheduleFailure {
+  const p = prepare(input);
+  return 'cycle' in p ? p : p.net;
+}
+
+/**
+ * Forward pass over an index network: early start and exclusive early finish
+ * per position. `durations` defaults to the planned ones; a done task's range is
+ * fixed whatever it is given. One step per position, so it always ends.
+ */
+export function forwardPass(net: IndexNetwork, durations: ArrayLike<number> = net.durations): ForwardResult {
+  const n = net.ids.length;
+  const es = new Array<number>(n);
+  const ef = new Array<number>(n);
+  let finish = 0;
+  for (let i = 0; i < n; i++) {
+    const st = net.state[i];
+    const duration = Math.max(0, durations[i]);
+    if (st.kind === 'fixed') {
+      es[i] = st.es;
+      ef[i] = st.ef;
+    } else if (st.kind === 'started') {
+      es[i] = st.es;
+      ef[i] = st.es + duration;
+    } else {
+      let start = 0;
+      for (const p of net.preds[i]) start = Math.max(start, earliestStart(p.type, es[p.from], ef[p.from], p.lag, duration));
       // A milestone's date is the day before its index, so its floor moves up one.
-      start = Math.max(start, cal.indexOf(t.not_before) + (duration === 0 ? 1 : 0));
+      if (st.floor != null) start = Math.max(start, st.floor + (duration === 0 ? 1 : 0));
+      es[i] = start;
+      ef[i] = start + duration;
     }
-    es.set(id, start);
-    ef.set(id, start + duration);
+    if (ef[i] > finish) finish = ef[i];
   }
+  return { es, ef, finish };
+}
+
+export function scheduleProject(input: ScheduleInput): ScheduleResult | ScheduleFailure {
+  const prepared = prepare(input);
+  if ('cycle' in prepared) return prepared;
+  const { cal, outlineTasks, summaries, byId, succs, net } = prepared;
+  const order = { order: prepared.order };
+
+  // Forward pass: early start and exclusive early finish, as indexes.
+  const forward = forwardPass(net);
+  const es = new Map(net.ids.map((id, i) => [id, forward.es[i]]));
+  const ef = new Map(net.ids.map((id, i) => [id, forward.ef[i]]));
 
   const finishIndex = Math.max(0, ...ef.values());
 

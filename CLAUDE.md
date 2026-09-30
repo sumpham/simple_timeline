@@ -11,7 +11,8 @@ everything else supports it.
 
 `reqs.md` holds the requirements and the answered scoping questions; `reqs/` holds later
 feature requirements (task management: `reqs/simple_task_management.md`; the plan's Gantt
-chart: `reqs/gantt_chart.md`; people on tasks: `reqs/resources.md`).
+chart: `reqs/gantt_chart.md`; people on tasks: `reqs/resources.md`; the PM's smart assistant:
+`reqs/smart_assistant.md`, which carries its build plan as a to-do list in §10).
 `DESIGN.md` holds the architecture and UI design, including why things look the way they do.
 `docs/gantt/` explains the Gantt chart for later work: user guide, architecture, data and API,
 file formats, testing recipe, roadmap. `DESIGN.md` wins where they disagree.
@@ -36,6 +37,7 @@ runs through Node's built-in type stripping rather than a build step.
 shared/   dates.ts, conflicts.ts, types.ts — pure, imported by BOTH server and client
           schedule.ts, taskHolds.ts, plan.ts — task scheduling, holds, impact (same rule)
           wbs.ts — the task outline (summaries), read depth-first
+          assistant/ — the smart assistant: settings, seeded random, later rules and forecast
 server/   Express routes over SQLite; schema.sql is the source of truth for the data model
 client/   React board; layout.ts holds the time scale and lane packing (pure, tested)
           gantt.ts — the plan chart's scale, zoom, drag maths, progress (pure, tested)
@@ -181,6 +183,39 @@ only the Resources dialog's delete or merge removes one. A later workload view m
 **working days** over leaf tasks: do not pass people through `detectConflicts`, which counts
 calendar days for environments. `[` and `]` are refused in names to keep `Mai[50%]` free for
 allocation.
+
+## Smart assistant
+
+`reqs/smart_assistant.md` has the design and the phased to-do list (§10); tick items there as
+they land. Phase 0 is built: `forwardPass`/`indexNetwork` in shared/schedule.ts, the seeded
+random source and the settings. The rules that break things when forgotten:
+
+**The assistant never writes a task, link or booking.** A suggestion is a list of the existing
+change ops; it previews through `POST /api/tasks/preview` and applies through the same routes,
+so `replan` runs and auto bookings keep their ids.
+
+**Risk numbers come from `shared/` only**, by calling `planProject`, `planImpact`,
+`conflictsFor` and `forwardPass`. No float, span or clash maths in a panel or a route, and an
+LLM's numbers are never displayed: it gives reasons, the engine gives numbers.
+
+**`scheduleProject` runs its forward pass through `forwardPass`.** The forecast samples
+durations through the same function, so a zero-width range gives the CPM finish exactly. Change
+the pass in one place, never fork it.
+
+**Every assistant loop is bounded**: forecast runs (a setting, capped), beam width and depth,
+`planProject` calls per request, LLM tool turns. **Randomness is seeded** (`seededRandom`,
+`seedOf`), never `Math.random`, and the status date is an input, never read from the clock in
+`shared/`, so the same plan on the same day gives the same answer.
+
+**Settings store only overrides.** `assistant_setting` holds what someone changed, as JSON;
+`mergeSettings` reads it over `DEFAULT_ASSISTANT_SETTINGS` and drops a value that no longer
+passes its rule. A new setting is a line in `shared/assistant/settings.ts`, not a migration.
+Settings are not plan state and never replan. The LLM endpoint and key are never settings: they
+come from the environment (`ASSISTANT_LLM_URL`, `ASSISTANT_LLM_KEY`), and the default provider
+`none` sends nothing anywhere.
+
+**Best/Worst estimates (Phase 2) are not plan state**, like people: an edit touching only them
+skips `replan`, and `scheduleProject` never reads them.
 
 ## Drag-to-edit
 

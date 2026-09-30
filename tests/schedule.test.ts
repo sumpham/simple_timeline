@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { cycleWith, lateBy, scheduleProject, type ScheduleResult } from '../shared/schedule.ts';
+import {
+  cycleWith, forwardPass, indexNetwork, lateBy, scheduleProject, type IndexNetwork, type ScheduleResult,
+} from '../shared/schedule.ts';
 import { addDays } from '../shared/dates.ts';
 import type { Task, TaskDependency } from '../shared/types.ts';
 
@@ -167,5 +169,67 @@ describe('summary tasks', () => {
   it('ignores the summary’s own duration', () => {
     const r = ok(scheduleProject({ tasks, deps: [], projectStart: MON }));
     expect(r.tasks.get(10)!.end).toBe('2026-03-04');
+  });
+});
+
+describe('indexNetwork and forwardPass', () => {
+  function net(r: ReturnType<typeof indexNetwork>): IndexNetwork {
+    if ('cycle' in r) throw new Error(`unexpected cycle ${r.cycle}`);
+    return r;
+  }
+
+  it('agrees with scheduleProject on planned durations', () => {
+    const input = {
+      tasks: [
+        task(1, 3, { status: 'done', actual_start: MON, actual_end: '2026-03-05' }),
+        task(2, 4, { status: 'in_progress', actual_start: '2026-03-04' }),
+        task(3, 2, { not_before: '2026-03-16' }),
+        task(4, 0),
+        task(5, 5),
+      ],
+      deps: [dep(1, 3), dep(2, 4), dep(3, 4), { ...dep(2, 5, 1), type: 'SS' as const }],
+      projectStart: MON,
+    };
+    const r = ok(scheduleProject(input));
+    const n = net(indexNetwork(input));
+    const f = forwardPass(n);
+    n.ids.forEach((id, i) => {
+      const s = r.tasks.get(id)!;
+      if (f.ef[i] > f.es[i]) {
+        expect(n.dateOf(f.es[i])).toBe(s.start);
+        expect(n.dateOf(f.ef[i] - 1)).toBe(s.end);
+      } else {
+        expect(n.dateOf(f.es[i] - 1)).toBe(s.start);
+      }
+    });
+    expect(n.dateOf(f.finish - 1)).toBe(r.finish);
+  });
+
+  it('lists positions in dependency order and leaves summaries out', () => {
+    const n = net(indexNetwork({
+      tasks: [task(9, 0), task(1, 2, { parent_id: 9 }), task(2, 3, { parent_id: 9 }), task(3, 1)],
+      deps: [dep(9, 3), dep(2, 1)],
+      projectStart: MON,
+    }));
+    expect(n.ids).toEqual([2, 1, 3]);
+    expect(n.preds[2].map((p) => n.ids[p.from]).sort()).toEqual([1, 2]);
+  });
+
+  it('runs again with other durations, keeping done work fixed', () => {
+    const n = net(indexNetwork({
+      tasks: [task(1, 2, { status: 'done', actual_start: MON, actual_end: '2026-03-03' }), task(2, 3), task(3, 4)],
+      deps: [dep(1, 2), dep(2, 3)],
+      projectStart: MON,
+    }));
+    expect(forwardPass(n).finish).toBe(9);
+    const longer = forwardPass(n, [10, 5, 4]);
+    expect(longer.es[0]).toBe(0);
+    expect(longer.ef[0]).toBe(2);
+    expect(longer.finish).toBe(11);
+  });
+
+  it('reports a loop instead of a network', () => {
+    expect(indexNetwork({ tasks: [task(1, 1), task(2, 1)], deps: [dep(1, 2), dep(2, 1)], projectStart: MON }))
+      .toHaveProperty('cycle');
   });
 });

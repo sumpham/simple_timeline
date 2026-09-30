@@ -8,6 +8,7 @@ import { holidaySet, listTasks } from './queries.ts';
 import { applyChange, checkOutline, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
 import { lateBy } from '../shared/schedule.ts';
 import { TASK_CODE_MAX } from '../shared/taskCode.ts';
+import { cleanSettingsPatch, mergeSettings, type AssistantSettings } from '../shared/assistant/settings.ts';
 import { cleanResourceName, formatResources, parseResources, RESOURCE_NAME_MAX, resourceKey } from '../shared/resources.ts';
 import {
   LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
@@ -1104,6 +1105,40 @@ router.delete('/holidays/:date', handle((req, res) => {
     replanAll();
   });
   res.status(204).end();
+}));
+
+// ---------------------------------------------------------------- assistant settings
+
+function assistantSettings(): AssistantSettings {
+  const stored: Record<string, unknown> = {};
+  for (const row of all<{ key: string; value: string }>('SELECT key, value FROM assistant_setting')) {
+    try {
+      stored[row.key] = JSON.parse(row.value);
+    } catch {
+      // An unreadable row reads as the default.
+    }
+  }
+  return mergeSettings(stored);
+}
+
+router.get('/assistant/settings', handle((_req, res) => res.json(assistantSettings())));
+
+// Settings are not plan state: no write here can move a date, so none replans.
+router.patch('/assistant/settings', handle((req, res) => {
+  let patch: ReturnType<typeof cleanSettingsPatch>;
+  try {
+    patch = cleanSettingsPatch(req.body);
+  } catch (err) {
+    throw bad((err as Error).message);
+  }
+  transaction(() => {
+    for (const [key, value] of Object.entries(patch.set)) {
+      run(`INSERT INTO assistant_setting (key, value) VALUES (?, ?)
+           ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`, key, JSON.stringify(value));
+    }
+    for (const key of patch.reset) run('DELETE FROM assistant_setting WHERE key = ?', key);
+  });
+  res.json(assistantSettings());
 }));
 
 // ---------------------------------------------------------------- errors
