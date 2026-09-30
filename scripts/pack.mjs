@@ -92,7 +92,8 @@ writeFileSync(join(stage, 'package.json'), JSON.stringify({
     start: 'NODE_ENV=production node --no-warnings=ExperimentalWarning server/index.ts',
     seed: 'node --no-warnings=ExperimentalWarning server/seed.ts',
   },
-  dependencies: { express: pkg.dependencies.express },
+  // The Anthropic SDK is pure JavaScript; it is only called when the advisor is turned on.
+  dependencies: { express: pkg.dependencies.express, '@anthropic-ai/sdk': pkg.dependencies['@anthropic-ai/sdk'] },
 }, null, 2) + '\n');
 
 // ---------------------------------------------------------------- 3. deps

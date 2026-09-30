@@ -17,6 +17,7 @@
     "pack": "node scripts/pack.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0",
     "express": "^4.21.2"
   },
   "devDependencies": {

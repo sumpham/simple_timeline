@@ -771,14 +771,40 @@ server/assistant.ts, `POST /api/projects/:id/assistant/ask` (`{ question?, mode 
 - On the demo plan the digest is about 300 tokens for 7 tasks, and the rubric about 1,250, which
   is cached after the first ask.
 
-### Phase 6: a cloud provider (when chosen)
+### Phase 6: cloud providers (built 2026-09-30, off by default)
 
-- [ ] Write `server/llm/providers/<name>.ts` on `fetch`. Map segments to its caching, tools to
+- [x] Write `server/llm/providers/<name>.ts` on `fetch`. Map segments to its caching, tools to
       its tool format, and the schema to its structured output. Declare its `caps`.
-- [ ] Set up environment variables and a settings entry, then run a contract test of the
+- [x] Set up environment variables and a settings entry, then run a contract test of the
       adapter against recorded responses. Check that `usage` is logged, including cache
       reads.
-- [ ] Update `npm run pack` notes: the packed build works offline with `none`, and turning on
+- [x] Update `npm run pack` notes: the packed build works offline with `none`, and turning on
       a provider needs the environment variables on the target machine.
 - [ ] Measure: compare tokens per ask from `assistant_llm_log` with the §7 estimate and tune
-      the budget.
+      the budget. **Needs real traffic:** do it once a provider is turned on.
+
+The provider is still undecided (§9), so two adapters are built and neither is on:
+
+- **`anthropic`** (`server/llm/providers/anthropic.ts`) uses the official `@anthropic-ai/sdk`
+  (pure JavaScript, shipped in the pack), not raw fetch.
+  - The default model is `claude-opus-5` for both tiers; settings can name others.
+  - The rubric and network go in `system` with a cache breakpoint on the last stable block.
+  - The answer is constrained by `output_config.format` (JSON schema). Effort is `medium` for
+    briefings and `high` for re-plans, and is left out on models that do not take it.
+  - Assistant turns are echoed back unchanged, because Claude Opus 5 returns thinking blocks
+    that must be.
+  - On Claude Opus 5 and Claude Fable 5.1, a declined request is re-run on a fallback model
+    server-side (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`).
+  - A refusal or a cut-off answer falls back to the engine.
+- **`openai-compatible`** (`server/llm/providers/openaiCompatible.ts`) is plain fetch to any
+  chat-completions URL: OpenAI, Azure OpenAI, a gateway, or a local server such as Ollama.
+  - A model must be named in settings.
+  - It retries once without `response_format` when a server rejects it.
+- **Keys and URLs.** A real provider without its key or URL reads as `none`, and
+  `GET /api/assistant/providers` and the Settings form say what to set. The key is never
+  stored or returned.
+- **Tests.** Contract tests (`tests/assistantProviders.test.ts`) drive both adapters through the
+  orchestrator against recorded reply shapes, with no network.
+- **Not yet done.** Neither adapter has been run against a live endpoint. Do that, and the
+  measurement above, when a provider is chosen.
+

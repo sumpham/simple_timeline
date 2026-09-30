@@ -117,7 +117,7 @@ export async function ask(o: {
       model = res.model ?? model;
       if (res.toolCalls?.length && allowTools) {
         turns++;
-        messages.push({ role: 'assistant', text: res.text, toolCalls: res.toolCalls });
+        messages.push({ role: 'assistant', text: res.text, toolCalls: res.toolCalls, raw: res.raw });
         messages.push({
           role: 'tool',
           results: res.toolCalls.map((c) => {
@@ -134,7 +134,7 @@ export async function ask(o: {
       if (checked.ok) return { answer: checked.answer, usage, turns, tools: used, model };
       if (repaired) return { error: `The advisor's answer did not match the schema: ${checked.error}`, usage, turns, tools: used, model };
       repaired = true;
-      messages.push({ role: 'assistant', text: res.text ?? JSON.stringify(res.json ?? '') });
+      messages.push({ role: 'assistant', text: res.text ?? JSON.stringify(res.json ?? ''), raw: res.raw });
       messages.push({ role: 'user', content: [{ text: `That did not match the schema: ${checked.error}. Reply with the JSON object only.`, cache: 'volatile' }] });
     }
     return { error: 'The advisor did not finish within its turns', usage, turns, tools: used, model };

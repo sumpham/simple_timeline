@@ -2,6 +2,8 @@ import type { AssistantSettings, LlmProviderId } from '../../shared/assistant/se
 import type { LlmProvider } from './provider.ts';
 import { noneProvider } from './providers/none.ts';
 import { mockProvider } from './providers/mock.ts';
+import { anthropicProvider } from './providers/anthropic.ts';
+import { openaiCompatibleProvider } from './providers/openaiCompatible.ts';
 
 /**
  * The provider settings ask for. A real provider reads its endpoint and key from
@@ -14,6 +16,12 @@ type Factory = (env: { url: string | null; key: string | null }) => LlmProvider 
 const factories: Partial<Record<LlmProviderId, Factory>> = {
   none: () => noneProvider,
   mock: () => mockProvider(),
+  anthropic: ({ url, key }) => (key || process.env.ANTHROPIC_API_KEY
+    ? anthropicProvider({ key, url })
+    : 'Set ASSISTANT_LLM_KEY (or ANTHROPIC_API_KEY) in the server’s environment to use Anthropic.'),
+  'openai-compatible': ({ url, key }) => (url
+    ? openaiCompatibleProvider({ url, key })
+    : 'Set ASSISTANT_LLM_URL to the endpoint’s chat-completions URL (and ASSISTANT_LLM_KEY if it needs one).'),
 };
 
 /** Add a provider adapter (server/llm/providers/<name>.ts registers itself here). */

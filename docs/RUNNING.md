@@ -75,6 +75,20 @@ Everything lives in one file: **`data/timeline.db`**.
 No. The board, its data, and its fonts are all local. Nothing is sent anywhere,
 and there is no sign-in — anyone using this Mac can open the board.
 
+The plan's **Assistant** (warnings, forecast, better plans) runs on this Mac too.
+Its optional **Advisor** is an LLM, and it is off unless you turn it on. To use it:
+
+1. Start the app with the provider's details in the environment, for example
+   `ASSISTANT_LLM_KEY=sk-ant-... npm start` for Anthropic, or, for an
+   OpenAI-compatible endpoint (including a local model server),
+   `ASSISTANT_LLM_URL=http://localhost:11434/v1/chat/completions npm start`,
+   adding `ASSISTANT_LLM_KEY=...` if it needs a key.
+2. In a plan, open **Assistant ▸ Settings** and choose the provider. Choose which
+   names and notes may be sent; by default people and other projects are sent as
+   codes and notes are not sent at all.
+
+The key is read from the environment only; it is never saved in the database.
+
 ## If something goes wrong
 
 **"address already in use"** — it is already running in another window, or

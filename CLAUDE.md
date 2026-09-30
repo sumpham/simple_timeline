@@ -205,7 +205,14 @@ the optimiser its own applier in production code: its verdict would drift from t
 `tests/assistantOptimise.test.ts` checks that on random plans, and that P80 never gets later.
 Trade-off moves (M3, M6, M7) only enter the aggressive profile and always carry a `tradeoff`.
 
-Phase 5 (the LLM seam: `digest.ts`, `budget.ts`, `validate.ts`, `server/llm/`) is built too.
+Phase 5 (the LLM seam: `digest.ts`, `budget.ts`, `validate.ts`, `server/llm/`) and Phase 6 (the
+`anthropic` and `openai-compatible` adapters, both off by default) are built too.
+
+**A provider adapter maps, and does nothing else.** It turns `LlmRequest` into its API and back,
+throws `LlmUnavailable` for a missing key or an unreachable server, and echoes `raw` assistant
+content unchanged (thinking blocks). Prompt, tools, budget, validation and fallback stay in
+`orchestrate.ts` and `shared/assistant/`. Register a new one in `server/llm/index.ts` and add its
+id to `LLM_PROVIDERS`. Keys and URLs come from `ASSISTANT_LLM_KEY` / `ASSISTANT_LLM_URL` only.
 
 **The advisor advises; the engine decides.** An LLM reads `buildDigest` (never raw rows),
 answers in `ANSWER_SCHEMA`, and every move it proposes goes through `judgeMoves`, the same search
@@ -320,6 +327,9 @@ the ruler or the date walk, never test only `month`.
 `npm run pack` (`scripts/pack.mjs`) builds here and produces a zip that runs on a
 target Mac with only Node 24+ — no build, no install, no internet.
 
+The bundle's `package.json` lists only production dependencies by name (`express`,
+`@anthropic-ai/sdk`); a new runtime dependency must be added there too.
+
 Two traps it exists to avoid, both of which bit during development:
 
 **Never copy `data/timeline.db` with `cp`.** SQLite runs in WAL mode, so recent writes
@@ -365,3 +375,5 @@ is correctly hidden — see `buildRows`.
 
 Sub-project roll-ups, saved views, bulk shift; for tasks, cross-project links (the portfolio is
 read-only side by side), resource workload and levelling (`reqs/resources.md` §7). `DESIGN.md` §12 has the order.
+For the assistant: a first live run of a chosen provider and the token measurement
+(`reqs/smart_assistant.md` §10, Phase 6).

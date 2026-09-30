@@ -14,7 +14,11 @@ export type ToolCall = { id: string; name: string; args: unknown };
 
 export type LlmMessage =
   | { role: 'user'; content: Segment[] }
-  | { role: 'assistant'; text?: string; toolCalls?: ToolCall[] }
+  /**
+   * `raw` is the provider's own content for the turn, echoed back unchanged when
+   * present: some models return blocks (thinking) that must be passed back as-is.
+   */
+  | { role: 'assistant'; text?: string; toolCalls?: ToolCall[]; raw?: unknown }
   | { role: 'tool'; results: { id: string; name: string; content: string }[] };
 
 export type LlmRequest = {
@@ -38,6 +42,8 @@ export type LlmResponse = {
   toolCalls?: ToolCall[];
   usage: LlmUsage;
   model?: string;
+  /** The provider's own content for this turn, for the next request to echo. */
+  raw?: unknown;
 };
 
 export type LlmCaps = { tools: boolean; jsonSchema: boolean; promptCache: boolean; countTokens: boolean };
