@@ -610,3 +610,25 @@ draw once on open, behind reduced motion.
 Rejected: a kanban board (wrong question), a red-filled critical path (red is spent; the red
 critical lines above came later, by request), coloured status
 pills (a rainbow dilutes the alarm).
+
+## 17. Smart assistant
+
+From `reqs/smart_assistant.md`, which has the design, the rules and the build plan. Phase 1
+(warnings) is built: the engine in `shared/assistant/` reads the plan as it stands and names
+risks by rule (progress, structure, schedule checks), each scored likelihood × impact.
+
+**Where it sits.** A drawer beside the plan, opened by **Assistant** in the plan header, which
+counts the open warnings in ink. The plan is the work surface, so the assistant is at hand and
+never in the way; closed, it costs one button. On a phone the drawer stacks under the table,
+like the board's.
+
+**Colour.** None spent. Severity is a word (High, Medium, Low) and the weight of the card's left
+edge: ink, muted, rule. A clash the assistant points at stays red on the board and in the strip;
+the warning says so in words. **Show** marks the rows it names for a moment in `--focus`, the
+colour that already means "here".
+
+**Set aside, not delete.** A warning someone has looked at is set aside like an accepted
+double-booking: still listed, greyed, no longer counted, and back when what it concerns changes.
+
+Rejected: a red badge on the button (red is spent), a traffic-light "health score" (one number
+hides which risk to act on), warnings inside the table cells (the table is for entering work).

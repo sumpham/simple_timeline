@@ -83,7 +83,7 @@ scaled up by project priority (`PRIORITY_RANK`).
 | P1 | **Target at risk**: forecast finish (P80, §5.3) is after `target_date` | Any late day. Deterministic lateness shows as well |
 | P2 | **Negative float**: the plan already cannot meet a constraint | TF < 0 |
 | P3 | **Should have started**: todo/blocked, scheduled start before today | Today's overdue mark, moved into shared/ |
-| P4 | **Slipping in progress**: progress rate projects the finish after the scheduled end. Earned-schedule SPI(t) = progress% × duration ÷ working days elapsed | SPI(t) < 0.9, or projected slip > free float |
+| P4 | **Slipping in progress**: progress rate projects the finish after the scheduled end. Earned-schedule SPI(t) = progress% × duration ÷ working days elapsed. Only a **typed** progress counts (an untyped figure is itself estimated from elapsed time), and only after 2 working days | SPI(t) < 0.9, or projected slip > free float |
 | P5 | **Blocked on the critical path**: a blocked task has float at or below the near-critical threshold | TF ≤ near-critical |
 | P6 | **Float erosion**: project float against the baseline has shrunk | Critical float down by > 50% since baseline |
 | P7 | **Baseline slippage**: finish later than baseline; DCMA BEI (tasks finished ÷ tasks due to finish by today) | BEI < 0.95 |
@@ -94,10 +94,10 @@ scaled up by project priority (`PRIORITY_RANK`).
 |---|---|---|
 | S1 | **Near-critical path**: a second chain with little float, so a small slip makes it critical | TF ≤ 2 wd, or ≤ 10% of remaining duration |
 | S2 | **Merge point on the critical path**: a critical task with several predecessors (merge bias) | ≥ 3 predecessors |
-| S3 | **Critical Path Length Index** (DCMA #13): (CP length + project float) ÷ CP length | CPLI < 0.95 |
+| S3 | **Thin margin to target**, by the Critical Path Length Index (DCMA #13): (remaining CP length + margin to target) ÷ remaining CP length. Below 1 the plan is late, which P1 already says, so S3 warns before that | CPLI < 1.05 while still on time |
 | S4 | **Environment clash on the plan's path**: an open double-booking overlaps a hold whose tasks are critical or near-critical | Any. `--alarm` stays the booking's own mark |
-| S5 | **Single point of failure**: a critical task with one person, or one person on several critical tasks at once | ≥ 2 overlapping critical tasks |
-| S6 | **Unassigned critical work** | Critical leaf task with no person |
+| S5 | **One person, parallel critical work**: one person on critical tasks that run at the same time. (A critical task with a single person was dropped as a rule: most tasks have one person, so it was noise) | ≥ 2 overlapping critical tasks |
+| S6 | **Unassigned critical work**, in plans that name people at all | Critical leaf task with no person |
 
 **Schedule hygiene (H): the DCMA checks that apply here.** These are lower severity. They
 warn that the dates the CPM gives cannot be trusted.
@@ -598,24 +598,32 @@ itself.
       route.
 - [x] Add a CLAUDE.md section, "Smart assistant", holding the rules from §8.3.
 
-### Phase 1: warnings
+### Phase 1: warnings (built 2026-09-30)
 
-- [ ] `shared/assistant/facts.ts` builds `PlanFacts` from a `PlanOutcome`, baseline,
+- [x] `shared/assistant/facts.ts` builds `PlanFacts` from a `PlanOutcome`, baseline,
       resources, open conflicts and the status date.
-- [ ] `shared/assistant/rules.ts`: rules P1 (deterministic lateness only until Phase 2),
+- [x] `shared/assistant/rules.ts`: rules P1 (deterministic lateness only until Phase 2),
       P2–P7, S1–S6 and H1–H6, each a pure function returning findings.
-- [ ] Severity is likelihood × impact, and impact is days past float or target scaled by
+- [x] Severity is likelihood × impact, and impact is days past float or target scaled by
       priority.
-- [ ] Add a finding key and the `assistant_dismissal` table, with dismiss/restore routes. A
+- [x] Add a finding key and the `assistant_dismissal` table, with dismiss/restore routes. A
       dismissed finding comes back when its key changes.
-- [ ] Add `GET /api/projects/:id/assistant`, returning `{ findings, forecast: null, suggestions: [] }`.
-- [ ] `client/components/Assistant.tsx`: a panel in the Plan view.
+- [x] Add `GET /api/projects/:id/assistant`, returning `{ findings, forecast: null, suggestions: [] }`.
+- [x] `client/components/Assistant.tsx`: a panel in the Plan view.
   - Findings are grouped by Progress, Structure and Hygiene and sorted by severity.
   - Each finding has a sentence, evidence, "show me" (select and scroll to the tasks) and
     Dismiss.
-- [ ] Move "should have started" to rule P3. The row mark reads from the finding.
-- [ ] Tests: one fixture plan per rule, one that triggers it and one that does not. Dismiss
+- [x] Move "should have started" to rule P3. The row mark reads from the finding.
+- [x] Tests: one fixture plan per rule, one that triggers it and one that does not. Dismiss
       keys must be stable across replans.
+
+Built as: `shared/assistant/facts.ts` and `rules.ts` (with `AssistantReport`), `server/assistant.ts`,
+`GET /api/projects/:id/assistant?date=`, `POST …/assistant/dismiss` and `…/restore` (`{ key }`),
+and the `assistant_dismissal` table. The panel is a drawer beside the plan, opened by
+**Assistant** in the plan header, which also shows the count of open warnings. Severity is a
+word (High ≥ 15, Medium ≥ 8, Low) and the weight of the card's edge, never a hue. **Show**
+clears the find box and "critical only", opens collapsed summaries, and scrolls to the rows,
+marking them for a moment in the focus colour. P1 is on the deterministic finish until Phase 2.
 
 ### Phase 2: three-point estimates and the forecast
 

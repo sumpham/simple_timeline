@@ -4,6 +4,7 @@ import type {
 import type { BookingView, LinkType } from '../shared/types.ts';
 import type { OutlinePlacement } from '../shared/wbs.ts';
 import type { ImportRow } from './planIO.ts';
+import type { AssistantReport } from '../shared/assistant/rules.ts';
 
 export type Bootstrap = { teams: Team[]; environments: Environment[]; holidays: Holiday[] };
 export type BoardData = {
@@ -164,4 +165,10 @@ export const api = {
     request<{ key: string }>('/api/conflicts/resolve', { method: 'POST', body: JSON.stringify(body) }),
   reopenConflict: (body: { environment_id: number; booking_ids: number[] }) =>
     request<{ key: string }>('/api/conflicts/reopen', { method: 'POST', body: JSON.stringify(body) }),
+
+  assistant: (projectId: number) => request<AssistantReport>(`/api/projects/${projectId}/assistant`),
+  dismissFinding: (projectId: number, key: string) =>
+    request<AssistantReport>(`/api/projects/${projectId}/assistant/dismiss`, { method: 'POST', body: JSON.stringify({ key }) }),
+  restoreFinding: (projectId: number, key: string) =>
+    request<AssistantReport>(`/api/projects/${projectId}/assistant/restore`, { method: 'POST', body: JSON.stringify({ key }) }),
 };

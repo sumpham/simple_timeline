@@ -165,3 +165,14 @@ export function listResources(): Resource[] {
      GROUP BY r.id ORDER BY r.name COLLATE NOCASE`,
   );
 }
+
+/** Keys of the resolved double-bookings for a team's environments, or every team's. */
+export function resolvedKeys(teamId?: number): string[] {
+  const rows = teamId != null
+    ? all<{ key: string }>(
+      `SELECT r.key FROM conflict_resolution r JOIN environment e ON e.id = r.environment_id WHERE e.team_id = ?`,
+      teamId,
+    )
+    : all<{ key: string }>('SELECT key FROM conflict_resolution');
+  return rows.map((r) => r.key);
+}

@@ -187,8 +187,22 @@ allocation.
 ## Smart assistant
 
 `reqs/smart_assistant.md` has the design and the phased to-do list (§10); tick items there as
-they land. Phase 0 is built: `forwardPass`/`indexNetwork` in shared/schedule.ts, the seeded
-random source and the settings. The rules that break things when forgotten:
+they land. Built: Phase 0 (`forwardPass`/`indexNetwork` in shared/schedule.ts, the seeded
+random source, the settings) and Phase 1 (warnings: `planFacts` in `facts.ts`, the P/S/H rules
+in `rules.ts`, `server/assistant.ts`, the drawer in `client/components/Assistant.tsx`). The rules
+that break things when forgotten:
+
+**Rules read `PlanFacts`, never rows.** A new rule adds what it needs to `planFacts` and stays
+a pure function; its words are templates filled with engine numbers. The Phase 5 LLM digest is
+built from the same facts, so a fact computed anywhere else would split the two.
+
+**A warning's key is its identity.** `Finding.key` is the rule and the exact things it
+concerns; `assistant_dismissal` stores keys the way `conflict_resolution` does. Put a number
+in the key only when a change in it should bring a dismissed warning back (P1 keys on days
+late). Dismissed warnings are listed, greyed, and stop counting.
+
+**"Should have started" is rule P3.** The row mark in the task table shows for open P3
+findings from the report, not from its own check. Change the rule, not the table.
 
 **The assistant never writes a task, link or booking.** A suggestion is a list of the existing
 change ops; it previews through `POST /api/tasks/preview` and applies through the same routes,

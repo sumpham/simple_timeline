@@ -289,7 +289,7 @@ export function linkType(d: Pick<TaskDependency, 'type'>): LinkType {
 }
 
 /** The earliest index a successor may start at, given one link. */
-function earliestStart(type: LinkType, predStart: number, predFinish: number, lag: number, duration: number): number {
+export function earliestStart(type: LinkType, predStart: number, predFinish: number, lag: number, duration: number): number {
   if (type === 'SS') return predStart + lag;
   if (type === 'FF') return predFinish + lag - duration;
   return predFinish + lag;

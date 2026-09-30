@@ -3057,3 +3057,82 @@ kbd {
 .hold-note { display: grid; gap: 6px; }
 .hold-actions { display: flex; gap: 12px; align-items: center; }
 .hold-actions .btn { padding: 3px 10px; font-size: 12px; }
+
+/* ---------------------------------------------------------------- assistant */
+
+/* The plan and the assistant's drawer side by side; stacked on a phone. */
+.plan-main { flex: 1 1 auto; min-height: 0; display: flex; }
+.plan-main > .plan-body { min-width: 0; }
+.drawer.assistant { width: 360px; }
+
+.assistant-toggle { display: inline-flex; align-items: center; gap: 7px; }
+.assistant-toggle[aria-pressed='true'] { background: var(--paper); border-color: var(--rule); }
+/* A count in ink, not a red badge: red is spent on double-bookings. */
+.assistant-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border: 1.5px solid var(--ink);
+  border-radius: 9px;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+.assistant-count[data-empty='true'] { border-color: var(--rule); color: var(--muted); font-weight: 500; }
+
+.assistant-group-title {
+  margin: 0;
+  padding: 14px 16px 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+/* Severity is weight, not hue: a heavy ink edge for high, a muted one for medium. */
+.finding {
+  background: var(--lane);
+  border-bottom: 1px solid var(--rule-soft);
+  border-left: 3px solid var(--rule);
+  padding: 10px 16px 8px 14px;
+}
+.finding[data-level='high'] { border-left-color: var(--ink); }
+.finding[data-level='medium'] { border-left-color: var(--muted); }
+.finding.is-dismissed { background: transparent; border-left-color: var(--rule-soft); }
+.finding.is-dismissed .finding-title,
+.finding.is-dismissed .finding-text { color: var(--muted); }
+
+.finding-top { display: flex; align-items: baseline; gap: 10px; }
+.finding-title { font-weight: 600; font-size: 13.5px; }
+.finding-level {
+  margin-left: auto;
+  font-family: 'Archivo Narrow', 'Archivo', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.finding[data-level='high']:not(.is-dismissed) .finding-level { color: var(--ink); }
+.finding-text { margin: 4px 0 6px; font-size: 13px; line-height: 1.45; }
+.finding-evidence {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.finding-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.finding-actions .btn { padding: 2px 9px; font-size: 12px; }
+.finding-rule { margin-right: auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Rows the assistant was asked to show, marked for a moment with the focus colour. */
+.task-table tr.is-spotlit td { box-shadow: inset 0 2px 0 -1px var(--focus), inset 0 -2px 0 -1px var(--focus); }
+.task-table tr.is-spotlit td:first-child { box-shadow: inset 2px 0 0 var(--focus), inset 0 2px 0 -1px var(--focus), inset 0 -2px 0 -1px var(--focus); }
+
+@media (max-width: 720px) {
+  .plan-main { flex-direction: column; }
+  .drawer.assistant { width: auto; }
+}

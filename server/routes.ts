@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { all, audit, ensureResources, get, run, setTaskResources, transaction } from './db.ts';
-import { listBookings, listEnvironments, listHolidays, listProjects, listResources, listTeams } from './queries.ts';
+import { listBookings, listEnvironments, listHolidays, listProjects, listResources, listTeams, resolvedKeys } from './queries.ts';
 import { applyResolutions, conflictKey, detectConflicts } from '../shared/conflicts.ts';
 import { isValidISODate, isWorkingDay, snapToWorkingDay } from '../shared/dates.ts';
 import { effectiveKind } from '../shared/bookings.ts';
@@ -8,7 +8,8 @@ import { holidaySet, listTasks } from './queries.ts';
 import { applyChange, checkOutline, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
 import { lateBy } from '../shared/schedule.ts';
 import { TASK_CODE_MAX } from '../shared/taskCode.ts';
-import { cleanSettingsPatch, mergeSettings, type AssistantSettings } from '../shared/assistant/settings.ts';
+import { cleanSettingsPatch } from '../shared/assistant/settings.ts';
+import { assistantReport, assistantSettings } from './assistant.ts';
 import { cleanResourceName, formatResources, parseResources, RESOURCE_NAME_MAX, resourceKey } from '../shared/resources.ts';
 import {
   LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
@@ -108,17 +109,6 @@ router.get('/bootstrap', handle((_req, res) => {
 }));
 
 // ---------------------------------------------------------------- board
-
-/** Keys of the resolved double-bookings for a team's environments, or every team's. */
-function resolvedKeys(teamId?: number): string[] {
-  const rows = teamId != null
-    ? all<{ key: string }>(
-      `SELECT r.key FROM conflict_resolution r JOIN environment e ON e.id = r.environment_id WHERE e.team_id = ?`,
-      teamId,
-    )
-    : all<{ key: string }>('SELECT key FROM conflict_resolution');
-  return rows.map((r) => r.key);
-}
 
 router.get('/board', handle((req, res) => {
   const teamId = intParam(req.query.team);
@@ -1109,18 +1099,6 @@ router.delete('/holidays/:date', handle((req, res) => {
 
 // ---------------------------------------------------------------- assistant settings
 
-function assistantSettings(): AssistantSettings {
-  const stored: Record<string, unknown> = {};
-  for (const row of all<{ key: string; value: string }>('SELECT key, value FROM assistant_setting')) {
-    try {
-      stored[row.key] = JSON.parse(row.value);
-    } catch {
-      // An unreadable row reads as the default.
-    }
-  }
-  return mergeSettings(stored);
-}
-
 router.get('/assistant/settings', handle((_req, res) => res.json(assistantSettings())));
 
 // Settings are not plan state: no write here can move a date, so none replans.
@@ -1139,6 +1117,37 @@ router.patch('/assistant/settings', handle((req, res) => {
     for (const key of patch.reset) run('DELETE FROM assistant_setting WHERE key = ?', key);
   });
   res.json(assistantSettings());
+}));
+
+// ---------------------------------------------------------------- assistant
+
+function assistantProject(req: Request): number {
+  const id = Number(req.params.id);
+  if (!get('SELECT id FROM project WHERE id = ?', id)) throw missing('Project');
+  return id;
+}
+
+/** What the assistant says about a plan. `date` sets the status date; today by default. */
+router.get('/projects/:id/assistant', handle((req, res) => {
+  const id = assistantProject(req);
+  const date = req.query.date == null ? undefined : requireDate(req.query.date, 'date');
+  res.json(assistantReport(id, date));
+}));
+
+/** Set a warning aside. It stays listed, greyed, and comes back when what it concerns changes. */
+router.post('/projects/:id/assistant/dismiss', handle((req, res) => {
+  const id = assistantProject(req);
+  const key = nonEmpty(req.body?.key, 'key');
+  const rule = key.split(':')[0];
+  if (key.length > 2000 || !/^[PSH]\d$/.test(rule)) throw bad('That is not a warning key');
+  run('INSERT OR REPLACE INTO assistant_dismissal (key, project_id, rule) VALUES (?, ?, ?)', key, id, rule);
+  res.json(assistantReport(id, req.body?.date == null ? undefined : requireDate(req.body.date, 'date')));
+}));
+
+router.post('/projects/:id/assistant/restore', handle((req, res) => {
+  const id = assistantProject(req);
+  run('DELETE FROM assistant_dismissal WHERE project_id = ? AND key = ?', id, nonEmpty(req.body?.key, 'key'));
+  res.json(assistantReport(id, req.body?.date == null ? undefined : requireDate(req.body.date, 'date')));
 }));
 
 // ---------------------------------------------------------------- errors

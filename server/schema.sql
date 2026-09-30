@@ -204,3 +204,14 @@ CREATE TABLE IF NOT EXISTS assistant_setting (
   value      TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- A warning from the assistant that someone has looked at and set aside. Keyed like
+-- conflict_resolution: the rule and the exact things it concerns (Finding.key in
+-- shared/assistant/rules.ts), so it comes back when those change.
+CREATE TABLE IF NOT EXISTS assistant_dismissal (
+  key          TEXT    NOT NULL,
+  project_id   INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  rule         TEXT    NOT NULL,
+  dismissed_at TEXT    NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (project_id, key)
+);

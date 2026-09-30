@@ -44,7 +44,7 @@ export function loadState(projectId: number): PlanState {
   return { project, tasks, deps, bookings };
 }
 
-function projectStart(state: PlanState): ISODate {
+export function projectStart(state: PlanState): ISODate {
   return state.project.start_date ?? defaultProjectStart(today(), holidaySet());
 }
 

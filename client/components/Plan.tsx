@@ -13,6 +13,8 @@ import { DangerButton, Modal } from './Dialogs.tsx';
 import { NetworkDiagram } from './NetworkDiagram.tsx';
 import { Gantt, STRIP_HEAD, STRIP_LANE, type GanttCommand, type GanttPreview, type GanttShow, type RowBox, type StripData } from './Gantt.tsx';
 import { Portfolio } from './Portfolio.tsx';
+import { AssistantDrawer, openFindings } from './Assistant.tsx';
+import type { AssistantReport, Finding } from '../../shared/assistant/rules.ts';
 import { edgeKey, type Route } from '../network.ts';
 import type { Arrangement } from '../smartLayout.ts';
 import {
@@ -87,6 +89,13 @@ export function PlanView({
   const [arrangeUndo, setArrangeUndo] = useState<SavedLayout | null>(null);
   /** The team's bookings around this plan, for the chart's occupancy strip and drag preview. */
   const [board, setBoard] = useState<BoardData | null>(null);
+  /** What the assistant says about the plan as it now stands (shared/assistant/). */
+  const [report, setReport] = useState<AssistantReport | null>(null);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(readAssistantOpen);
+  /** Rows the assistant was asked to show; `at` makes asking twice show them twice. */
+  const [spotlight, setSpotlight] = useState<{ ids: number[]; at: number } | null>(null);
 
   const setPlan = (next: PlanData | null | ((p: PlanData | null) => PlanData | null)) => setPlanRaw(next as never);
 
@@ -112,6 +121,36 @@ export function PlanView({
     api.board({ team: teamId, from, to }).then((b) => { if (live) setBoard(b); }).catch(() => { if (live) setBoard(null); });
     return () => { live = false; };
   }, [plan?.schedule, plan?.bookings, teamId]);
+
+  // Every plan change can change a warning, so the report follows the plan. The last
+  // one stays up while the next loads, so the overdue marks do not flicker.
+  useEffect(() => {
+    if (!plan) return;
+    let live = true;
+    api.assistant(projectId)
+      .then((r) => { if (live) { setReport(r); setReportError(null); } })
+      .catch((err) => { if (live) setReportError(err instanceof Error ? err.message : 'The assistant could not read this plan'); });
+    return () => { live = false; };
+  }, [plan, projectId]);
+  useEffect(() => { setReport(null); setSpotlight(null); }, [projectId]);
+  useEffect(() => {
+    try { localStorage.setItem(ASSISTANT_KEY, assistantOpen ? '1' : '0'); } catch { /* a remembered panel is a convenience */ }
+  }, [assistantOpen]);
+
+  const openWarnings = useMemo(() => openFindings(report), [report]);
+  /** Tasks that should have started (rule P3), for the mark on their row. */
+  const overdueIds = useMemo(() => new Set(openWarnings.filter((f) => f.rule === 'P3').flatMap((f) => f.task_ids)), [openWarnings]);
+
+  const setAside = async (f: Finding, back: boolean) => {
+    setReportBusy(true);
+    try {
+      setReport(back ? await api.restoreFinding(projectId, f.key) : await api.dismissFinding(projectId, f.key));
+    } catch (err) { fail(err); } finally { setReportBusy(false); }
+  };
+  const showFinding = (f: Finding) => {
+    setTab('tasks');
+    setSpotlight({ ids: f.task_ids, at: Date.now() });
+  };
 
   const schedule = useMemo(() => new Map((plan?.schedule ?? []).map((s) => [s.id, s])), [plan]);
   const rowOf = useMemo(() => new Map((plan?.tasks ?? []).map((t, i) => [t.id, i + 1])), [plan]);
@@ -467,6 +506,18 @@ export function PlanView({
             <button type="button" aria-pressed={tab === 'network'} onClick={() => setTab('network')}>Network</button>
             <button type="button" aria-pressed={tab === 'portfolio'} onClick={() => setTab('portfolio')}>Portfolio</button>
           </div>
+          {tab !== 'portfolio' && (
+            <button
+              type="button"
+              className="btn quiet assistant-toggle"
+              aria-pressed={assistantOpen}
+              aria-label={`Assistant, ${openWarnings.length} warning${openWarnings.length === 1 ? '' : 's'}`}
+              onClick={() => setAssistantOpen((o) => !o)}
+            >
+              Assistant
+              {report && <span className="assistant-count" data-empty={openWarnings.length === 0}>{openWarnings.length}</span>}
+            </button>
+          )}
         </div>
 
         {plan && tab !== 'portfolio' && (
@@ -518,6 +569,7 @@ export function PlanView({
         />
       )}
 
+      <div className="plan-main">
       <div className="plan-body">
         {tab === 'portfolio' ? (
           teamId != null || project ? (
@@ -566,6 +618,8 @@ export function PlanView({
             onExportCsv={exportCsv}
             onExportXml={exportXml}
             onImport={importFile}
+            overdue={overdueIds}
+            spotlight={spotlight}
           />
         ) : network && network.tasks.length ? (
           <>
@@ -602,6 +656,18 @@ export function PlanView({
             <div><button type="button" className="btn" onClick={() => setTab('tasks')}>Add task</button></div>
           </div>
         )}
+      </div>
+      {assistantOpen && tab !== 'portfolio' && (
+        <AssistantDrawer
+          report={report}
+          error={reportError}
+          busy={reportBusy}
+          onClose={() => setAssistantOpen(false)}
+          onShow={showFinding}
+          onDismiss={(f) => void setAside(f, false)}
+          onRestore={(f) => void setAside(f, true)}
+        />
+      )}
       </div>
 
       {plan && tab !== 'portfolio' && <Holds bookings={plan.bookings} environments={environments} onRelease={async (b) => { await onRelease(b); await load(); }} />}
@@ -703,6 +769,7 @@ function TaskTable({
   plan, schedule, rowOf, codeOf, outlineRows, environments, holidays, today, saving, addRef, board, preview,
   onUpdate, onSetStart, onSetFinish, onAdd, onMove, onMoveTo, onIndent, onOutdent, onAddSub, focusTask, onFocused,
   onLink, onLinkChange, onOpen, onError, onRelease, onSaveBaseline, onClearBaseline, onExportCsv, onExportXml, onImport,
+  overdue, spotlight,
 }: {
   plan: PlanData;
   schedule: ReadonlyMap<number, TaskSchedule>;
@@ -737,6 +804,10 @@ function TaskTable({
   onExportCsv: () => void;
   onExportXml: () => void;
   onImport: (file: File) => Promise<void>;
+  /** Tasks the assistant says should have started (rule P3). */
+  overdue: ReadonlySet<number>;
+  /** Rows to bring into view and mark for a moment. */
+  spotlight: { ids: number[]; at: number } | null;
 }) {
   const [draft, setDraft] = useState('');
   /** The new task's ID as typed; null offers the next free one. */
@@ -816,6 +887,32 @@ function TaskTable({
     collapsed,
   ), [outlineRows, plan.tasks, schedule, criticalOnly, q, collapsed, codeOf, people]);
   const hiddenCount = plan.tasks.length - visible.size;
+
+  // The assistant asked to see some rows: clear what hides them, open the summaries
+  // above them, then bring the first into view and mark them all for a moment.
+  const [lit, setLit] = useState<ReadonlySet<number>>(new Set());
+  const [pendingSpot, setPendingSpot] = useState<number[] | null>(null);
+  useEffect(() => {
+    if (!spotlight?.ids.length) return;
+    setQuery('');
+    setCriticalOnly(false);
+    const above = new Set<number>();
+    for (const id of spotlight.ids) {
+      for (let p = outlineRows.get(id)?.parent_id ?? null, guard = 0; p != null && guard < 64; p = outlineRows.get(p)?.parent_id ?? null, guard++) above.add(p);
+    }
+    if ([...above].some((id) => collapsed.has(id))) setCollapsed((c) => keepCollapsed(new Set([...c].filter((id) => !above.has(id)))));
+    setPendingSpot(spotlight.ids);
+    setLit(new Set(spotlight.ids));
+    const off = window.setTimeout(() => setLit(new Set()), 2600);
+    return () => window.clearTimeout(off);
+  }, [spotlight]);
+  useEffect(() => {
+    if (!pendingSpot) return;
+    const first = pendingSpot.find((id) => visible.has(id));
+    if (first == null) return;
+    tableRef.current?.querySelector<HTMLElement>(`tr[data-task="${first}"]`)?.scrollIntoView({ block: 'center', inline: 'nearest' });
+    setPendingSpot(null);
+  }, [pendingSpot, visible]);
 
   const progress = useMemo(() => {
     const out = new Map<number, number>();
@@ -1168,7 +1265,7 @@ function TaskTable({
             const o = outlineRows.get(t.id);
             const summary = !!o?.summary;
             const env = environments.find((e) => e.id === t.environment_id);
-            const overdue = !summary && t.status !== 'done' && t.status !== 'in_progress' && s && s.start < today;
+            const late = !summary && overdue.has(t.id) && s;
             const leaves = summary ? leavesOf(plan.tasks, t.id).map((id) => plan.tasks.find((x) => x.id === id)!) : [];
             const blocked = leaves.filter((x) => x.status === 'blocked').length;
             const done = leaves.filter((x) => x.status === 'done').length;
@@ -1177,7 +1274,7 @@ function TaskTable({
                 key={t.id}
                 data-task={t.id}
                 className={`${s?.critical ? 'is-critical' : ''}${t.status === 'done' && !summary ? ' is-done' : ''}${summary ? ' is-summary' : ''}${
-                  dragged?.has(t.id) ? ' is-dragged' : ''}${rowDrag && rowDrag.before === t.id ? ' is-drop-before' : ''}`}
+                  dragged?.has(t.id) ? ' is-dragged' : ''}${rowDrag && rowDrag.before === t.id ? ' is-drop-before' : ''}${lit.has(t.id) ? ' is-spotlit' : ''}`}
                 style={{ ['--env-color' as string]: env ? ENV_COLOR[env.kind] : 'transparent', ['--depth' as string]: o?.depth ?? 0 } as CSSProperties}
                 onKeyDown={(e) => rowKeys(e, t)}
               >
@@ -1337,7 +1434,7 @@ function TaskTable({
                           {STATUSES.map((x) => <option key={x} value={x}>{STATUS_LABEL[x]}</option>)}
                         </select>
                       </label>
-                      {overdue && <OverdueFlag text={`Should have started on ${formatDate(s!.start)}`} />}
+                      {late && <OverdueFlag text={`Should have started on ${formatDate(s!.start)}`} />}
                     </div>
                   )}
                 </td>
@@ -1452,6 +1549,11 @@ const DRAG_SLOP = 4;
 const SPLIT_MIN_TABLE = 240;
 const SPLIT_MIN_CHART = 160;
 const SPLIT_KEY = 'plan.tableWidth';
+const ASSISTANT_KEY = 'plan.assistant';
+
+function readAssistantOpen(): boolean {
+  try { return localStorage.getItem(ASSISTANT_KEY) === '1'; } catch { return false; }
+}
 
 function readSplit(): number | null {
   try {
