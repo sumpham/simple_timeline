@@ -10,8 +10,11 @@ more projects hold an environment than its capacity allows. That detection is th
 everything else supports it.
 
 `reqs.md` holds the requirements and the answered scoping questions; `reqs/` holds later
-feature requirements (task management: `reqs/simple_task_management.md`).
+feature requirements (task management: `reqs/simple_task_management.md`; the plan's Gantt
+chart: `reqs/gantt_chart.md`).
 `DESIGN.md` holds the architecture and UI design, including why things look the way they do.
+`docs/gantt/` explains the Gantt chart for later work: user guide, architecture, data and API,
+file formats, testing recipe, roadmap. `DESIGN.md` wins where they disagree.
 
 ## Commands
 
