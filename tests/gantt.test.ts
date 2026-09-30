@@ -63,8 +63,8 @@ describe('linkPath', () => {
 });
 
 import {
-  chainOf, dateAtColumn, draggedFinish, draggedStart, finishFields, finishVariance, gridLines, headerBands, progressOf,
-  rolledProgress, startFields, visibleRows, zoomToFit,
+  chainOf, dateAtColumn, draggedFinish, draggedStart, draggedStartEdge, finishFields, finishVariance, gridLines, headerBands, progressOf,
+  rolledProgress, startEdgeFields, startFields, visibleRows, zoomToFit,
 } from '../client/gantt.ts';
 import { occupancyByDay } from '../shared/conflicts.ts';
 import type { BookingView } from '../shared/types.ts';
@@ -133,6 +133,27 @@ describe('dragging on the chart', () => {
     expect(finishFields({ status: 'done', duration: 3 }, '2026-10-12', '2026-10-16')).toEqual({ actual_end: '2026-10-16' });
     expect(finishFields({ status: 'todo', duration: 0 }, '2026-10-12', '2026-10-16')).toEqual({ not_before: '2026-10-16' });
     expect(finishFields({ status: 'todo', duration: 3 }, '2026-10-12', '2026-10-09')).toBeNull();
+  });
+
+  it('never drags a left end past the finish', () => {
+    expect(draggedStartEdge(scale, '2026-10-12', '2026-10-16', 9, new Set())).toBe('2026-10-16');
+    expect(draggedStartEdge(scale, '2026-10-12', '2026-10-16', -1, new Set())).toBe('2026-10-09');
+    expect(draggedStartEdge(scale, '2026-10-12', '2026-10-16', 2, holidays)).toBe('2026-10-15');
+  });
+
+  it('turns a left end into a start plus the length that keeps the finish', () => {
+    // 9 Oct (Fri) to 16 Oct (Fri) is six working days; five with the holiday.
+    expect(startEdgeFields({ status: 'todo', actual_start: null, duration: 3 }, '2026-10-09', '2026-10-16'))
+      .toEqual({ not_before: '2026-10-09', duration: 6 });
+    expect(startEdgeFields({ status: 'todo', actual_start: null, duration: 3 }, '2026-10-09', '2026-10-16', holidays))
+      .toEqual({ not_before: '2026-10-09', duration: 5 });
+    expect(startEdgeFields({ status: 'in_progress', actual_start: '2026-10-12', duration: 3 }, '2026-10-13', '2026-10-16'))
+      .toEqual({ actual_start: '2026-10-13', duration: 4 });
+    expect(startEdgeFields({ status: 'done', actual_start: '2026-10-12', actual_end: '2026-10-16', duration: 3 }, '2026-10-13', '2026-10-16'))
+      .toEqual({ actual_start: '2026-10-13' });
+    expect(startEdgeFields({ status: 'done', actual_start: '2026-10-12', actual_end: null, duration: 3 }, '2026-10-13', '2026-10-16'))
+      .toEqual({ actual_start: '2026-10-13', duration: 4 });
+    expect(startEdgeFields({ status: 'todo', actual_start: null, duration: 3 }, '2026-10-19', '2026-10-16')).toBeNull();
   });
 });
 

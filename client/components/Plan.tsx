@@ -27,7 +27,7 @@ import { expandLinks } from '../../shared/schedule.ts';
 import { bookingsFor, conflictChanges, conflictsFor, planProject, type ImpactContext } from '../../shared/plan.ts';
 import { isManaged, type ReconcileBooking } from '../../shared/taskHolds.ts';
 import {
-  finishFields, progressOf, rolledBaseline, rolledProgress, startFields, visibleRows, zoomToFit, ZOOM_LABEL, ZOOMS, type Zoom,
+  finishFields, progressOf, rolledBaseline, rolledProgress, startEdgeFields, startFields, visibleRows, zoomToFit, ZOOM_LABEL, ZOOMS, type Zoom,
 } from '../gantt.ts';
 import { fromCsv, fromMspdi, toCsv, toMspdi } from '../planIO.ts';
 import { estimateError, rangeOf } from '../../shared/estimates.ts';
@@ -311,6 +311,27 @@ export function PlanView({
     const got = next?.schedule.find((x) => x.id === t.id)?.end;
     if (got && got !== date && !isWorkingDay(date, holidays)) {
       setNotice(`${t.name} finishes ${formatDate(got)}: ${formatDate(date)} is not a working day, so it is not counted.`);
+    }
+    return !!next;
+  };
+
+  /**
+   * A dragged left end: the task starts on `date` and still finishes where it
+   * did, so its length becomes the working days between (a done task records
+   * only its actual start).
+   */
+  const setStartEdge = async (t: Task, date: ISODate): Promise<boolean> => {
+    const end = schedule.get(t.id)?.end;
+    if (!end) return false;
+    const fields = startEdgeFields(t, date, end, holidays);
+    if (!fields) {
+      setError(`${t.name} finishes ${formatDate(end)}, so it cannot start after then.`);
+      return false;
+    }
+    const next = await updateTask(t, fields, `${t.name} now starts ${formatDate(date)}`);
+    const got = next?.schedule.find((x) => x.id === t.id)?.start;
+    if (got && got !== date && !('actual_start' in fields)) {
+      setNotice(`${t.name} starts ${formatDate(got)}, not ${formatDate(date)}: a task it comes after finishes later. Clear After to pin it to the date.`);
     }
     return !!next;
   };
@@ -654,6 +675,7 @@ export function PlanView({
             onUpdate={(t, f) => updateTask(t, f).then(Boolean)}
             onSetStart={setStart}
             onSetFinish={setFinish}
+            onSetStartEdge={setStartEdge}
             onAdd={(name, code) => addTask(name, code).then(Boolean)}
             onMove={move}
             onMoveTo={moveTo}
@@ -698,6 +720,7 @@ export function PlanView({
               onOpenTask={setEditing}
               onMoveTask={moveTaskBox}
               onRouteEdge={routeLink}
+              onLink={(pred, succ) => { void addLink(pred, succ); }}
               onResetLayout={resetLayout}
               onArrange={arrangeNetwork}
               onUndoArrange={arrangeUndo ? undoArrange : undefined}
@@ -846,7 +869,7 @@ const SHOW_HINT: Record<keyof GanttShow, string> = {
 
 function TaskTable({
   plan, schedule, rowOf, codeOf, outlineRows, environments, holidays, today, saving, addRef, board, preview,
-  onUpdate, onSetStart, onSetFinish, onAdd, onMove, onMoveTo, onIndent, onOutdent, onAddSub, focusTask, onFocused,
+  onUpdate, onSetStart, onSetFinish, onSetStartEdge, onAdd, onMove, onMoveTo, onIndent, onOutdent, onAddSub, focusTask, onFocused,
   onLink, onLinkChange, onOpen, onError, onRelease, onSaveBaseline, onClearBaseline, onExportCsv, onExportXml, onImport,
   overdue, spotlight,
 }: {
@@ -865,6 +888,7 @@ function TaskTable({
   onUpdate: (t: Task, fields: TaskInput) => Promise<boolean>;
   onSetStart: (t: Task, date: ISODate) => Promise<boolean>;
   onSetFinish: (t: Task, date: ISODate) => Promise<boolean>;
+  onSetStartEdge: (t: Task, date: ISODate) => Promise<boolean>;
   onAdd: (name: string, code: number) => Promise<boolean>;
   onMove: (t: Task, delta: -1 | 1) => Promise<void>;
   onMoveTo: (t: Task, beforeId: number | null) => Promise<void>;
@@ -1625,6 +1649,7 @@ function TaskTable({
           onOpen={onOpen}
           onSetStart={onSetStart}
           onSetFinish={onSetFinish}
+          onSetStartEdge={onSetStartEdge}
           onLink={onLink}
           onLinkChange={onLinkChange}
           onRelease={onRelease}
@@ -1638,7 +1663,7 @@ function TaskTable({
         In After, write task IDs (type a number or part of a name to pick one):
         {' '}<kbd>2</kbd>, <kbd>2+3</kbd> to wait three working days, <kbd>2SS</kbd> to start with it, <kbd>2FF</kbd> to finish with it.
         In Who, write names with commas between (<kbd>Mai, Tuan</kbd>); a new name adds that person.
-        On the chart, drag a bar to move it, its right end to change its length, or the dot after it onto another task to link them.
+        On the chart, drag a bar to move it, its left end to change its start, its right end to change its finish, or the dot after it onto another task to link them.
       </p>
     </div>
   );

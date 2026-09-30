@@ -2597,7 +2597,11 @@ kbd {
 /* Done so far: a band of ink along the bar's foot, readable on every hue. */
 .gantt-progress { fill: var(--ink); opacity: 0.55; pointer-events: none; }
 .gantt-task.is-summary .gantt-progress { fill: var(--lane); opacity: 0.6; }
-.gantt-grip { fill: transparent; cursor: ew-resize; }
+/* End grips: invisible until the bar is pointed at, then a faint ink tab at each end. */
+.gantt-grip { fill: var(--ink); fill-opacity: 0; cursor: ew-resize; transition: fill-opacity 120ms; }
+.gantt-task:hover .gantt-grip { fill-opacity: 0.18; }
+.gantt-task .gantt-grip:hover { fill-opacity: 0.4; }
+.gantt-body.is-dragging .gantt-grip { fill-opacity: 0; }
 .gantt-link-handle {
   fill: var(--lane);
   stroke: var(--ink);
@@ -2901,6 +2905,40 @@ kbd {
 .network-handle.is-horizontal { cursor: ew-resize; }
 .network-handle.is-vertical { cursor: ns-resize; }
 .network-handle:hover { fill: var(--ink); }
+
+/* Drawing a link: a dot on the box's right edge, dragged onto another box. */
+.network-port {
+  position: absolute;
+  z-index: 2;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--lane);
+  border: 1.5px solid var(--ink);
+  cursor: crosshair;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity 120ms;
+}
+.network-port.is-shown, .network-port:hover, .network-port.is-active { opacity: 1; }
+.network-port:hover, .network-port.is-active { background: var(--focus); border-color: var(--focus); }
+.network.is-linking, .network.is-linking * { cursor: crosshair !important; }
+.network.is-linking .network-port:not(.is-active) { opacity: 0; }
+.network-node.is-link-target { border: 2px solid var(--focus); padding: 3px 7px 3px 11px; }
+.network-rubber { stroke: var(--focus); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.network-link-readout {
+  position: absolute;
+  left: 50%;
+  bottom: 56px;
+  transform: translateX(-50%);
+  z-index: 4;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--ink);
+  color: var(--lane);
+  border-radius: 3px;
+  pointer-events: none;
+}
 
 /* Pointing at a task picks out its own arrows; everything else steps back. */
 .network-edge.is-related { stroke: var(--ink); stroke-width: 2.2; opacity: 1; }

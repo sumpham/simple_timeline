@@ -20,7 +20,9 @@ const snap = (v: number, to: number) => Math.round(v / to) * to;
 
 type Drag =
   | { kind: 'node'; id: number; startX: number; startY: number; orig: { x: number; y: number }; pos: { x: number; y: number }; moved: boolean }
-  | { kind: 'handle'; key: string; from: number; to: number; which: 'out' | 'y' | 'in'; startX: number; startY: number; orig: Route; baseY: number; route: Route };
+  | { kind: 'handle'; key: string; from: number; to: number; which: 'out' | 'y' | 'in'; startX: number; startY: number; orig: Route; baseY: number; route: Route }
+  /** A new link, drawn from a box's port: `at` is the pointer in layout coordinates, `over` the box under it. */
+  | { kind: 'link'; from: number; at: { x: number; y: number }; over: number | null };
 
 /**
  * Activity-on-node network. Each node is the classic scheduling box: early start,
@@ -32,10 +34,14 @@ type Drag =
  * The automatic layout is a starting point. Boxes can be dragged anywhere, and an
  * arrow, once clicked, shows handles that move its runs. Both are saved with the
  * plan and shared; neither touches the schedule.
+ *
+ * The dot on a box's right edge draws a new link: drop it on another box and
+ * that task comes after this one (finish-to-start), saved like a link drawn on
+ * the Gantt chart, so it does move the schedule.
  */
 export function NetworkDiagram({
   tasks, deps, schedule, order, environments, showEnvironments, criticalOnly, onOpenTask,
-  onMoveTask, onRouteEdge, onResetLayout, onArrange, onUndoArrange,
+  onMoveTask, onRouteEdge, onLink, onResetLayout, onArrange, onUndoArrange,
 }: {
   tasks: readonly Task[];
   deps: readonly TaskDependency[];
@@ -50,6 +56,8 @@ export function NetworkDiagram({
   onMoveTask: (id: number, pos: { x: number; y: number } | null) => void;
   /** Save an arrow's shape; null makes it automatic again. */
   onRouteEdge: (from: number, to: number, route: Route | null) => void;
+  /** Make `successorId` come after `predecessorId`. */
+  onLink: (predecessorId: number, successorId: number) => void;
   onResetLayout: () => void;
   /** Save a whole arrangement from Smart Arrange. */
   onArrange: (arrangement: Arrangement) => void;
@@ -67,12 +75,14 @@ export function NetworkDiagram({
   /** A drag ends in a click event; this stops that click from opening the task. */
   const suppressClick = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef(new Map<number, HTMLButtonElement>());
 
   // Hand arrangement belongs to the plain view; environment lanes lay themselves out.
   const arrangeable = !showEnvironments;
   const scale = ZOOMS[zoom];
 
+  const pad = 24;
   const byId = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
 
   const lanes = useMemo<LayoutLane[] | undefined>(() => {
@@ -120,6 +130,17 @@ export function NetworkDiagram({
     const onMove = (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d) return;
+      if (d.kind === 'link') {
+        const box = innerRef.current?.getBoundingClientRect();
+        if (!box) return;
+        const hit = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-node]')?.getAttribute('data-node');
+        setDrag({
+          ...d,
+          at: { x: (e.clientX - box.left) / scale - pad, y: (e.clientY - box.top) / scale - pad },
+          over: hit && Number(hit) !== d.from ? Number(hit) : null,
+        });
+        return;
+      }
       const dx = (e.clientX - d.startX) / scale;
       const dy = (e.clientY - d.startY) / scale;
       if (d.kind === 'node') {
@@ -138,6 +159,10 @@ export function NetworkDiagram({
       const d = dragRef.current;
       setDrag(null);
       if (!d) return;
+      if (d.kind === 'link') {
+        if (d.over != null) onLink(d.from, d.over);
+        return;
+      }
       if (d.kind === 'node') {
         if (!d.moved) return;
         suppressClick.current = true;
@@ -154,7 +179,7 @@ export function NetworkDiagram({
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
     };
-  }, [dragging, scale, onMoveTask, onRouteEdge]);
+  }, [dragging, scale, onMoveTask, onRouteEdge, onLink]);
 
   const critical = (id: number) => schedule.get(id)?.critical ?? false;
   const envOf = (id: number | null) => environments.find((e) => e.id === id);
@@ -200,6 +225,15 @@ export function NetworkDiagram({
     setDrag({ kind: 'node', id, startX: e.clientX, startY: e.clientY, orig: { x: box.x, y: box.y }, pos: { x: box.x, y: box.y }, moved: false });
   };
 
+  const startLinkDrag = (e: ReactPointerEvent, id: number) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const box = layout.nodes.get(id)!;
+    setSelected(null);
+    setDrag({ kind: 'link', from: id, at: { x: box.x + NODE_W, y: box.y + NODE_H / 2 }, over: null });
+  };
+
   const startHandleDrag = (e: ReactPointerEvent, key: string, which: 'out' | 'y' | 'in') => {
     e.stopPropagation();
     e.preventDefault();
@@ -223,7 +257,6 @@ export function NetworkDiagram({
 
   if (!tasks.length) return null;
 
-  const pad = 24;
   const width = layout.width + pad * 2;
   const height = layout.height + pad * 2;
   const hasArrangement = saved.positions.size > 0 || saved.routes.size > 0;
@@ -256,7 +289,7 @@ export function NetworkDiagram({
 
   return (
     <div
-      className={`network${arrangeable ? ' is-arrangeable' : ''}${drag ? ' is-dragging' : ''}`}
+      className={`network${arrangeable ? ' is-arrangeable' : ''}${drag ? ' is-dragging' : ''}${drag?.kind === 'link' ? ' is-linking' : ''}`}
       onKeyDown={(e) => { if (e.key === 'Escape') setSelected(null); }}
     >
       <div className="network-zoom" role="group" aria-label="Layout and zoom">
@@ -293,6 +326,7 @@ export function NetworkDiagram({
       <div className="network-scroll" ref={scrollRef}>
         <div className="network-canvas" style={{ width: width * scale, height: height * scale }}>
           <div
+            ref={innerRef}
             className="network-inner"
             style={{ width, height, transform: `scale(${scale})` }}
             // A press on empty canvas puts a selected arrow down.
@@ -362,6 +396,10 @@ export function NetworkDiagram({
                     </g>
                   );
                 })}
+                {drag?.kind === 'link' && (() => {
+                  const a = layout.nodes.get(drag.from)!;
+                  return <line className="network-rubber" x1={a.x + NODE_W} y1={a.y + NODE_H / 2} x2={drag.at.x} y2={drag.at.y} />;
+                })()}
                 {handles.map((h) => (
                   <rect
                     key={h.which}
@@ -386,7 +424,7 @@ export function NetworkDiagram({
               const env = envOf(t.environment_id);
               const isCritical = critical(id);
               const milestone = t.duration === 0;
-              return (
+              return [
                 <button
                   key={id}
                   ref={(el) => { if (el) nodeRefs.current.set(id, el); else nodeRefs.current.delete(id); }}
@@ -397,7 +435,9 @@ export function NetworkDiagram({
                     t.status === 'done' ? 'is-done' : '',
                     criticalOnly && !isCritical ? 'is-dim' : '',
                     drag?.kind === 'node' && drag.id === id && drag.moved ? 'is-moving' : '',
+                    drag?.kind === 'link' && drag.over === id ? 'is-link-target' : '',
                   ].filter(Boolean).join(' ')}
+                  data-node={id}
                   style={{
                     left: pad + box.x, top: pad + box.y, width: NODE_W, height: NODE_H,
                     ['--env-color' as string]: env ? ENV_COLOR[env.kind] : 'transparent',
@@ -435,16 +475,35 @@ export function NetworkDiagram({
                     <span className="nn-float">{s ? (isCritical ? 'critical' : `${s.total_float}d float`) : ''}</span>
                     <span>{s ? formatDate(s.late_end) : '—'}</span>
                   </span>
-                </button>
-              );
+                </button>,
+                <span
+                  key={`port${id}`}
+                  className={`network-port${focused === id ? ' is-shown' : ''}${drag?.kind === 'link' && drag.from === id ? ' is-active' : ''}`}
+                  style={{ left: pad + box.x + NODE_W - 6, top: pad + box.y + NODE_H / 2 - 6 }}
+                  onPointerDown={(e) => startLinkDrag(e, id)}
+                  onPointerEnter={() => setFocused(id)}
+                  onPointerLeave={() => setFocused((f) => (f === id ? null : f))}
+                  title={`Drag onto another task to make it come after ${t.name}`}
+                  aria-hidden="true"
+                />,
+              ];
             })}
           </div>
         </div>
       </div>
 
+      {drag?.kind === 'link' && (
+        <div className="network-link-readout" role="status">
+          {drag.over != null
+            ? `${byId.get(drag.over)?.name} comes after ${byId.get(drag.from)?.name}`
+            : 'Drop on a task to link it after this one'}
+        </div>
+      )}
+
       <p className="network-key">
         Top row: early start, duration, early finish. Bottom row: late start, float, late finish.
-        Heavy boxes and red arrows are the critical path. Point at a task to pick out its own arrows.{' '}
+        Heavy boxes and red arrows are the critical path. Point at a task to pick out its own arrows.
+        Drag the dot on a box's right edge onto another box to make that task come after it.{' '}
         {arrangeable
           ? 'Drag a box to move it (Alt+arrows with the keyboard). Click an arrow, then drag its square handles to reshape it.'
           : 'Turn off Show environments to arrange boxes and arrows by hand.'}

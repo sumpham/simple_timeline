@@ -6,8 +6,8 @@ import type { OutlineRow } from '../../shared/wbs.ts';
 import { occupancyByDay } from '../../shared/conflicts.ts';
 import { formatDate, formatRange } from '../layout.ts';
 import {
-  chainOf, dayColumn, DAY_WIDTH, draggedFinish, draggedStart, finishFields, finishVariance, ganttDays, ganttScale,
-  gridLines, headerBands, minWeeksFor, spanX, startFields, type GanttScale, type Zoom,
+  chainOf, dayColumn, DAY_WIDTH, draggedFinish, draggedStart, draggedStartEdge, finishFields, finishVariance, ganttDays, ganttScale,
+  gridLines, headerBands, minWeeksFor, spanX, startEdgeFields, startFields, type GanttScale, type Zoom,
 } from '../gantt.ts';
 import type { TaskInput } from '../api.ts';
 import { ENV_COLOR } from './Board.tsx';
@@ -20,8 +20,9 @@ import { ENV_COLOR } from './Board.tsx';
  * row the table hides (filtered, or under a collapsed summary) is not drawn.
  *
  * Editing on the chart goes through the same doors as the table: a dragged
- * start becomes `startFields`, a dragged finish `finishFields`, and the drop
- * calls the plan's own setStart / setFinish. While dragging, the parent's
+ * start becomes `startFields`, a dragged finish `finishFields`, a dragged left
+ * end `startEdgeFields`, and the drop calls the plan's own setStart / setFinish
+ * / setStartEdge. While dragging, the parent's
  * `preview` runs the shared scheduler and conflict engine on the would-be plan,
  * so successors move and a new double-booking is named before anything is saved.
  */
@@ -60,11 +61,15 @@ const BAR_H = 14;
 const DIAMOND = 7;
 const SLOP = 4;
 
+/** Move keeps the length; resize moves the finish; resize-start moves the start and keeps the finish. */
+type BarMode = 'move' | 'resize' | 'resize-start';
+type DragMode = BarMode | 'link';
+
 type Shape = { x0: number; x1: number; mid: number; milestone: boolean; summary: boolean };
 
 type Drag = {
   id: number;
-  mode: 'move' | 'resize' | 'link';
+  mode: DragMode;
   pointer: number;
   x: number;
   y: number;
@@ -76,11 +81,11 @@ type Drag = {
   over: number | null;
 };
 
-type Live = { id: number; fields: TaskInput; date: ISODate; mode: 'move' | 'resize'; result: GanttPreview | null };
+type Live = { id: number; fields: TaskInput; date: ISODate; mode: BarMode; result: GanttPreview | null };
 
 export function Gantt({
   tasks, outline, deps, schedule, environments, holidays, today, start, target, rows, head, height, zoom, show,
-  baseline, bookings, progress, people, strip, command, preview, onOpen, onSetStart, onSetFinish, onLink, onLinkChange, onRelease,
+  baseline, bookings, progress, people, strip, command, preview, onOpen, onSetStart, onSetFinish, onSetStartEdge, onLink, onLinkChange, onRelease,
 }: {
   tasks: readonly Task[];
   outline: ReadonlyMap<number, OutlineRow>;
@@ -109,6 +114,8 @@ export function Gantt({
   onOpen: (id: number) => void;
   onSetStart: (t: Task, date: ISODate) => Promise<boolean>;
   onSetFinish: (t: Task, date: ISODate) => Promise<boolean>;
+  /** A new start with the finish kept where it is. */
+  onSetStartEdge: (t: Task, date: ISODate) => Promise<boolean>;
   onLink: (predecessorId: number, successorId: number) => Promise<unknown>;
   onLinkChange: (dep: TaskDependency, next: { type: LinkType; lag: number } | null) => Promise<unknown>;
   onRelease: (b: BookingView) => Promise<void>;
@@ -134,7 +141,7 @@ export function Gantt({
   const [trace, setTrace] = useState<number | null>(null);
   const [linkEdit, setLinkEdit] = useState<{ dep: TaskDependency; x: number; y: number } | null>(null);
   const keyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const keyCols = useRef<{ id: number; mode: 'move' | 'resize'; cols: number } | null>(null);
+  const keyCols = useRef<{ id: number; mode: BarMode; cols: number } | null>(null);
 
   const scroller = () => ref.current?.parentElement ?? null;
 
@@ -202,7 +209,7 @@ export function Gantt({
     return { x: clientX - box.left, y: clientY - box.top };
   };
 
-  const runPreview = (t: Task, mode: 'move' | 'resize', cols: number) => {
+  const runPreview = (t: Task, mode: BarMode, cols: number) => {
     const s = schedule.get(t.id);
     if (!s) return;
     let date: ISODate;
@@ -210,6 +217,9 @@ export function Gantt({
     if (mode === 'move') {
       date = draggedStart(scale, s.start, cols, holidays);
       fields = startFields(t, date);
+    } else if (mode === 'resize-start') {
+      date = draggedStartEdge(scale, s.start, s.end, cols, holidays);
+      fields = startEdgeFields(t, date, s.end, holidays);
     } else {
       date = draggedFinish(scale, s.start, s.end, cols, holidays);
       fields = finishFields(t, s.start, date, holidays);
@@ -221,8 +231,10 @@ export function Gantt({
   /** Save through the plan's own setStart / setFinish; the preview stays up until the answer lands. */
   const commit = async (t: Task, l: Live) => {
     const s = schedule.get(t.id);
-    const unchanged = l.mode === 'move' ? s?.start === l.date : s?.end === l.date;
-    if (!unchanged) await (l.mode === 'move' ? onSetStart(t, l.date) : onSetFinish(t, l.date));
+    const unchanged = l.mode === 'resize' ? s?.end === l.date : s?.start === l.date;
+    if (!unchanged) {
+      await (l.mode === 'move' ? onSetStart(t, l.date) : l.mode === 'resize' ? onSetFinish(t, l.date) : onSetStartEdge(t, l.date));
+    }
     setLive(null);
   };
 
@@ -230,7 +242,8 @@ export function Gantt({
     if (e.button !== 0 || dragRef.current) return;
     const handle = (e.target as Element).closest('[data-handle]')?.getAttribute('data-handle');
     const summary = !!outline.get(t.id)?.summary;
-    const mode: Drag['mode'] = handle === 'link' ? 'link' : handle === 'resize' && !summary ? 'resize' : 'move';
+    const mode: DragMode = handle === 'link' ? 'link'
+      : (handle === 'resize' || handle === 'resize-start') && !summary ? handle : 'move';
     const p = toChart(e.clientX, e.clientY);
     const d: Drag = { id: t.id, mode, pointer: e.pointerId, x: e.clientX, y: e.clientY, moved: false, cols: 0, px: p.x, py: p.y, over: null };
     dragRef.current = d;
@@ -382,7 +395,12 @@ export function Gantt({
             {pct > 0 && (
               <rect className="gantt-progress" x={g.x0 + 1} y={top + BAR_H - 5} width={Math.max(0, (g.x1 - g.x0 - 2) * pct / 100)} height={4} rx={1} />
             )}
-            <rect className="gantt-grip" data-handle="resize" x={g.x1 - 6} y={top} width={7} height={BAR_H} />
+            <rect className="gantt-grip" data-handle="resize-start" x={g.x0} y={top} width={7} height={BAR_H}>
+              <title>Drag to change the start; the finish stays</title>
+            </rect>
+            <rect className="gantt-grip" data-handle="resize" x={g.x1 - 6} y={top} width={7} height={BAR_H}>
+              <title>Drag to change the finish</title>
+            </rect>
           </>
         )}
         <circle className="gantt-link-handle" data-handle="link" cx={g.x1 + (g.milestone ? 3 : 5)} cy={g.mid} r={4} />
@@ -457,8 +475,10 @@ export function Gantt({
     const t = byId.get(live.id)!;
     const lines = [live.mode === 'move'
       ? `${t.name}: ${formatRange(s.start, s.end)}`
-      : `${t.name}: ends ${formatDate(s.end)}${live.fields.duration != null ? `, ${live.fields.duration} working day${live.fields.duration === 1 ? '' : 's'}` : ''}`];
-    if (live.mode === 'move' && s.start !== live.date && t.duration > 0) lines.push(`Held to ${formatDate(s.start)} by what it waits for`);
+      : live.mode === 'resize-start'
+        ? `${t.name}: starts ${formatDate(s.start)}${live.fields.duration != null ? `, ${live.fields.duration} working day${live.fields.duration === 1 ? '' : 's'}` : ''}`
+        : `${t.name}: ends ${formatDate(s.end)}${live.fields.duration != null ? `, ${live.fields.duration} working day${live.fields.duration === 1 ? '' : 's'}` : ''}`];
+    if (live.mode !== 'resize' && s.start !== live.date && t.duration > 0) lines.push(`Held to ${formatDate(s.start)} by what it waits for`);
     const alarm = (live.result?.added ?? []).map((c) => `Double-books ${c.env_name} with ${c.projects.join(' and ')}`);
     return { x: g.x1 + 14, y: g.mid - BAR_H + head, lines, alarm };
   })();

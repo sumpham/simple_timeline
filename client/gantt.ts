@@ -170,6 +170,12 @@ export function draggedFinish(scale: GanttScale, start: ISODate, end: ISODate, c
   return d < start ? start : d;
 }
 
+/** Where a dragged left end lands: forward onto a working day, never after the finish. */
+export function draggedStartEdge(scale: GanttScale, start: ISODate, end: ISODate, cols: number, holidays: HolidaySet): ISODate {
+  const d = draggedStart(scale, start, cols, holidays);
+  return d > end ? end : d;
+}
+
 /**
  * What a new start means. Dates are scheduled, so it becomes the floor the task
  * may not start before, or, once work has begun, the day it actually started.
@@ -189,6 +195,20 @@ export function finishFields(t: Pick<Task, 'status' | 'duration'>, start: ISODat
   if (t.status === 'done') return { actual_end: date };
   if (t.duration === 0) return { not_before: date };
   return { duration: Math.max(1, workingDays(start, date, holidays)) };
+}
+
+/**
+ * What a dragged left end means: the task starts on `date` and still finishes
+ * on `end`, so the length becomes the working days between. A done task with
+ * an actual finish keeps it and only records the new actual start. Null after the finish.
+ */
+export function startEdgeFields(
+  t: Pick<Task, 'status' | 'actual_start' | 'duration'> & { actual_end?: ISODate | null }, date: ISODate, end: ISODate, holidays?: HolidaySet,
+): TaskInput | null {
+  if (date > end) return null;
+  const fields = startFields(t, date);
+  if ((t.status === 'done' && t.actual_end) || t.duration === 0) return fields;
+  return { ...fields, duration: Math.max(1, workingDays(date, end, holidays)) };
 }
 
 /** Working days a finish sits past (positive) or before (negative) its baseline. */

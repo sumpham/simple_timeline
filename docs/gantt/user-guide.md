@@ -54,10 +54,14 @@ double-booking. Hover for who and when.
 | Do this | To |
 |---|---|
 | Drag a bar | Move it. It becomes the task's "start no earlier than" (or its actual start once work has begun). Length is kept |
-| Drag a bar's right end | Change its length in working days (a done task: its actual finish) |
+| Drag a bar's right end | Change its finish, and so its length in working days (a done task: its actual finish) |
+| Drag a bar's left end | Change its start and keep its finish; the length becomes the working days between (a done task: its actual start) |
 | Drag the dot after a bar onto another bar | Make that task come after this one (finish-to-start) |
 | Click an arrow | Change its type (FS, SS, FF) or lag, or remove it |
 | Click a bar | Open the task |
+
+The ends of a bar darken slightly when you point at it: those are the grips. In the **Network**
+tab, the same link can be drawn by dragging the dot on a box's right edge onto another box.
 
 While you drag, a box beside the bar shows the new dates. Tasks that depend on it move with
 it, and the Environments strip redraws. If the drop would double-book an environment, the box
