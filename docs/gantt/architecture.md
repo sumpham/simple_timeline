@@ -42,17 +42,23 @@ predicts during a drag is what the server writes on the drop.
 
 ## How the table and chart line up
 
-The table and chart share one scroll container (`.task-split`). The table's wrapper is
-`position: sticky; left: 0`, so the chart scrolls sideways under it; both headers are sticky to
-the same container, so they scroll vertically together.
+The table and the chart are two scroll containers side by side in `.task-split`:
+`.task-split-table` and `.task-split-chart`. Each scrolls sideways on its own, and each header is
+sticky in its own side. Up and down they move together: `followScroll` in `TaskTable` copies
+`scrollTop` from the side being scrolled to the other and ignores the echo for a frame. A
+`ResizeObserver` pads the bottom of whichever side scrolls less far (a sideways scrollbar on one
+side takes height from it), so the last rows never drift apart. The environments strip's labels
+are `position: sticky; left: 0`, so they stay in view when the table is scrolled sideways.
+`Gantt` scrolls its parent (`ref.parentElement`), which is now the chart side.
 
 The chart does not lay out rows. `TaskTable` measures every `tr[data-task]` (`offsetTop`,
 `offsetHeight`) with a `ResizeObserver` and passes the boxes to `Gantt`, which draws each bar at
 its row's middle. A row that grows (an "overdue" note) or disappears (filter, folded summary)
 moves the chart with it. The table header is 48px to fit the chart's two header rows.
 
-The divider narrows the table's wrapper, which uses `overflow-x: clip` (not `hidden`: hidden
-would make it a scroll container and unstick the header).
+The divider sits between the two sides and sets the table side's width; columns that no longer
+fit scroll inside it. The table side never takes more than all but 160px, so the chart always
+shows.
 
 ## How an edit on the chart is saved
 

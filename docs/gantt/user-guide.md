@@ -1,7 +1,8 @@
 # User guide
 
 Plans → pick a project → **Tasks**. The table is on the left, the chart on the right.
-Scroll the chart sideways; the table stays put.
+Each side has its own sideways scroll: scroll the chart through time, or the table to columns
+the divider has hidden. Up and down, both sides move together, so every bar stays beside its row.
 
 ## The toolbar
 

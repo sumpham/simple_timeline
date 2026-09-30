@@ -2359,30 +2359,38 @@ kbd {
 .task-split {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   display: flex;
-  align-items: flex-start;
-  overscroll-behavior-x: contain;
+  align-items: stretch;
+}
+.task-split.is-empty { overflow: auto; }
+/* Two scrollers, one per side. Each scrolls sideways on its own; Plan.tsx keeps
+   them level up and down (followScroll), so a bar stays beside its row. Each is
+   its own scroller, so the table header and the chart's header stick in it. */
+.task-split-table,
+.task-split-chart {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 .task-split-table {
   flex: none;
-  position: sticky;
-  left: 0;
+  /* The chart always keeps some room; a wider table scrolls inside its side. */
+  max-width: calc(100% - 160px);
+  position: relative;
   z-index: 2;
   background: var(--lane);
   box-shadow: 1px 0 0 var(--rule), 6px 0 8px -6px rgba(22, 32, 43, 0.18);
-  /* Narrowed by the divider, the right-hand columns tuck under the chart.
-     clip, not hidden: hidden would make this a scroller and unstick the header. */
-  overflow-x: clip;
 }
+.task-split.is-empty .task-split-table { max-width: none; flex: 1 1 auto; overflow: visible; }
+.task-split-chart { flex: 1 1 auto; min-width: 0; background: var(--lane); }
 
-/* The divider: a wide, invisible grip over a one-pixel rule. */
+/* The divider: a wide, invisible grip over a one-pixel rule, between the two sides. */
 .split-handle {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  position: relative;
+  flex: none;
   width: 8px;
+  margin: 0 -4px;
   z-index: 3;
   cursor: col-resize;
   touch-action: none;
@@ -2392,7 +2400,7 @@ kbd {
   position: absolute;
   top: 0;
   bottom: 0;
-  right: 0;
+  left: 3px;
   width: 2px;
   background: transparent;
   transition: background 120ms;
@@ -2475,7 +2483,8 @@ kbd {
 
 /* ---- occupancy strip labels, under the table */
 
-.strip-labels { border-top: 1px solid var(--rule); }
+/* Pinned to the left, so the labels stay in view when the table side is scrolled sideways. */
+.strip-labels { border-top: 1px solid var(--rule); position: sticky; left: 0; }
 .strip-labels-head {
   height: var(--strip-head);
   display: flex;
@@ -2741,7 +2750,8 @@ kbd {
   body { background: #fff; }
   .topbar, .m-topbar, .plan-back, .plan-title-row .segmented, .gantt-toolbar, .table-hint, .holds,
   .impact-banner, .error-bar, .task-add, .add-sub, .overdue-tip, .split-handle, .rail, .drawer, .gantt-link-handle { display: none !important; }
-  .plan, .plan-body, .task-table-wrap, .task-split { overflow: visible !important; height: auto !important; display: block; }
+  .plan, .plan-body, .task-table-wrap, .task-split, .task-split-table, .task-split-chart { overflow: visible !important; height: auto !important; display: block; }
+  .task-split-table { max-width: none; }
   .task-split { display: flex !important; }
   .task-split-table { position: static; box-shadow: none; }
   .task-table th, .gantt-head { position: static; }
@@ -2995,7 +3005,8 @@ kbd {
   .table-hint { display: none; }
   .task-table-wrap { flex: none; }
   .task-split { display: block; overflow: visible; }
-  .task-split-table { position: static; box-shadow: none; width: auto !important; }
+  .task-split-table { position: static; box-shadow: none; width: auto !important; max-width: none; overflow: visible; }
+  .task-split-chart { display: none; }
   .split-handle { display: none; }
   /* Also over a width the divider remembered from a wider screen. */
   .task-split .task-table, .task-split-table.is-sized .task-table { width: 100%; }

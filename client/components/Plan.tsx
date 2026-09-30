@@ -747,6 +747,9 @@ function TaskTable({
   const people = useMemo(() => new Map(plan.resources.map((r) => [r.id, r])), [plan.resources]);
   const tableRef = useRef<HTMLTableElement>(null);
   const splitRef = useRef<HTMLDivElement>(null);
+  /** The two sides of the split: each scrolls sideways on its own, and up and down together. */
+  const tablePaneRef = useRef<HTMLDivElement>(null);
+  const chartPaneRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [prefs, setPrefs] = useState<ChartPrefs>(readPrefs);
   const [query, setQuery] = useState('');
@@ -867,6 +870,44 @@ function TaskTable({
     return () => ro.disconnect();
   }, [plan, visible]);
 
+  // ------------------------------------------------------------ two scrollers
+
+  /**
+   * The table and the chart scroll sideways on their own but always up and down
+   * together, so a bar stays beside its row. Whichever side the user scrolls
+   * leads; the echo from setting the other side is ignored for a frame.
+   */
+  const leading = useRef<HTMLDivElement | null>(null);
+  const followScroll = (from: HTMLDivElement) => {
+    if (leading.current && leading.current !== from) return;
+    const to = from === tablePaneRef.current ? chartPaneRef.current : tablePaneRef.current;
+    if (!to || to.scrollTop === from.scrollTop) return;
+    leading.current = from;
+    to.scrollTop = from.scrollTop;
+    requestAnimationFrame(() => { leading.current = null; });
+  };
+
+  // Both sides must be able to scroll equally far, or the last rows drift apart
+  // (a sideways scrollbar on one side only takes height from that side).
+  useLayoutEffect(() => {
+    const a = tablePaneRef.current;
+    const b = chartPaneRef.current;
+    if (!a || !b) return;
+    const even = () => {
+      a.style.paddingBottom = '';
+      b.style.paddingBottom = '';
+      const ra = a.scrollHeight - a.clientHeight;
+      const rb = b.scrollHeight - b.clientHeight;
+      if (ra < rb) a.style.paddingBottom = `${rb - ra}px`;
+      else if (rb < ra) b.style.paddingBottom = `${ra - rb}px`;
+      b.scrollTop = a.scrollTop;
+    };
+    even();
+    const ro = new ResizeObserver(even);
+    for (const el of [a, b, ...a.children, ...b.children]) ro.observe(el);
+    return () => ro.disconnect();
+  }, [plan.tasks.length > 0, geometry.height, prefs.show.strip, tableWidth]);
+
   // ------------------------------------------------------------ divider
 
   /** Keep the divider where both sides still show something. */
@@ -982,9 +1023,10 @@ function TaskTable({
         moving = true;
         handle.setPointerCapture(ev.pointerId);
       }
-      // Near an edge of the window, keep going the way the pointer is heading.
-      if (ev.clientY < 48) window.scrollBy(0, -16);
-      else if (ev.clientY > window.innerHeight - 48) window.scrollBy(0, 16);
+      // Near the top or bottom of the table, keep going the way the pointer is heading.
+      const pane = tablePaneRef.current?.getBoundingClientRect();
+      if (pane && ev.clientY < pane.top + 64) tablePaneRef.current!.scrollBy(0, -16);
+      else if (pane && ev.clientY > pane.bottom - 48) tablePaneRef.current!.scrollBy(0, 16);
       before = landing(ev.clientY);
       setRowDrag({ id: t.id, before });
     };
@@ -1095,10 +1137,12 @@ function TaskTable({
         />
       </div>
 
-      <div className="task-split" ref={splitRef}>
+      <div className={`task-split${plan.tasks.length ? '' : ' is-empty'}`} ref={splitRef}>
       <div
         className={`task-split-table${tableWidth != null && plan.tasks.length ? ' is-sized' : ''}`}
         style={tableWidth != null && plan.tasks.length ? { width: tableWidth } : undefined}
+        ref={tablePaneRef}
+        onScroll={(e) => followScroll(e.currentTarget)}
       >
       <table className={`task-table${rowDrag ? ' is-reordering' : ''}${prefs.wbs ? ' has-wbs' : ''}${prefs.who ? ' has-who' : ''}`} ref={tableRef}>
         <thead>
@@ -1338,6 +1382,7 @@ function TaskTable({
           ))}
         </div>
       )}
+      </div>
       {plan.tasks.length > 0 && (
         <div
           className="split-handle"
@@ -1353,8 +1398,8 @@ function TaskTable({
           onKeyDown={splitKeys}
         />
       )}
-      </div>
       {plan.tasks.length > 0 && (
+        <div className="task-split-chart" ref={chartPaneRef} onScroll={(e) => followScroll(e.currentTarget)}>
         <Gantt
           tasks={plan.tasks}
           outline={outlineRows}
@@ -1384,6 +1429,7 @@ function TaskTable({
           onLinkChange={onLinkChange}
           onRelease={onRelease}
         />
+        </div>
       )}
       </div>
       <p className="table-hint">

@@ -484,10 +484,10 @@ ink beside its status (never red; the alarm is spent), which names the date on h
 tap. On a phone, rows become stacked cards.
 
 **Gantt beside the table** (`client/components/Gantt.tsx`, pure helpers in `client/gantt.ts`).
-The table is pinned on the left and the chart scrolls sideways under it; both share one
-scroller, so their headers stick together. A divider between them drags (or takes ←/→, Shift
-for bigger steps); narrowing tucks the right-hand columns under the chart, widening gives the
-room to the task name, and a double-click or End restores the whole table. The chart does not
+The table and the chart each scroll sideways on their own, and up and down together (rows and
+bars must stay level), each with its header stuck in place. A divider between them drags (or
+takes ←/→, Shift for bigger steps); narrowing leaves the right-hand columns a sideways scroll
+away in the table, widening gives the room to the task name, and a double-click or End restores the whole table. The chart does not
 lay out rows: the table measures its own rows and the chart draws at those heights, so a taller
 row never drifts, and a row the table hides is not drawn.
 
