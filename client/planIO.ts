@@ -3,6 +3,7 @@ import { formatResources } from '../shared/resources.ts';
 import type { OutlineRow } from '../shared/wbs.ts';
 import { formatPredecessors, parsePredecessors } from './predecessors.ts';
 import { codesById } from '../shared/taskCode.ts';
+import { estimateError } from '../shared/estimates.ts';
 
 /**
  * A plan in and out of files: CSV for spreadsheets, and MS Project's XML
@@ -28,6 +29,9 @@ export type ImportRow = {
   progress?: number | null;
   not_before?: string | null;
   note?: string | null;
+  /** Best and worst case in working days, for the forecast (shared/estimates.ts). */
+  duration_low?: number | null;
+  duration_high?: number | null;
 };
 
 export type ImportResult = { ok: true; rows: ImportRow[]; warnings: string[] } | { ok: false; error: string };
@@ -46,7 +50,7 @@ const STATUS_WORDS: Record<TaskStatus, string> = { todo: 'To do', in_progress: '
 
 // ---------------------------------------------------------------- CSV
 
-const CSV_HEAD = ['ID', 'WBS', 'Task', 'Summary', 'Environment', 'Days', 'After', 'Start', 'Finish', 'Float', 'Status', 'Progress', 'Resources', 'Note'];
+const CSV_HEAD = ['ID', 'WBS', 'Task', 'Summary', 'Environment', 'Days', 'Best', 'Worst', 'After', 'Start', 'Finish', 'Float', 'Status', 'Progress', 'Resources', 'Note'];
 
 function csvCell(v: string | number | null | undefined): string {
   const s = v == null ? '' : String(v);
@@ -65,7 +69,8 @@ export function toCsv(plan: Plan): string {
     lines.push([
       rowOf.get(t.id), o?.wbs, t.name, o?.parent_id != null ? rowOf.get(o.parent_id) : '',
       plan.environments.find((e) => e.id === t.environment_id)?.name ?? '',
-      o?.summary ? '' : t.duration, formatPredecessors(plan.deps, t.id, rowOf),
+      o?.summary ? '' : t.duration, o?.summary ? '' : t.duration_low, o?.summary ? '' : t.duration_high,
+      formatPredecessors(plan.deps, t.id, rowOf),
       s?.start, s?.end, s ? s.total_float : '', STATUS_WORDS[t.status], t.progress ?? '', formatResources(t.resource_ids, people), t.note,
     ].map(csvCell).join(','));
   }
@@ -106,6 +111,8 @@ const ALIASES: Record<string, string[]> = {
   parent: ['summary', 'parent', 'summary row', 'parent row'],
   environment: ['environment', 'env'],
   duration: ['days', 'duration', 'working days'],
+  duration_low: ['best', 'best case', 'optimistic', 'optimistic duration'],
+  duration_high: ['worst', 'worst case', 'pessimistic', 'pessimistic duration'],
   after: ['after', 'predecessors', 'depends on'],
   status: ['status'],
   progress: ['progress', '% complete', 'percent complete', '%'],
@@ -151,6 +158,17 @@ export function fromCsv(text: string): ImportResult {
     const duration = dText ? Number(dText) : 1;
     if (!Number.isInteger(duration) || duration < 0) return { ok: false, error: `Row ${n}: “${cell(r, 'duration')}” is not a whole number of days.` };
 
+    const range: Pick<ImportRow, 'duration_low' | 'duration_high'> = {};
+    for (const k of ['duration_low', 'duration_high'] as const) {
+      const v = cell(r, k).replace(/\s*(d|days?)$/i, '');
+      if (!v) continue;
+      const x = Number(v);
+      if (!Number.isInteger(x) || x < 0) return { ok: false, error: `Row ${n}: “${cell(r, k)}” is not a whole number of days.` };
+      range[k] = x;
+    }
+    const rangeProblem = estimateError(duration, range.duration_low, range.duration_high);
+    if (rangeProblem) return { ok: false, error: `Row ${n}: ${rangeProblem}.` };
+
     let parent: number | null = null;
     if (cell(r, 'parent')) {
       parent = fileRow.get(cell(r, 'parent')) ?? null;
@@ -184,6 +202,7 @@ export function fromCsv(text: string): ImportResult {
       progress,
       not_before: /^\d{4}-\d{2}-\d{2}$/.test(nb) ? nb : null,
       note: cell(r, 'note') || null,
+      ...range,
     });
     if (nb && !/^\d{4}-\d{2}-\d{2}$/.test(nb)) warnings.push(`Row ${n}: “${nb}” is not a YYYY-MM-DD date, so it was left out`);
   }
@@ -195,6 +214,13 @@ export function fromCsv(text: string): ImportResult {
 const MSP_TYPE: Record<LinkType, number> = { FF: 0, FS: 1, SS: 3 };
 /** MS Project stores lag in tenths of a minute; a working day is eight hours. */
 const TENTHS_PER_DAY = 8 * 60 * 10;
+/**
+ * Best and worst case ride in MS Project's custom Duration1 and Duration3, the
+ * fields its PERT analysis uses for optimistic and pessimistic durations.
+ */
+const FIELD_BEST = '188743783';
+const FIELD_WORST = '188743785';
+const hoursOf = (days: number) => `PT${days * 8}H0M0S`;
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const unesc = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
@@ -212,6 +238,12 @@ export function toMspdi(plan: Plan & { projectName: string; projectStart: string
     ...(plan.projectStart ? [tag('StartDate', `${plan.projectStart}T08:00:00`)] : []),
     tag('ScheduleFromStart', 1),
     tag('MinutesPerDay', 480),
+    ...(plan.tasks.some((t) => t.duration_low != null || t.duration_high != null) ? [
+      '<ExtendedAttributes>',
+      '<ExtendedAttribute>', tag('FieldID', FIELD_BEST), tag('FieldName', 'Duration1'), tag('Alias', 'Best'), '</ExtendedAttribute>',
+      '<ExtendedAttribute>', tag('FieldID', FIELD_WORST), tag('FieldName', 'Duration3'), tag('Alias', 'Worst'), '</ExtendedAttribute>',
+      '</ExtendedAttributes>',
+    ] : []),
     '<Tasks>',
   ];
   for (const t of plan.tasks) {
@@ -228,7 +260,10 @@ export function toMspdi(plan: Plan & { projectName: string; projectStart: string
       ...(summary ? [] : [tag('Duration', `PT${days * 8}H0M0S`), tag('DurationFormat', 7)]),
       tag('PercentComplete', t.progress ?? (t.status === 'done' ? 100 : 0)),
       ...(t.not_before ? [tag('ConstraintType', 4), tag('ConstraintDate', `${t.not_before}T08:00:00`)] : []),
-      ...(t.note ? [tag('Notes', t.note)] : []));
+      ...(t.note ? [tag('Notes', t.note)] : []),
+      ...(!summary ? ([[FIELD_BEST, t.duration_low], [FIELD_WORST, t.duration_high]] as const).flatMap(([field, v]) => (v == null ? [] : [
+        '<ExtendedAttribute>', tag('FieldID', field), tag('Value', hoursOf(v)), tag('DurationFormat', 7), '</ExtendedAttribute>',
+      ])) : []));
     for (const d of plan.deps.filter((x) => x.successor_id === t.id && rowOf.has(x.predecessor_id))) {
       out.push('<PredecessorLink>',
         tag('PredecessorUID', rowOf.get(d.predecessor_id)!), tag('Type', MSP_TYPE[d.type ?? 'FS'] ?? 1),
@@ -270,7 +305,10 @@ export function fromMspdi(xml: string): ImportResult {
   if (!tasksBlock) return { ok: false, error: 'That is not an MS Project XML file: it has no tasks.' };
   const blocks = [...tasksBlock.matchAll(/<Task>([\s\S]*?)<\/Task>/g)].map((m) => m[1]);
   const warnings: string[] = [];
-  type Raw = { uid: string; name: string; level: number; hours: number; progress: number | null; links: { uid: string; type: number; lag: number }[]; note: string | null; nb: string | null };
+  type Raw = {
+    uid: string; name: string; level: number; hours: number; progress: number | null; links: { uid: string; type: number; lag: number }[];
+    note: string | null; nb: string | null; best: number | null; worst: number | null;
+  };
   const raws: Raw[] = [];
   for (const b of blocks) {
     const uid = first(b, 'UID') ?? '';
@@ -286,6 +324,12 @@ export function fromMspdi(xml: string): ImportResult {
       lag: Number(first(m[1], 'LinkLag') ?? '0'),
     }));
     const pc = first(b, 'PercentComplete');
+    const attrs = new Map([...b.matchAll(/<ExtendedAttribute>([\s\S]*?)<\/ExtendedAttribute>/g)]
+      .map((m) => [first(m[1], 'FieldID') ?? '', first(m[1], 'Value') ?? '']));
+    const daysOf = (v: string | undefined) => {
+      const m = /PT(\d+(?:\.\d+)?)H(\d+)M/.exec(v ?? '');
+      return m ? Math.max(0, Math.round((Number(m[1]) + Number(m[2]) / 60) / 8)) : null;
+    };
     const ct = first(b, 'ConstraintType');
     const cd = first(b, 'ConstraintDate');
     raws.push({
@@ -294,6 +338,8 @@ export function fromMspdi(xml: string): ImportResult {
       progress: pc != null ? Math.max(0, Math.min(100, Math.round(Number(pc)))) : null,
       links, note: first(b, 'Notes'),
       nb: (ct === '4' || ct === '2') && cd ? cd.slice(0, 10) : null,
+      best: daysOf(attrs.get(FIELD_BEST)),
+      worst: daysOf(attrs.get(FIELD_WORST)),
     });
   }
   if (!raws.length) return { ok: false, error: 'That MS Project file has no tasks.' };
@@ -332,7 +378,19 @@ export function fromMspdi(xml: string): ImportResult {
       progress: r.progress ? r.progress : null, status: r.progress === 100 ? 'done' as const : 'todo' as const,
       note: r.note, not_before: r.nb,
       resources: whoOfTask.get(r.uid)?.join(', ') ?? null,
+      ...estimateFor(r, Math.max(0, Math.round(r.hours / 8)), warnings),
     };
   });
   return { ok: true, rows, warnings };
+}
+
+/** A file's best and worst case, kept only when they fit around the duration; otherwise dropped with a warning. */
+function estimateFor(r: { name: string; best: number | null; worst: number | null }, duration: number, warnings: string[]) {
+  if (r.best == null && r.worst == null) return {};
+  const problem = estimateError(duration, r.best, r.worst);
+  if (problem) {
+    warnings.push(`${r.name}: ${problem}, so its best and worst case were left out`);
+    return {};
+  }
+  return { duration_low: r.best, duration_high: r.worst };
 }

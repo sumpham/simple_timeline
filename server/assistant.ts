@@ -56,6 +56,7 @@ export function assistantReport(projectId: number, statusDate: ISODate = today()
     statusDate,
     nearCriticalDays: settings.near_critical_days,
     holidays,
+    forecastRuns: settings.forecast_runs,
   });
   const dismissed = new Set(all<{ key: string }>(
     'SELECT key FROM assistant_dismissal WHERE project_id = ?', projectId,
@@ -63,5 +64,5 @@ export function assistantReport(projectId: number, statusDate: ISODate = today()
   const findings = assess(facts, { long_task_days: settings.long_task_days }, names)
     .map((f) => (dismissed.has(f.key) ? { ...f, dismissed: true } : f));
 
-  return { status_date: statusDate, findings, forecast: null, suggestions: [] };
+  return { status_date: statusDate, findings, forecast: facts.forecast, suggestions: [] };
 }

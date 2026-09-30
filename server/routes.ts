@@ -8,6 +8,7 @@ import { holidaySet, listTasks } from './queries.ts';
 import { applyChange, checkOutline, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
 import { lateBy } from '../shared/schedule.ts';
 import { TASK_CODE_MAX } from '../shared/taskCode.ts';
+import { ESTIMATE_MAX, estimateError, type Estimate } from '../shared/estimates.ts';
 import { cleanSettingsPatch } from '../shared/assistant/settings.ts';
 import { assistantReport, assistantSettings } from './assistant.ts';
 import { cleanResourceName, formatResources, parseResources, RESOURCE_NAME_MAX, resourceKey } from '../shared/resources.ts';
@@ -658,14 +659,57 @@ function taskProject(taskId: number): Project {
 }
 
 /**
- * Apply a change and replan, all or nothing. Returns the created task id for a
- * create. `who` puts people on the task in the same transaction; people are not
- * plan state, so an update that changes only them skips the replan.
+ * A task's best and worst case from a request; undefined when it leaves them
+ * alone. Checked against the duration in `setEstimate`, once the change is in.
  */
-function commit(projectId: number, change: Change, who?: string[]): number | null {
+function estimateFrom(body: Record<string, unknown> | undefined): Estimate | undefined {
+  if (!body || (body.duration_low === undefined && body.duration_high === undefined)) return undefined;
+  const out: Estimate = {};
+  for (const k of ['duration_low', 'duration_high'] as const) {
+    if (body[k] === undefined) continue;
+    if (body[k] == null || body[k] === '') { out[k] = null; continue; }
+    const n = intParam(body[k]);
+    if (n == null || n < 0 || n > ESTIMATE_MAX) throw bad(`${k === 'duration_low' ? 'Best' : 'Worst'} is a whole number of working days, 0 to ${ESTIMATE_MAX}`);
+    out[k] = n;
+  }
+  return out;
+}
+
+/** Set a task's best and worst case. A summary has none: its range is its tasks'. Call inside a transaction. */
+function setEstimate(taskId: number, est: Estimate) {
+  const t = get<Task>('SELECT * FROM task WHERE id = ?', taskId)!;
+  if (get('SELECT id FROM task WHERE parent_id = ? LIMIT 1', taskId) && (est.duration_low != null || est.duration_high != null)) {
+    throw bad(`${t.name} is a summary: its best and worst case come from the tasks under it`);
+  }
+  const low = est.duration_low !== undefined ? est.duration_low : t.duration_low ?? null;
+  const high = est.duration_high !== undefined ? est.duration_high : t.duration_high ?? null;
+  const error = estimateError(t.duration, low, high);
+  if (error) throw bad(error);
+  if (low === (t.duration_low ?? null) && high === (t.duration_high ?? null)) return;
+  if (low !== (t.duration_low ?? null)) audit('task', taskId, 'duration_low', t.duration_low ?? null, low);
+  if (high !== (t.duration_high ?? null)) audit('task', taskId, 'duration_high', t.duration_high ?? null, high);
+  run('UPDATE task SET duration_low = ?, duration_high = ? WHERE id = ?', low, high, taskId);
+}
+
+/** What a task request carries besides plan fields: people and estimates, neither of which is plan state. */
+type Extras = { who?: string[]; estimate?: Estimate };
+
+function extrasFrom(body: Record<string, unknown> | undefined): Extras {
+  return { who: resourcesFrom(body), estimate: estimateFrom(body) };
+}
+
+/**
+ * Apply a change and replan, all or nothing. Returns the created task id for a
+ * create. `extras` puts people and estimates on the task in the same
+ * transaction; neither is plan state, so an update that changes only them skips
+ * the replan and cannot move a date.
+ */
+function commit(projectId: number, change: Change, extras: Extras = {}): number | null {
+  const { who, estimate } = extras;
   return transaction(() => {
-    if (change.op === 'update' && who && !Object.keys(change.fields).length) {
-      assign(change.id, who);
+    if (change.op === 'update' && (who || estimate) && !Object.keys(change.fields).length) {
+      if (who) assign(change.id, who);
+      if (estimate) setEstimate(change.id, estimate);
       return null;
     }
     const before = loadState(projectId);
@@ -673,6 +717,7 @@ function commit(projectId: number, change: Change, who?: string[]): number | nul
     replan(projectId);
     const taskId = change.op === 'create' ? created : change.op === 'update' ? change.id : null;
     if (who && taskId != null) assign(taskId, who);
+    if (estimate && taskId != null) setEstimate(taskId, estimate);
     return created;
   });
 }
@@ -707,14 +752,14 @@ router.post('/tasks', handle((req, res) => {
   const fields = taskFields(req.body, project.team_id);
   if (!fields.name) throw bad('Task name is required');
   const id = commit(project.id, { op: 'create', fields: fields as TaskFields & { name: string }, after_id: intParam(req.body?.after_id) ?? null },
-    resourcesFrom(req.body));
+    extrasFrom(req.body));
   res.status(201).json({ id, plan: planResponse(project.id) });
 }));
 
 router.patch('/tasks/:id', handle((req, res) => {
   const id = Number(req.params.id);
   const project = taskProject(id);
-  commit(project.id, { op: 'update', id, fields: taskFields(req.body, project.team_id) }, resourcesFrom(req.body));
+  commit(project.id, { op: 'update', id, fields: taskFields(req.body, project.team_id) }, extrasFrom(req.body));
   res.json({ id, plan: planResponse(project.id) });
 }));
 
@@ -829,10 +874,17 @@ router.post('/projects/:id/import', handle((req, res) => {
     });
     const progress = r.progress == null || r.progress === '' ? null : intParam(r.progress);
     if (progress !== null && (progress == null || progress < 0 || progress > 100)) throw bad(`${at}: progress is 0 to 100`);
+    let estimate: Estimate;
+    try {
+      estimate = estimateFrom({ duration_low: r.duration_low, duration_high: r.duration_high }) ?? {};
+    } catch (err) { throw bad(`${at}: ${(err as Error).message}`); }
+    const estError = estimateError(duration, estimate.duration_low, estimate.duration_high);
+    if (estError) throw bad(`${at}: ${estError}`);
     // The file's own ID is kept when it is free; otherwise the task gets the next one.
     const code = intParam(r.code);
     return {
       name, duration, environment_id, parent, predecessors, progress,
+      duration_low: estimate.duration_low ?? null, duration_high: estimate.duration_high ?? null,
       code: code != null && code >= 1 && code <= TASK_CODE_MAX ? code : null,
       status: r.status ? oneOf(r.status, TASK_STATUSES, 'status') : 'todo' as const,
       not_before: optionalDate(r.not_before, 'not_before'),
@@ -858,10 +910,11 @@ router.post('/projects/:id/import', handle((req, res) => {
         code = next++;
       }
       ids.push(Number(run(
-        `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, note, sort_order, parent_id, progress, code)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, note, sort_order, parent_id, progress, code,
+                           duration_low, duration_high)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         projectId, t.environment_id, t.name, t.duration, t.status, t.not_before, t.note, base + i,
-        t.parent != null ? ids[t.parent - 1] : null, t.progress, code,
+        t.parent != null ? ids[t.parent - 1] : null, t.progress, code, t.duration_low, t.duration_high,
       ).lastInsertRowid));
     });
     parsed.forEach((t, i) => { if (t.resources.length) assign(ids[i], t.resources); });

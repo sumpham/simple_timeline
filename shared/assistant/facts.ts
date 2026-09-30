@@ -2,6 +2,7 @@ import { addDays, workingDays, type HolidaySet } from '../dates.ts';
 import type { PlanOutcome } from '../plan.ts';
 import { earliestStart, expandLinks, forwardPass, indexNetwork, lateBy } from '../schedule.ts';
 import type { Conflict, ISODate, Priority, TaskDependency, TaskStatus } from '../types.ts';
+import { forecast, type Forecast } from './forecast.ts';
 
 /**
  * Everything the assistant's rules read, derived once from a plan outcome
@@ -84,6 +85,8 @@ export type PlanFacts = {
   /** Open double-bookings this project is part of. */
   clashes: ClashFacts[];
   near_critical_days: number;
+  /** The Monte Carlo forecast (forecast.ts), when one was run. */
+  forecast: Forecast | null;
   holidays?: HolidaySet;
 };
 
@@ -100,6 +103,8 @@ export type FactsInput = {
   statusDate: ISODate;
   nearCriticalDays: number;
   holidays?: HolidaySet;
+  /** Forecast runs; 0 or absent skips the forecast. */
+  forecastRuns?: number;
 };
 
 /** Working days strictly after `from`, up to and including `to`; 0 when `to` is not later. */
@@ -182,6 +187,16 @@ export function planFacts(input: FactsInput): PlanFacts {
     baseline: baselineFacts(working, statusDate),
     clashes: clashFacts(input, working),
     near_critical_days: input.nearCriticalDays,
+    forecast: input.forecastRuns ? forecast({
+      tasks: outcome.tasks,
+      deps: outcome.deps,
+      projectStart: input.projectStart,
+      statusDate,
+      target,
+      runs: input.forecastRuns,
+      holidays,
+      pace: new Map(working.map((t) => [t.id, t.spi])),
+    }, new Set(working.filter((t) => t.critical && t.status !== 'done').map((t) => t.id))) : null,
     holidays,
   };
 }

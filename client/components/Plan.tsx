@@ -27,6 +27,7 @@ import {
   finishFields, progressOf, rolledBaseline, rolledProgress, startFields, visibleRows, zoomToFit, ZOOM_LABEL, ZOOMS, type Zoom,
 } from '../gantt.ts';
 import { fromCsv, fromMspdi, toCsv, toMspdi } from '../planIO.ts';
+import { estimateError, rangeOf } from '../../shared/estimates.ts';
 
 /**
  * A project's plan: its tasks, what drives their dates, and the bookings they
@@ -662,8 +663,14 @@ export function PlanView({
           report={report}
           error={reportError}
           busy={reportBusy}
+          target={plan?.project.target_date ?? null}
+          taskLabel={(id) => {
+            const t = plan?.tasks.find((x) => x.id === id);
+            return t ? `${t.name} (T${codeOf.get(id)})` : `Task ${id}`;
+          }}
           onClose={() => setAssistantOpen(false)}
           onShow={showFinding}
+          onShowTasks={(ids) => { setTab('tasks'); setSpotlight({ ids, at: Date.now() }); }}
           onDismiss={(f) => void setAside(f, false)}
           onRestore={(f) => void setAside(f, true)}
         />
@@ -724,6 +731,8 @@ type ChartPrefs = {
   wbs: boolean;
   /** The table's Who column: the people on each task. */
   who: boolean;
+  /** The table's Best and Worst columns: each task's range for the forecast. */
+  estimates: boolean;
 };
 const PREFS_KEY = 'plan.chart';
 const DEFAULT_PREFS: ChartPrefs = {
@@ -731,13 +740,14 @@ const DEFAULT_PREFS: ChartPrefs = {
   show: { float: true, labels: true, baseline: true, bookings: false, strip: true },
   wbs: false,
   who: true,
+  estimates: false,
 };
 
 function readPrefs(): ChartPrefs {
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? 'null');
     if (!raw || !ZOOMS.includes(raw.zoom)) return DEFAULT_PREFS;
-    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true, who: raw.who !== false };
+    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true, who: raw.who !== false, estimates: raw.estimates === true };
   } catch {
     return DEFAULT_PREFS;
   }
@@ -1176,6 +1186,10 @@ function TaskTable({
               <input type="checkbox" checked={prefs.who} onChange={(e) => setPrefs((p) => ({ ...p, who: e.target.checked }))} />
               <span>Who column<small>The people on each task; type names with commas between</small></span>
             </label>
+            <label className="check" title="Each task's best and worst case, for the assistant's forecast">
+              <input type="checkbox" checked={prefs.estimates} onChange={(e) => setPrefs((p) => ({ ...p, estimates: e.target.checked }))} />
+              <span>Best and Worst columns<small>Each task’s range in working days, for the forecast; blank uses the default</small></span>
+            </label>
           </div>
         </details>
         {deepest > 0 && (
@@ -1250,6 +1264,12 @@ function TaskTable({
             <th scope="col" className="c-name">Task</th>
             <th scope="col" className="c-env">Environment</th>
             <th scope="col" className="c-num">Days</th>
+            {prefs.estimates && (
+              <>
+                <th scope="col" className="c-num c-est" title="Best case in working days. Blank uses 10% under the plan; the grey number shows it.">Best</th>
+                <th scope="col" className="c-num c-est" title="Worst case in working days. Blank uses 30% over the plan; the grey number shows it.">Worst</th>
+              </>
+            )}
             <th scope="col" className="c-after" title="IDs of the tasks this one waits for. 2+3 means three working days after task 2 ends; 2SS starts with it, 2FF finishes with it.">After</th>
             {prefs.who && <th scope="col" className="c-who" title="Who does the task, with commas between names. A new name adds that person; a summary's people are its owners.">Who</th>}
             <th scope="col" className="c-date">Start</th>
@@ -1376,6 +1396,20 @@ function TaskTable({
                     />
                   )}
                 </td>
+                {prefs.estimates && (
+                  <>
+                    <td className="c-num c-est" data-label="Best">
+                      {summary ? <span className="cell-quiet">—</span> : (
+                        <EstimateCell task={t} end="duration_low" onError={onError} onUpdate={onUpdate} />
+                      )}
+                    </td>
+                    <td className="c-num c-est" data-label="Worst">
+                      {summary ? <span className="cell-quiet">—</span> : (
+                        <EstimateCell task={t} end="duration_high" onError={onError} onUpdate={onUpdate} />
+                      )}
+                    </td>
+                  </>
+                )}
                 <td className="c-after" data-label="After">
                   <AfterCell
                     value={formatPredecessors(plan.dependencies, t.id, codeOf)}
@@ -1454,7 +1488,7 @@ function TaskTable({
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRef.current?.focus(); } }}
               />
             </td>
-            <td colSpan={prefs.wbs ? 9 : 8}>
+            <td colSpan={8 + (prefs.wbs ? 1 : 0) + (prefs.estimates ? 2 : 0)}>
               <input
                 ref={addRef}
                 value={draft}
@@ -1629,6 +1663,35 @@ function OverdueFlag({ text }: { text: string }) {
         <span id={tipId} role="tooltip" className="overdue-tip" style={{ left: at.x, top: at.y }}>{text}</span>
       )}
     </>
+  );
+}
+
+/** A best or worst case, blank for the default range, which shows grey as the placeholder. */
+function EstimateCell({ task: t, end, onError, onUpdate }: {
+  task: Task;
+  end: 'duration_low' | 'duration_high';
+  onError: (msg: string | null) => void;
+  onUpdate: (t: Task, fields: TaskInput) => Promise<boolean>;
+}) {
+  const range = rangeOf({ duration: t.duration });
+  const word = end === 'duration_low' ? 'Best' : 'Worst';
+  const stored = t[end] ?? null;
+  return (
+    <CellInput
+      field={end}
+      label={`${word} case for ${t.name}, in working days`}
+      inputMode="numeric"
+      value={stored == null ? '' : String(stored)}
+      placeholder={String(Math.round(end === 'duration_low' ? range.low : range.high))}
+      onCommit={(v) => {
+        const n = v.trim() === '' ? null : Number(v);
+        const low = end === 'duration_low' ? n : t.duration_low ?? null;
+        const high = end === 'duration_high' ? n : t.duration_high ?? null;
+        const error = n != null && !Number.isInteger(n) ? `${word} is a whole number of working days` : estimateError(t.duration, low, high);
+        if (error) { onError(error); return false; }
+        return n !== stored ? onUpdate(t, { [end]: n }) : undefined;
+      }}
+    />
   );
 }
 
@@ -2071,6 +2134,8 @@ function TaskEditor({
   const [note, setNote] = useState(task.note ?? '');
   const [parentId, setParentId] = useState<number | null>(task.parent_id ?? null);
   const [progressText, setProgressText] = useState(task.progress == null ? '' : String(task.progress));
+  const [bestText, setBestText] = useState(task.duration_low == null ? '' : String(task.duration_low));
+  const [worstText, setWorstText] = useState(task.duration_high == null ? '' : String(task.duration_high));
   const summary = !!outlineRows.get(task.id)?.summary;
   const under = useMemo(() => descendants(plan.tasks, task.id), [plan.tasks, task.id]);
   const progressN = progressText.trim() === '' ? null : Number(progressText);
@@ -2090,7 +2155,10 @@ function TaskEditor({
     : codeHolder != null && codeHolder !== task.id ? `Already ${plan.tasks.find((x) => x.id === codeHolder)?.name}.` : null;
   const days = Number(duration);
   const whoParsed = parseResources(who);
-  const valid = name.trim() && Number.isInteger(days) && days >= 0 && parsed.ok && progressOk && !codeError && whoParsed.ok;
+  const best = bestText.trim() === '' ? null : Number(bestText);
+  const worst = worstText.trim() === '' ? null : Number(worstText);
+  const estimateProblem = summary || !Number.isInteger(days) ? null : estimateError(days, best, worst);
+  const valid = name.trim() && Number.isInteger(days) && days >= 0 && parsed.ok && progressOk && !codeError && whoParsed.ok && !estimateProblem;
 
   /** Only what changed goes to the server, so undo and the audit log stay precise. */
   const fields = useMemo<TaskInput>(() => {
@@ -2108,8 +2176,12 @@ function TaskEditor({
     if ((actualEnd || null) !== task.actual_end && status === 'done') f.actual_end = actualEnd || null;
     if (whoParsed.ok && whoParsed.names.join(', ') !== formatResources(task.resource_ids, people)) f.resources = whoParsed.names.join(', ');
     if ((note.trim() || null) !== task.note) f.note = note.trim() || null;
+    if (!summary && !estimateProblem) {
+      if (best !== (task.duration_low ?? null)) f.duration_low = best;
+      if (worst !== (task.duration_high ?? null)) f.duration_high = worst;
+    }
     return f;
-  }, [name, envId, days, after, code, codeError, notBefore, status, actualStart, actualEnd, who, note, parentId, progressN, progressOk, task, plan, codeOf, people]);
+  }, [name, envId, days, after, code, codeError, notBefore, status, actualStart, actualEnd, who, note, parentId, progressN, progressOk, task, plan, codeOf, people, best, worst, estimateProblem, summary]);
 
   const dirty = Object.keys(fields).length > 0;
   const key = JSON.stringify(fields);
@@ -2205,6 +2277,24 @@ function TaskEditor({
             Working days
             <input inputMode="numeric" value={duration} onChange={(e) => setDuration(e.target.value)} aria-invalid={!Number.isInteger(days) || days < 0 || undefined} />
             <span className="field-hint">0 makes it a milestone.</span>
+          </label>
+        </div>
+        )}
+        {!summary && (
+        <div className="pair">
+          <label className="stack">
+            Best case
+            <input inputMode="numeric" value={bestText} onChange={(e) => setBestText(e.target.value)}
+              placeholder={Number.isInteger(days) ? String(Math.round(rangeOf({ duration: days }).low)) : ''}
+              aria-invalid={(estimateProblem?.startsWith('Best') ?? false) || undefined} />
+            <span className="field-hint">{estimateProblem?.startsWith('Best') ? estimateProblem : 'Working days if it goes well. Only the forecast reads it.'}</span>
+          </label>
+          <label className="stack">
+            Worst case
+            <input inputMode="numeric" value={worstText} onChange={(e) => setWorstText(e.target.value)}
+              placeholder={Number.isInteger(days) ? String(Math.round(rangeOf({ duration: days }).high)) : ''}
+              aria-invalid={(estimateProblem?.startsWith('Worst') ?? false) || undefined} />
+            <span className="field-hint">{estimateProblem?.startsWith('Worst') ? estimateProblem : 'Working days if it goes badly. Blank uses the grey default.'}</span>
           </label>
         </div>
         )}

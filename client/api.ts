@@ -62,7 +62,7 @@ export type SavedLayout = {
  */
 export type TaskInput = Partial<Pick<Task,
   'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'note' | 'actual_start' | 'actual_end'
-  | 'parent_id' | 'progress' | 'code'>>
+  | 'parent_id' | 'progress' | 'code' | 'duration_low' | 'duration_high'>>
   & { predecessors?: { id: number; lag: number; type?: LinkType }[]; resources?: string };
 
 export type TaskChange =

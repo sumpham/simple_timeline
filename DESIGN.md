@@ -627,6 +627,13 @@ edge: ink, muted, rule. A clash the assistant points at stays red on the board a
 the warning says so in words. **Show** marks the rows it names for a moment in `--focus`, the
 colour that already means "here".
 
+**The forecast** heads the drawer: the chance of meeting the target in large type (size is its
+only emphasis), then the planned, P50 and P80 finishes, the tasks most often critical, and the
+ones whose length moves the finish most. It says how many critical tasks still run on the default
+range, and Show takes you to them. Best and Worst are table columns, off by default, whose
+blank cells show the default range in grey: the forecast is never a black box about what it
+assumed.
+
 **Set aside, not delete.** A warning someone has looked at is set aside like an accepted
 double-booking: still listed, greyed, no longer counted, and back when what it concerns changes.
 

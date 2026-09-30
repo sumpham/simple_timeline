@@ -189,8 +189,13 @@ allocation.
 `reqs/smart_assistant.md` has the design and the phased to-do list (§10); tick items there as
 they land. Built: Phase 0 (`forwardPass`/`indexNetwork` in shared/schedule.ts, the seeded
 random source, the settings) and Phase 1 (warnings: `planFacts` in `facts.ts`, the P/S/H rules
-in `rules.ts`, `server/assistant.ts`, the drawer in `client/components/Assistant.tsx`). The rules
-that break things when forgotten:
+in `rules.ts`, `server/assistant.ts`, the drawer in `client/components/Assistant.tsx`) and
+Phase 2 (Best/Worst estimates in `shared/estimates.ts`, the Monte Carlo in `forecast.ts`, P1 on
+its P80). The rules that break things when forgotten:
+
+**The forecast runs the scheduler's forward pass on sampled durations**, over a copy of the
+index network floored at the status date. It never reimplements float or link maths, and a zero-
+width range must give the CPM finish (a test pins it).
 
 **Rules read `PlanFacts`, never rows.** A new rule adds what it needs to `planFacts` and stays
 a pure function; its words are templates filled with engine numbers. The Phase 5 LLM digest is
@@ -228,8 +233,11 @@ Settings are not plan state and never replan. The LLM endpoint and key are never
 come from the environment (`ASSISTANT_LLM_URL`, `ASSISTANT_LLM_KEY`), and the default provider
 `none` sends nothing anywhere.
 
-**Best/Worst estimates (Phase 2) are not plan state**, like people: an edit touching only them
-skips `replan`, and `scheduleProject` never reads them.
+**Best/Worst estimates are not plan state**, like people: `duration_low`/`duration_high` are
+not in `TaskFields`; the task routes take them as extras (`estimateFrom`, `setEstimate`), and an
+edit touching only them skips `replan`, so it cannot move a date or un-accept a double-booking.
+`scheduleProject` never reads them. `estimateError` is the one rule, used by the routes, the
+import, the table and the editor.
 
 ## Drag-to-edit
 

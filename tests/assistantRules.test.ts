@@ -17,6 +17,7 @@ function task(id: number, duration: number, partial: Partial<Task> = {}): Task {
 const dep = (predecessor_id: number, successor_id: number, lag = 0): TaskDependency => ({ predecessor_id, successor_id, lag });
 
 type Opts = {
+  runs?: number;
   status?: ISODate;
   target?: ISODate | null;
   priority?: Priority;
@@ -37,6 +38,7 @@ function facts(tasks: Task[], deps: TaskDependency[] = [], o: Opts = {}): PlanFa
     conflicts: o.conflicts ?? [],
     statusDate: o.status ?? MON,
     nearCriticalDays: 2,
+    forecastRuns: o.runs,
   });
 }
 
@@ -74,6 +76,17 @@ describe('progress rules', () => {
     expect(late[0].task_ids).toEqual([1, 2]);
     expect(of(run(facts(tasks, [dep(1, 2)], { target: '2026-03-13' })), 'P1')).toEqual([]);
     expect(of(run(facts(tasks, [dep(1, 2)])), 'P1')).toEqual([]);
+  });
+
+  it('P1: on the forecast, a plan on time by its dates can still be at risk', () => {
+    // Finishes Friday 13 March, the target; a long worst case makes that unlikely.
+    const tasks = [task(1, 5, { duration_high: 15 }), task(2, 5)];
+    const risky = of(run(facts(tasks, [dep(1, 2)], { target: '2026-03-13', runs: 400 })), 'P1');
+    expect(risky).toHaveLength(1);
+    expect(risky[0].text).toContain('before the target');
+    expect(risky[0].evidence.some((e) => e.startsWith('Chance on time'))).toBe(true);
+    const safe = [task(1, 5, { duration_low: 5, duration_high: 5 }), task(2, 5, { duration_low: 5, duration_high: 5 })];
+    expect(of(run(facts(safe, [dep(1, 2)], { target: '2026-03-13', runs: 400 })), 'P1')).toEqual([]);
   });
 
   it('P1: a high-priority project scores the same delay higher', () => {

@@ -114,7 +114,11 @@ CREATE TABLE IF NOT EXISTS task (
   -- The task's ID as people write it, in After and in files: a whole number,
   -- unique in its project (index in server/db.ts), typed or given the next free
   -- one. Links are stored by `id`, so renumbering never breaks one.
-  code           INTEGER CHECK (code IS NULL OR code > 0)
+  code           INTEGER CHECK (code IS NULL OR code > 0),
+  -- Best and worst case in working days (shared/estimates.ts): read only by the
+  -- assistant's forecast, never by scheduling, so an edit to them never replans.
+  duration_low   INTEGER CHECK (duration_low IS NULL OR duration_low >= 0),
+  duration_high  INTEGER CHECK (duration_high IS NULL OR duration_high >= 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_project ON task(project_id, sort_order);

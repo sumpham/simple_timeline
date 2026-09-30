@@ -625,27 +625,48 @@ word (High ≥ 15, Medium ≥ 8, Low) and the weight of the card's edge, never a
 clears the find box and "critical only", opens collapsed summaries, and scrolls to the rows,
 marking them for a moment in the focus colour. P1 is on the deterministic finish until Phase 2.
 
-### Phase 2: three-point estimates and the forecast
+### Phase 2: three-point estimates and the forecast (built 2026-09-30)
 
-- [ ] Add columns `task.duration_low` and `task.duration_high` with a migration in
+- [x] Add columns `task.duration_low` and `task.duration_high` with a migration in
       `server/db.ts`. Check `low ≤ duration ≤ high`, and refuse them on a summary.
-- [ ] Add a task-route path for Best/Worst-only edits that **skips `replan`**, like
+- [x] Add a task-route path for Best/Worst-only edits that **skips `replan`**, like
       `assign`. Test that it moves no date and makes no auto booking.
-- [ ] Add Best/Worst columns in the task table (hidden by default, toggled like the other
+- [x] Add Best/Worst columns in the task table (hidden by default, toggled like the other
       optional columns), editor fields, and CSV and MSPDI read/write in `client/planIO.ts`.
-- [ ] `shared/assistant/forecast.ts`:
+- [x] `shared/assistant/forecast.ts`:
   - Monte Carlo over the forward pass: triangular or PERT sampling, default ranges by state,
     remaining share for in-progress tasks.
   - Output: P50, P80, on-time %, criticality index, sensitivity.
-- [ ] Keep it bounded: a fixed number of runs, the seed from the plan hash, and a server-side
+- [x] Keep it bounded: a fixed number of runs, the seed from the plan hash, and a server-side
       cache by plan hash.
-- [ ] Rule P1 switches to P80. The panel gets a forecast card with P50/P80, on-time %, "N
+- [x] Rule P1 switches to P80. The panel gets a forecast card with P50/P80, on-time %, "N
       critical tasks use default ranges", and the top tasks by criticality.
-- [ ] Tests:
+- [x] Tests:
   - With the same plan and seed, the forecast is identical.
   - With zero-width ranges, P50 = P80 = the CPM finish.
   - Widening a critical task's Worst moves P80 later.
   - A 300-task plan runs within its time budget.
+
+Built as: `shared/estimates.ts` (the rule and the range), `shared/assistant/forecast.ts`, the
+**Best** and **Worst** columns (Show ▸ Best and Worst columns) and editor fields, CSV `Best`/`Worst`
+(also read as optimistic/pessimistic), and MS Project's Duration1/Duration3 extended attributes.
+Where it differs from the plan:
+
+- **No server cache.** At 1,000 runs a forecast takes about 5 ms at 50 tasks, 9 ms at 300 and
+  30 ms at 1,000 (measured), so it runs on every report. The seed comes from the plan, so the
+  answer is still stable.
+- **The status date is the data date.** Unfinished work is not forecast before it: an unstarted
+  task starts no earlier than the status date, and a started one runs its remaining work from it.
+  So the card shows **From today** beside **Planned** when late work has pushed the finish.
+- **Triangular** sampling, not PERT-beta. It is simpler and its tail is heavier, which errs
+  towards caution.
+- **Criticality** traces each run's driving path back from the finish. That is the set of tasks
+  that actually set the finish in that run, without a backward pass per run.
+- A duration changed after an estimate was typed keeps its estimate; the range stretches to
+  hold the new duration (`rangeOf`). A later edit to Best or Worst is checked against it.
+- The MS Project field IDs follow its PERT analysis fields (Duration1 optimistic, Duration3
+  pessimistic). They round-trip through this app; they are not yet checked against a file
+  saved by MS Project itself.
 
 ### Phase 3: safe suggestions
 

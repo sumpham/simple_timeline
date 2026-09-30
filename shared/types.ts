@@ -188,6 +188,12 @@ export type Task = {
   progress?: number | null;
   /** The TaskID people type in After: unique in the project, never the row number. */
   code?: number | null;
+  /**
+   * Best and worst case, in working days (shared/estimates.ts). Read only by the
+   * assistant's forecast; scheduling never reads them, so editing them moves nothing.
+   */
+  duration_low?: number | null;
+  duration_high?: number | null;
 };
 
 /**

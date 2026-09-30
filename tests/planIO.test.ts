@@ -45,7 +45,7 @@ describe('CSV', () => {
     const coded = tasks.map((t, i) => ({ ...t, code: [40, 7, 12, 3][i] }));
     const csv = toCsv({ ...plan, tasks: coded });
     expect(csv.split('\r\n')[0].startsWith('ID,')).toBe(true);
-    expect(csv.split('\r\n')[3].startsWith('12,1.2,Test,40,,2,7SS+1,')).toBe(true);
+    expect(csv.split('\r\n')[3].startsWith('12,1.2,Test,40,,2,,,7SS+1,')).toBe(true);
     const back = fromCsv(csv);
     if (!back.ok) throw new Error(back.error);
     expect(back.rows.map((r) => r.code)).toEqual([40, 7, 12, 3]);
@@ -66,6 +66,36 @@ describe('CSV', () => {
     expect(fromCsv('Days\n3\n').ok).toBe(false);
     const bad = fromCsv('Name,Days\nA,x\n');
     expect(bad.ok ? '' : bad.error).toMatch(/Row 1/);
+  });
+});
+
+describe('best and worst case', () => {
+  const ranged = tasks.map((t) => (t.id === 11 ? { ...t, duration_low: 2, duration_high: 6 } : t));
+
+  it('round-trip through CSV, and a summary writes none', () => {
+    const csv = toCsv({ ...plan, tasks: ranged });
+    expect(csv.split('\r\n')[0]).toContain('Days,Best,Worst,After');
+    const back = fromCsv(csv);
+    if (!back.ok) throw new Error(back.error);
+    expect(back.rows.map((r) => [r.duration_low ?? null, r.duration_high ?? null])).toEqual([[null, null], [2, 6], [null, null], [null, null]]);
+  });
+
+  it('read optimistic and pessimistic columns, and refuse a range that misses the duration', () => {
+    const r = fromCsv('Name,Days,Optimistic,Pessimistic\nA,5,4,9\n');
+    if (!r.ok) throw new Error(r.error);
+    expect([r.rows[0].duration_low, r.rows[0].duration_high]).toEqual([4, 9]);
+    const bad = fromCsv('Name,Days,Best\nA,5,7\n');
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error).toMatch(/Best case/);
+  });
+
+  it('round-trip through MS Project XML as Duration1 and Duration3', () => {
+    const xml = toMspdi({ ...plan, tasks: ranged, projectName: 'P', projectStart: '2026-03-02' });
+    expect(xml).toContain('<Alias>Best</Alias>');
+    const back = fromMspdi(xml);
+    if (!back.ok) throw new Error(back.error);
+    expect(back.rows.map((r) => [r.duration_low ?? null, r.duration_high ?? null])).toEqual([[null, null], [2, 6], [null, null], [null, null]]);
+    expect(toMspdi({ ...plan, projectName: 'P', projectStart: null })).not.toContain('ExtendedAttribute');
   });
 });
 

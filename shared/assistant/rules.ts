@@ -1,5 +1,7 @@
 import { addDays, workingDays } from '../dates.ts';
 import { PRIORITY_RANK, type ISODate } from '../types.ts';
+import { lateBy } from '../schedule.ts';
+import type { Forecast } from './forecast.ts';
 import { workingDaysAfter, type PlanFacts, type TaskFacts } from './facts.ts';
 
 /**
@@ -41,8 +43,8 @@ export type Finding = {
 export type AssistantReport = {
   status_date: ISODate;
   findings: Finding[];
-  /** The Monte Carlo forecast; Phase 2. */
-  forecast: null;
+  /** The Monte Carlo forecast; null when the plan has no unfinished work to forecast. */
+  forecast: Forecast | null;
   /** Better plans; Phase 3. */
   suggestions: [];
 };
@@ -100,18 +102,34 @@ function finding(
 const open = (t: TaskFacts) => !t.summary && t.status !== 'done';
 const ids = (ts: readonly TaskFacts[]) => ts.map((t) => t.id);
 
-/** P1: the plan finishes after its target. (Phase 2 moves this onto the forecast's P80.) */
+/**
+ * P1: the target is at risk. On the forecast's P80 when there is one (the
+ * finish there is an 80% chance of meeting), else on the planned finish.
+ */
 function targetAtRisk(f: PlanFacts): Finding[] {
-  if (!f.late_by || !f.finish || !f.project.target_date) return [];
+  const target = f.project.target_date;
+  if (!target || !f.finish) return [];
+  const fc = f.forecast;
+  const p80Late = fc ? lateBy(fc.p80, target, f.holidays) : 0;
+  const late = Math.max(f.late_by, p80Late);
+  if (!late) return [];
   const path = f.critical_path.map((id) => f.byId.get(id)!).filter(open);
-  return [finding('P1', [f.late_by], {
+  const onTime = fc?.on_time ?? null;
+  const text = f.late_by > 0
+    ? `The plan finishes on ${day(f.finish)}, ${wd(f.late_by)} after the target of ${day(target)}.`
+    : `The plan finishes on ${day(f.finish)}, before the target of ${day(target)}, but it has only a ${pct(onTime ?? 0)} chance of making it: at 80% confidence it finishes on ${day(fc!.p80)}.`;
+  return [finding('P1', [late], {
     title: 'Target at risk',
-    text: `The plan finishes on ${day(f.finish)}, ${wd(f.late_by)} after the target of ${day(f.project.target_date)}.`
-      + (path.length ? ` The critical path runs through ${names(path)}.` : ''),
-    evidence: [`Finish ${day(f.finish)}`, `Target ${day(f.project.target_date)}`, `Late by ${wd(f.late_by)}`],
+    text: text + (path.length ? ` The critical path runs through ${names(path)}.` : ''),
+    evidence: [
+      `Planned finish ${day(f.finish)}`,
+      ...(fc ? [`P50 ${day(fc.p50)}`, `P80 ${day(fc.p80)}`] : []),
+      `Target ${day(target)}`,
+      ...(onTime != null ? [`Chance on time ${pct(onTime)}`] : []),
+    ],
     task_ids: ids(path),
-    likelihood: 5,
-    impact: impactOf(f.late_by, f),
+    likelihood: onTime == null ? 5 : onTime < 0.2 ? 5 : onTime < 0.5 ? 4 : 3,
+    impact: impactOf(late, f),
   })];
 }
 
