@@ -2243,12 +2243,38 @@ kbd {
 .status-cell { display: flex; align-items: center; gap: 2px; }
 .status-glyph { width: 14px; text-align: center; font-size: 12px; }
 .status-cell select { padding-left: 4px; }
-.overdue {
-  display: block;
-  font-size: 11.5px;
-  font-weight: 600;
+.status-row { display: flex; align-items: center; gap: 4px; }
+.status-row .status-cell { flex: 1 1 auto; min-width: 0; }
+/* Should have started: a mark in ink, never the alarm red; the words show on hover, focus or tap. */
+.overdue-flag {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
   color: var(--ink);
-  margin: -8px 0 4px 20px;
+  cursor: pointer;
+}
+.overdue-flag svg { width: 15px; height: 15px; }
+.overdue-flag-shape { fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
+.overdue-flag-mark { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.overdue-flag:hover, .overdue-flag[aria-expanded="true"] { border-color: var(--rule); }
+.overdue-tip {
+  position: fixed;
+  z-index: 60;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .task-add td { border-bottom: 0; }
@@ -2707,7 +2733,7 @@ kbd {
   @page { size: landscape; margin: 10mm; }
   body { background: #fff; }
   .topbar, .m-topbar, .plan-back, .plan-title-row .segmented, .gantt-toolbar, .table-hint, .holds,
-  .impact-banner, .error-bar, .task-add, .add-sub, .split-handle, .rail, .drawer, .gantt-link-handle { display: none !important; }
+  .impact-banner, .error-bar, .task-add, .add-sub, .overdue-tip, .split-handle, .rail, .drawer, .gantt-link-handle { display: none !important; }
   .plan, .plan-body, .task-table-wrap, .task-split { overflow: visible !important; height: auto !important; display: block; }
   .task-split { display: flex !important; }
   .task-split-table { position: static; box-shadow: none; }

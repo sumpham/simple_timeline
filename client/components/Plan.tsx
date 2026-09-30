@@ -1244,19 +1244,21 @@ function TaskTable({
                       {STATUS_LABEL[t.status]}{progress.get(t.id) ? `, ${progress.get(t.id)}%` : ''}
                     </span>
                   ) : (
-                    <label className="status-cell">
-                      <span className="status-glyph" aria-hidden="true">{STATUS_GLYPH[t.status]}</span>
-                      <select
-                        data-field="status"
-                        aria-label="Status"
-                        value={t.status}
-                        onChange={(e) => void onUpdate(t, { status: e.target.value as TaskStatus })}
-                      >
-                        {STATUSES.map((x) => <option key={x} value={x}>{STATUS_LABEL[x]}</option>)}
-                      </select>
-                    </label>
+                    <div className="status-row">
+                      <label className="status-cell">
+                        <span className="status-glyph" aria-hidden="true">{STATUS_GLYPH[t.status]}</span>
+                        <select
+                          data-field="status"
+                          aria-label="Status"
+                          value={t.status}
+                          onChange={(e) => void onUpdate(t, { status: e.target.value as TaskStatus })}
+                        >
+                          {STATUSES.map((x) => <option key={x} value={x}>{STATUS_LABEL[x]}</option>)}
+                        </select>
+                      </label>
+                      {overdue && <OverdueFlag text={`Should have started on ${formatDate(s!.start)}`} />}
+                    </div>
                   )}
-                  {overdue && <span className="overdue" title={`Scheduled to start ${formatDate(s!.start)}`}>should have started</span>}
                 </td>
               </tr>
             );
@@ -1388,6 +1390,61 @@ function sameRows(a: ReadonlyMap<number, RowBox>, b: ReadonlyMap<number, RowBox>
  * An input that commits on Enter or blur and reverts on Escape. `onCommit`
  * returning false keeps the typed value for fixing; undefined means nothing changed.
  */
+/**
+ * A task that should have started: a warning mark in ink (red is spent on
+ * double-bookings) whose words show on hover, on focus, or on a tap or click.
+ * The tip is fixed to the viewport, so a clipped table cell cannot cut it off.
+ */
+function OverdueFlag({ text }: { text: string }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const tipId = useId();
+  const [pinned, setPinned] = useState(false);
+  const [hover, setHover] = useState(false);
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const open = pinned || hover;
+
+  useLayoutEffect(() => {
+    if (!open || !ref.current) { setAt(null); return; }
+    const r = ref.current.getBoundingClientRect();
+    setAt({ x: Math.min(r.left + r.width / 2, window.innerWidth - 110), y: r.bottom + 6 });
+  }, [open]);
+  useEffect(() => {
+    if (!pinned) return;
+    const away = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setPinned(false); };
+    const scroll = () => setPinned(false);
+    window.addEventListener('pointerdown', away, true);
+    window.addEventListener('scroll', scroll, true);
+    return () => { window.removeEventListener('pointerdown', away, true); window.removeEventListener('scroll', scroll, true); };
+  }, [pinned]);
+
+  return (
+    <>
+      <button
+        ref={ref}
+        type="button"
+        className="overdue-flag"
+        aria-label={text}
+        aria-describedby={open ? tipId : undefined}
+        aria-expanded={pinned}
+        onClick={() => setPinned((p) => !p)}
+        onPointerEnter={(e) => { if (e.pointerType === 'mouse') setHover(true); }}
+        onPointerLeave={() => setHover(false)}
+        onFocus={() => setHover(true)}
+        onBlur={() => { setHover(false); setPinned(false); }}
+        onKeyDown={(e) => { if (e.key === 'Escape' && open) { e.stopPropagation(); setPinned(false); setHover(false); } }}
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path className="overdue-flag-shape" d="M8 1.8 15 14.2H1z" />
+          <path className="overdue-flag-mark" d="M8 6v4M8 11.9v.2" />
+        </svg>
+      </button>
+      {open && at && (
+        <span id={tipId} role="tooltip" className="overdue-tip" style={{ left: at.x, top: at.y }}>{text}</span>
+      )}
+    </>
+  );
+}
+
 function CellInput({
   field, label, value, placeholder, inputMode, onCommit, onEnter,
 }: {

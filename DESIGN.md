@@ -477,8 +477,9 @@ the actual start once work has begun) and keeps the length; a typed finish sets 
 working days from the start, weekends and holidays left out (a finished task records it as
 its actual finish). When the schedule cannot land on the typed date, a note says why: not a
 working day, or a predecessor finishes later. Alt+↑/↓ reorders.
-Critical rows carry a heavy ink rule. A task that should have started says so. On a phone,
-rows become stacked cards.
+Critical rows carry a heavy ink rule. A task that should have started carries a warning mark in
+ink beside its status (never red; the alarm is spent), which names the date on hover, focus or
+tap. On a phone, rows become stacked cards.
 
 **Gantt beside the table** (`client/components/Gantt.tsx`, pure helpers in `client/gantt.ts`).
 The table is pinned on the left and the chart scrolls sideways under it; both share one
