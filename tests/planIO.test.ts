@@ -41,6 +41,17 @@ describe('CSV', () => {
     expect(back.rows[3].predecessors).toEqual([{ row: 1, lag: 0, type: 'FS' }]);
   });
 
+  it('writes TaskIDs, and After in them, and reads them back', () => {
+    const coded = tasks.map((t, i) => ({ ...t, code: [40, 7, 12, 3][i] }));
+    const csv = toCsv({ ...plan, tasks: coded });
+    expect(csv.split('\r\n')[0].startsWith('ID,')).toBe(true);
+    expect(csv.split('\r\n')[3].startsWith('12,1.2,Test,40,,2,7SS+1,')).toBe(true);
+    const back = fromCsv(csv);
+    if (!back.ok) throw new Error(back.error);
+    expect(back.rows.map((r) => r.code)).toEqual([40, 7, 12, 3]);
+    expect(back.rows[2].predecessors).toEqual([{ row: 2, lag: 1, type: 'SS' }]);
+  });
+
   it('takes a plain spreadsheet with its own headers and a WBS column', () => {
     const r = fromCsv('WBS,Name,Duration,Predecessors,Status\n1,Phase,,,\n1.1,A,3d,,Done\n1.2,B,2,2,in progress\n');
     if (!r.ok) throw new Error(r.error);

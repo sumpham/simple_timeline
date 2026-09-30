@@ -465,7 +465,12 @@ the computed finish and the critical-path count. **Books** along the foot lists 
 plan makes or stretches, and a Release button where one is due. A plan link names a project,
 so it switches the board to that project's team.
 
-**Task table.** Edited in place. After takes row numbers with a lag (`2`, `2+3`, `3-1`). Enter
+**Task table.** Edited in place. Each task has an ID (`task.code`), a whole number unique in
+its project: typed, or offered as the task count plus one (the next free number if that is
+taken). After takes IDs with a lag (`2`, `2+3`, `3-1`), and offers matching tasks as you type a
+number or part of a name. IDs are not row numbers, so moving a row never rewrites a link; links
+are stored by task id either way. Drag a row number to move the row (and the tasks under it)
+above another; it joins that row's level, and a click still opens the task. Enter
 moves on, and Enter in the add row keeps the caret there for the next task. Start and Finish
 can be typed over, but dates stay scheduled: a typed start becomes "start no earlier than" (or
 the actual start once work has begun) and keeps the length; a typed finish sets Days to the
@@ -536,7 +541,7 @@ right. The network still draws every link one way.
 status (done 100, in progress by working days elapsed, capped at 95); a summary weighs its
 tasks by length. Neither moves a date.
 
-**Files.** Export writes CSV (the table's own columns and row numbers) or MS Project XML (MSPDI:
+**Files.** Export writes CSV (the table's own columns and IDs) or MS Project XML (MSPDI:
 outline, durations, links with type and lag, progress, "start no earlier than"). Import reads
 either, parsed in the browser (`client/planIO.ts`), and appends the rows in one transaction and
 one replan (`POST /api/projects/:id/import`), with the same outline and link rules as a hand

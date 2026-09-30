@@ -172,6 +172,8 @@ export type Task = {
   parent_id?: number | null;
   /** Percent complete as someone typed it; null means work it out from status. */
   progress?: number | null;
+  /** The TaskID people type in After: unique in the project, never the row number. */
+  code?: number | null;
 };
 
 /**

@@ -91,8 +91,8 @@ routes where a link was already task-to-task).
 
 ## Invariants
 
-- Rows are numbered in outline order (`inOutlineOrder`), everywhere: table, After column,
-  CSV, MSPDI. `sort_order` only orders siblings.
+- Rows are numbered in outline order (`inOutlineOrder`), everywhere: table, MSPDI.
+  `sort_order` only orders siblings. After and CSV use TaskIDs (`task.code`, `shared/taskCode.ts`).
 - Every write that can move dates goes through `commit` → `replan` in one transaction,
   including outline moves and imports.
 - `checkOutline` runs after every change: parent in the project, no loops, depth ≤ 8, no link

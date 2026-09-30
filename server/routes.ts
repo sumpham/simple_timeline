@@ -7,6 +7,7 @@ import { effectiveKind } from '../shared/bookings.ts';
 import { holidaySet, listTasks } from './queries.ts';
 import { applyChange, checkOutline, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
 import { lateBy } from '../shared/schedule.ts';
+import { TASK_CODE_MAX } from '../shared/taskCode.ts';
 import {
   LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
   type Task,
@@ -613,6 +614,11 @@ function taskFields(body: Record<string, unknown> | undefined, teamId: number): 
       f.progress = n;
     }
   }
+  if (body.code !== undefined) {
+    const n = intParam(body.code);
+    if (n == null || n < 1 || n > TASK_CODE_MAX) throw bad(`An ID is a whole number, 1 to ${TASK_CODE_MAX}`);
+    f.code = n;
+  }
   if (body.predecessors !== undefined) {
     if (!Array.isArray(body.predecessors)) throw bad('predecessors must be a list');
     f.predecessors = body.predecessors.map((p) => {
@@ -778,8 +784,11 @@ router.post('/projects/:id/import', handle((req, res) => {
     });
     const progress = r.progress == null || r.progress === '' ? null : intParam(r.progress);
     if (progress !== null && (progress == null || progress < 0 || progress > 100)) throw bad(`${at}: progress is 0 to 100`);
+    // The file's own ID is kept when it is free; otherwise the task gets the next one.
+    const code = intParam(r.code);
     return {
       name, duration, environment_id, parent, predecessors, progress,
+      code: code != null && code >= 1 && code <= TASK_CODE_MAX ? code : null,
       status: r.status ? oneOf(r.status, TASK_STATUSES, 'status') : 'todo' as const,
       not_before: optionalDate(r.not_before, 'not_before'),
       assignee: typeof r.assignee === 'string' && r.assignee.trim() ? r.assignee.trim() : null,
@@ -789,13 +798,25 @@ router.post('/projects/:id/import', handle((req, res) => {
 
   transaction(() => {
     const base = get<{ n: number }>('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM task WHERE project_id = ?', projectId)!.n;
+    const codes = all<{ code: number | null }>('SELECT code FROM task WHERE project_id = ?', projectId);
+    const used = new Set(codes.map((c) => c.code));
+    const given = parsed.map((t) => (t.code != null && !used.has(t.code) ? t.code : null));
+    // Keep each free file ID once; the rest are numbered after everything taken.
+    const claimed = new Set<number>();
+    given.forEach((c, i) => { if (c != null && claimed.has(c)) given[i] = null; else if (c != null) claimed.add(c); });
+    let next = codes.length + 1;
     const ids: number[] = [];
     parsed.forEach((t, i) => {
+      let code = given[i];
+      if (code == null) {
+        while (used.has(next) || claimed.has(next)) next++;
+        code = next++;
+      }
       ids.push(Number(run(
-        `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, assignee, note, sort_order, parent_id, progress)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, assignee, note, sort_order, parent_id, progress, code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         projectId, t.environment_id, t.name, t.duration, t.status, t.not_before, t.assignee, t.note, base + i,
-        t.parent != null ? ids[t.parent - 1] : null, t.progress,
+        t.parent != null ? ids[t.parent - 1] : null, t.progress, code,
       ).lastInsertRowid));
     });
     parsed.forEach((t, i) => {

@@ -151,6 +151,37 @@ export function moveAmongSiblings(tasks: readonly Node[], id: number, delta: -1 
   return renumber(siblings, me.parent_id);
 }
 
+/**
+ * A dragged row dropped just above `beforeId` (null: below the last row). The task
+ * and everything under it join `beforeId`'s level, just before it, so dropping on
+ * a summary's first child puts it under that summary. Null when nothing would
+ * move, when the drop lands inside the task's own lines, or when it goes too deep.
+ */
+export function moveBefore(tasks: readonly Node[], id: number, beforeId: number | null): OutlinePlacement[] | null {
+  const rows = outline(tasks);
+  const me = rows.find((r) => r.id === id);
+  if (!me || beforeId === id) return null;
+  const under = descendants(tasks, id);
+  if (beforeId != null && under.has(beforeId)) return null;
+  const target = beforeId != null ? rows.find((r) => r.id === beforeId) : null;
+  if (beforeId != null && !target) return null;
+  const parent = target ? target.parent_id : null;
+
+  const depth = target ? target.depth : 0;
+  const deepest = Math.max(0, ...rows.filter((r) => under.has(r.id)).map((r) => r.depth - me.depth));
+  if (depth + deepest >= MAX_DEPTH) return null;
+
+  const siblings = rows.filter((r) => r.parent_id === parent && r.id !== id).map((r) => r.id);
+  siblings.splice(target ? siblings.indexOf(target.id) : siblings.length, 0, id);
+  if (parent === me.parent_id) {
+    const was = rows.filter((r) => r.parent_id === parent).map((r) => r.id);
+    if (was.every((x, i) => x === siblings[i])) return null;
+    return renumber(siblings, parent);
+  }
+  const left = rows.filter((r) => r.parent_id === me.parent_id && r.id !== id).map((r) => r.id);
+  return [...renumber(siblings, parent), ...renumber(left, me.parent_id)];
+}
+
 function renumber(ids: number[], parent: number | null): OutlinePlacement[] {
   return ids.map((id, i) => ({ id, parent_id: parent, sort_order: i }));
 }

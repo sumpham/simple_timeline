@@ -11,7 +11,7 @@ Scroll the chart sideways; the table stays put.
 | **Fit** | Picks the widest step that shows the whole plan and scrolls to its start |
 | **Today** | Scrolls to this week (the chart also opens there) |
 | **Show ▾** | Labels, Float, Baseline, Bookings, Environments. Remembered in this browser |
-| **Find a task or person** | Filters rows by name, assignee or row number. A match keeps its summaries so the outline still reads |
+| **Find a task or person** | Filters rows by name, assignee or ID. A match keeps its summaries so the outline still reads |
 | **Critical only** | Shows only critical tasks |
 | **Save / Update baseline** | Keeps every task's current dates to compare against later |
 | **Clear baseline** | Removes it (click twice: it arms first) |
@@ -98,17 +98,29 @@ link is removed, because a task cannot wait for its own summary.
 
 Deleting a summary keeps its tasks: they move up a level into its place.
 
-## The After column
+## IDs and the After column
+
+Every task has an **ID**, shown next to the row number and editable in place or in the task
+editor. A new task is offered the task count plus one (or the next free number); two tasks of a
+plan cannot share one. After is written in IDs, not rows, so dragging a row somewhere else
+never changes what a link says. Typing a number or part of a task's name in After lists the
+matching tasks: ↑/↓ choose, Enter takes one, Escape closes the list.
 
 | Write | Means |
 |---|---|
-| `2` | Start after row 2 finishes |
-| `2+3` | Start three working days after row 2 finishes |
-| `2-1` | Start one working day before row 2 finishes |
-| `2SS` | Start when row 2 starts |
-| `2SS+1` | Start a working day after row 2 starts |
-| `2FF` | Finish no earlier than row 2 finishes |
+| `2` | Start after task 2 finishes |
+| `2+3` | Start three working days after task 2 finishes |
+| `2-1` | Start one working day before task 2 finishes |
+| `2SS` | Start when task 2 starts |
+| `2SS+1` | Start a working day after task 2 starts |
+| `2FF` | Finish no earlier than task 2 finishes |
 | `2, 4SS` | Both |
+
+## Moving rows
+
+Drag a row number up or down: a line shows where it will land, and it goes above that row, at
+that row's level, taking any tasks under it along. Dropping on a summary's first task puts it
+under that summary. Escape cancels. Alt+↑/↓ does the same from the keyboard.
 
 ## Progress
 
@@ -118,7 +130,7 @@ weighs its tasks by length. Progress never moves dates.
 
 ## Files
 
-**Export CSV** writes the table's own columns, including row numbers and After, so it
+**Export CSV** writes the table's own columns, including IDs and After, so it
 re-imports as it was. **Export MS Project XML** opens in MS Project with the outline, lengths,
 link types and lags, progress and "start no earlier than".
 

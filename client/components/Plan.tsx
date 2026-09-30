@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { api, type BoardData, type PlanData, type SavedLayout, type TaskChange, type TaskInput } from '../api.ts';
 import type {
   BookingView, Environment, ISODate, LinkType, PlanImpact, Project, Task, TaskDependency, TaskSchedule, TaskStatus,
 } from '../../shared/types.ts';
 import { formatDate, formatRange } from '../layout.ts';
 import { addDays, isWorkingDay, isValidISODate, maxDate, workingDays } from '../../shared/dates.ts';
-import { formatPredecessors, parsePredecessors } from '../predecessors.ts';
+import { afterSuggestions, applySuggestion, formatPredecessors, parseAfter } from '../predecessors.ts';
+import { codesById, nextTaskCode, TASK_CODE_MAX, taskIdsByCode } from '../../shared/taskCode.ts';
 import { ENV_COLOR } from './Board.tsx';
 import { DangerButton, Modal } from './Dialogs.tsx';
 import { NetworkDiagram } from './NetworkDiagram.tsx';
@@ -14,7 +15,7 @@ import { Portfolio } from './Portfolio.tsx';
 import { edgeKey, type Route } from '../network.ts';
 import type { Arrangement } from '../smartLayout.ts';
 import {
-  descendants, indent, inOutlineOrder, leavesOf, moveAmongSiblings, outdent, outline, type OutlinePlacement, type OutlineRow,
+  descendants, indent, inOutlineOrder, leavesOf, moveAmongSiblings, moveBefore, outdent, outline, type OutlinePlacement, type OutlineRow,
 } from '../../shared/wbs.ts';
 import { expandLinks } from '../../shared/schedule.ts';
 import { bookingsFor, conflictChanges, conflictsFor, planProject, type ImpactContext } from '../../shared/plan.ts';
@@ -108,6 +109,8 @@ export function PlanView({
 
   const schedule = useMemo(() => new Map((plan?.schedule ?? []).map((s) => [s.id, s])), [plan]);
   const rowOf = useMemo(() => new Map((plan?.tasks ?? []).map((t, i) => [t.id, i + 1])), [plan]);
+  /** TaskIDs, which After is written in; rows only number the table. */
+  const codeOf = useMemo(() => codesById(plan?.tasks ?? []), [plan]);
   const outlineRows = useMemo(() => new Map(outline(plan?.tasks ?? []).map((r) => [r.id, r])), [plan]);
 
   /** Apply a server answer: the new plan, and a nudge to the board behind us. */
@@ -209,9 +212,9 @@ export function PlanView({
     return !!next;
   };
 
-  const addTask = async (name: string) => {
+  const addTask = async (name: string, code: number) => {
     const last = plan?.tasks[plan.tasks.length - 1];
-    return save({ op: 'create', fields: { name }, after_id: last?.id ?? null }, `Added ${name}`);
+    return save({ op: 'create', fields: { name, code }, after_id: last?.id ?? null }, `Added ${name}`);
   };
 
   /** Outline moves, undone by putting every touched task back where it was. */
@@ -233,6 +236,8 @@ export function PlanView({
     return reshape(p, `Put ${t.name} under ${plan!.tasks.find((x) => x.id === p.find((q) => q.id === t.id)!.parent_id)?.name}`);
   };
   const outdentTask = (t: Task) => reshape(plan && outdent(plan.tasks, t.id), `Moved ${t.name} out a level`);
+  /** A row dropped above another (null: at the end), taking the tasks under it along. */
+  const moveTo = (t: Task, beforeId: number | null) => reshape(plan && moveBefore(plan.tasks, t.id, beforeId), `Moved ${t.name}`);
 
   /** A link drawn on the chart: the successor also waits for the predecessor to finish. */
   const addLink = (predId: number, succId: number) => {
@@ -512,6 +517,7 @@ export function PlanView({
             plan={plan}
             schedule={schedule}
             rowOf={rowOf}
+            codeOf={codeOf}
             outlineRows={outlineRows}
             environments={environments}
             holidays={holidays}
@@ -523,8 +529,9 @@ export function PlanView({
             onUpdate={(t, f) => updateTask(t, f).then(Boolean)}
             onSetStart={setStart}
             onSetFinish={setFinish}
-            onAdd={(name) => addTask(name).then(Boolean)}
+            onAdd={(name, code) => addTask(name, code).then(Boolean)}
             onMove={move}
+            onMoveTo={moveTo}
             onIndent={indentTask}
             onOutdent={outdentTask}
             onLink={addLink}
@@ -582,6 +589,7 @@ export function PlanView({
           task={editingTask}
           plan={plan}
           rowOf={rowOf}
+          codeOf={codeOf}
           outlineRows={outlineRows}
           schedule={schedule.get(editingTask.id)}
           environments={environments}
@@ -658,13 +666,14 @@ const SHOW_HINT: Record<keyof GanttShow, string> = {
 // ---------------------------------------------------------------- task table
 
 function TaskTable({
-  plan, schedule, rowOf, outlineRows, environments, holidays, today, saving, addRef, board, preview,
-  onUpdate, onSetStart, onSetFinish, onAdd, onMove, onIndent, onOutdent, onLink, onLinkChange, onOpen, onError, onRelease,
+  plan, schedule, rowOf, codeOf, outlineRows, environments, holidays, today, saving, addRef, board, preview,
+  onUpdate, onSetStart, onSetFinish, onAdd, onMove, onMoveTo, onIndent, onOutdent, onLink, onLinkChange, onOpen, onError, onRelease,
   onSaveBaseline, onClearBaseline, onExportCsv, onExportXml, onImport,
 }: {
   plan: PlanData;
   schedule: ReadonlyMap<number, TaskSchedule>;
   rowOf: ReadonlyMap<number, number>;
+  codeOf: ReadonlyMap<number, number>;
   outlineRows: ReadonlyMap<number, OutlineRow>;
   environments: readonly Environment[];
   holidays: ReadonlySet<ISODate>;
@@ -676,8 +685,9 @@ function TaskTable({
   onUpdate: (t: Task, fields: TaskInput) => Promise<boolean>;
   onSetStart: (t: Task, date: ISODate) => Promise<boolean>;
   onSetFinish: (t: Task, date: ISODate) => Promise<boolean>;
-  onAdd: (name: string) => Promise<boolean>;
+  onAdd: (name: string, code: number) => Promise<boolean>;
   onMove: (t: Task, delta: -1 | 1) => Promise<void>;
+  onMoveTo: (t: Task, beforeId: number | null) => Promise<void>;
   onIndent: (t: Task) => Promise<void>;
   onOutdent: (t: Task) => Promise<void>;
   onLink: (predecessorId: number, successorId: number) => Promise<unknown>;
@@ -692,6 +702,11 @@ function TaskTable({
   onImport: (file: File) => Promise<void>;
 }) {
   const [draft, setDraft] = useState('');
+  /** The new task's ID as typed; null offers the next free one. */
+  const [codeDraft, setCodeDraft] = useState<string | null>(null);
+  const nextCode = nextTaskCode(plan.tasks);
+  const idOfCode = useMemo(() => taskIdsByCode(plan.tasks), [plan.tasks]);
+  const choices = useMemo(() => plan.tasks.map((t) => ({ id: t.id, code: codeOf.get(t.id)!, name: t.name })), [plan.tasks, codeOf]);
   const tableRef = useRef<HTMLTableElement>(null);
   const splitRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -729,10 +744,10 @@ function TaskTable({
     (id) => {
       const t = plan.tasks.find((x) => x.id === id)!;
       if (criticalOnly && !schedule.get(id)?.critical) return false;
-      return !q || t.name.toLowerCase().includes(q) || (t.assignee ?? '').toLowerCase().includes(q) || String(rowOf.get(id)) === q;
+      return !q || t.name.toLowerCase().includes(q) || (t.assignee ?? '').toLowerCase().includes(q) || String(codeOf.get(id)) === q;
     },
     collapsed,
-  ), [outlineRows, plan.tasks, schedule, criticalOnly, q, collapsed, rowOf]);
+  ), [outlineRows, plan.tasks, schedule, criticalOnly, q, collapsed, codeOf]);
   const hiddenCount = plan.tasks.length - visible.size;
 
   const progress = useMemo(() => {
@@ -850,8 +865,78 @@ function TaskTable({
   const submitNew = async () => {
     const name = draft.trim();
     if (!name) return;
-    if (await onAdd(name)) setDraft('');
+    const code = codeDraft == null ? nextCode : checkCode(codeDraft, null);
+    if (code == null) return;
+    if (await onAdd(name, code)) { setDraft(''); setCodeDraft(null); }
     requestAnimationFrame(() => addRef.current?.focus());
+  };
+
+  /** A typed ID, or null after saying what is wrong with it. */
+  const checkCode = (text: string, own: number | null): number | null => {
+    const n = Number(text.trim());
+    if (!Number.isInteger(n) || n < 1 || n > TASK_CODE_MAX) { onError(`An ID is a whole number, 1 to ${TASK_CODE_MAX}.`); return null; }
+    const holder = idOfCode.get(n);
+    if (holder != null && holder !== own) {
+      onError(`ID ${n} is already ${plan.tasks.find((x) => x.id === holder)?.name}; pick another.`);
+      return null;
+    }
+    return n;
+  };
+
+  // ------------------------------------------------------------ drag to reorder
+
+  /** The row being dragged, and the row it would land above (null: the end; undefined: nowhere). */
+  const [rowDrag, setRowDrag] = useState<{ id: number; before: number | null | undefined } | null>(null);
+  const dragged = useMemo(
+    () => (rowDrag ? new Set([rowDrag.id, ...descendants(plan.tasks, rowDrag.id)]) : null),
+    [rowDrag?.id, plan.tasks],
+  );
+
+  /**
+   * The row number is the handle: a click opens the task, a drag past the slop
+   * moves it with everything under it. Alt+↑/↓ does the same from the keyboard.
+   */
+  const startRowDrag = (e: React.PointerEvent<HTMLButtonElement>, t: Task) => {
+    if (e.button !== 0 || saving) return;
+    const handle = e.currentTarget;
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    let moving = false;
+    let before: number | null | undefined;
+    const landing = (y: number): number | null | undefined => {
+      const rows = [...(tableRef.current?.querySelectorAll<HTMLTableRowElement>('tbody tr[data-task]') ?? [])];
+      const below = rows.find((tr) => { const r = tr.getBoundingClientRect(); return y < r.top + r.height / 2; });
+      const id = below ? Number(below.dataset.task) : null;
+      return moveBefore(plan.tasks, t.id, id) ? id : undefined;
+    };
+    const move = (ev: PointerEvent) => {
+      if (!moving) {
+        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < DRAG_SLOP) return;
+        moving = true;
+        handle.setPointerCapture(ev.pointerId);
+      }
+      // Near an edge of the window, keep going the way the pointer is heading.
+      if (ev.clientY < 48) window.scrollBy(0, -16);
+      else if (ev.clientY > window.innerHeight - 48) window.scrollBy(0, 16);
+      before = landing(ev.clientY);
+      setRowDrag({ id: t.id, before });
+    };
+    const stop = (drop: boolean) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('keydown', key, true);
+      setRowDrag(null);
+      if (!moving) { if (drop) onOpen(t.id); return; }
+      if (drop && before !== undefined) void onMoveTo(t, before);
+    };
+    const up = () => stop(true);
+    const cancel = () => stop(false);
+    const key = (ev: globalThis.KeyboardEvent) => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); moving = true; before = undefined; stop(false); } };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('keydown', key, true);
   };
 
   const setShow = (k: keyof GanttShow, v: boolean) => setPrefs((p) => ({ ...p, show: { ...p.show, [k]: v } }));
@@ -927,14 +1012,15 @@ function TaskTable({
         className={`task-split-table${tableWidth != null && plan.tasks.length ? ' is-sized' : ''}`}
         style={tableWidth != null && plan.tasks.length ? { width: tableWidth } : undefined}
       >
-      <table className="task-table" ref={tableRef}>
+      <table className={`task-table${rowDrag ? ' is-reordering' : ''}`} ref={tableRef}>
         <thead>
           <tr>
             <th scope="col" className="c-row"><span className="visually-hidden">Row</span></th>
+            <th scope="col" className="c-code" title="The task's ID, which After refers to. Moving a row never changes it.">ID</th>
             <th scope="col" className="c-name">Task</th>
             <th scope="col" className="c-env">Environment</th>
             <th scope="col" className="c-num">Days</th>
-            <th scope="col" className="c-after" title="Rows this task waits for. 2+3 means three working days after row 2 ends; 2SS starts with it, 2FF finishes with it.">After</th>
+            <th scope="col" className="c-after" title="IDs of the tasks this one waits for. 2+3 means three working days after task 2 ends; 2SS starts with it, 2FF finishes with it.">After</th>
             <th scope="col" className="c-date">Start</th>
             <th scope="col" className="c-date">Finish</th>
             <th scope="col" className="c-num">Float</th>
@@ -957,14 +1043,36 @@ function TaskTable({
               <tr
                 key={t.id}
                 data-task={t.id}
-                className={`${s?.critical ? 'is-critical' : ''}${t.status === 'done' && !summary ? ' is-done' : ''}${summary ? ' is-summary' : ''}`}
+                className={`${s?.critical ? 'is-critical' : ''}${t.status === 'done' && !summary ? ' is-done' : ''}${summary ? ' is-summary' : ''}${
+                  dragged?.has(t.id) ? ' is-dragged' : ''}${rowDrag && rowDrag.before === t.id ? ' is-drop-before' : ''}`}
                 style={{ ['--env-color' as string]: env ? ENV_COLOR[env.kind] : 'transparent', ['--depth' as string]: o?.depth ?? 0 } as CSSProperties}
                 onKeyDown={(e) => rowKeys(e, t)}
               >
                 <td className="c-row">
-                  <button type="button" className="row-num" onClick={() => onOpen(t.id)} aria-label={`Open ${t.name}`} title={`Open task ${o?.wbs ?? ''}`}>
+                  <button
+                    type="button"
+                    className="row-num"
+                    // Pointer clicks are told from drags in startRowDrag; this is Enter and Space.
+                    onClick={(e) => { if (e.detail === 0) onOpen(t.id); }}
+                    onPointerDown={(e) => startRowDrag(e, t)}
+                    aria-label={`Open ${t.name}`}
+                    title={`Open task ${o?.wbs ?? ''}. Drag to move it.`}
+                  >
                     {rowOf.get(t.id)}
                   </button>
+                </td>
+                <td className="c-code" data-label="ID">
+                  <CellInput
+                    field="code"
+                    label="Task ID"
+                    inputMode="numeric"
+                    value={String(codeOf.get(t.id) ?? '')}
+                    onCommit={(v) => {
+                      const n = checkCode(v, t.id);
+                      if (n == null) return false;
+                      return n !== t.code ? onUpdate(t, { code: n }) : undefined;
+                    }}
+                  />
                 </td>
                 <td className="c-name">
                   <div className="name-cell">
@@ -1024,18 +1132,15 @@ function TaskTable({
                   )}
                 </td>
                 <td className="c-after" data-label="After">
-                  <CellInput
-                    field="after"
-                    label="After rows"
-                    value={formatPredecessors(plan.dependencies, t.id, rowOf)}
-                    placeholder="—"
+                  <AfterCell
+                    value={formatPredecessors(plan.dependencies, t.id, codeOf)}
+                    choices={choices}
+                    ownId={t.id}
                     onCommit={(v) => {
-                      const parsed = parsePredecessors(v, plan.tasks.length, rowOf.get(t.id)!);
+                      const parsed = parseAfter(v, idOfCode, t.id);
                       if (!parsed.ok) { onError(parsed.error); return false; }
-                      if (v.trim() === formatPredecessors(plan.dependencies, t.id, rowOf)) return undefined;
-                      return onUpdate(t, {
-                        predecessors: parsed.rows.map((r) => ({ id: plan.tasks[r.row - 1].id, lag: r.lag, type: r.type })),
-                      });
+                      if (v.trim() === formatPredecessors(plan.dependencies, t.id, codeOf)) return undefined;
+                      return onUpdate(t, { predecessors: parsed.links });
                     }}
                   />
                 </td>
@@ -1074,8 +1179,19 @@ function TaskTable({
               </tr>
             );
           })}
-          <tr className="task-add">
+          <tr className={`task-add${rowDrag && rowDrag.before === null ? ' is-drop-before' : ''}`}>
             <td className="c-row"><span className="row-num is-new" aria-hidden="true">+</span></td>
+            <td className="c-code">
+              <input
+                value={codeDraft ?? String(nextCode)}
+                disabled={saving}
+                inputMode="numeric"
+                aria-label="ID of the new task"
+                title="The new task's ID; the next free number is filled in"
+                onChange={(e) => setCodeDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRef.current?.focus(); } }}
+              />
+            </td>
             <td colSpan={8}>
               <input
                 ref={addRef}
@@ -1150,7 +1266,8 @@ function TaskTable({
       </div>
       <p className="table-hint">
         {hiddenCount > 0 && <><strong>{hiddenCount} row{hiddenCount === 1 ? '' : 's'} hidden</strong> by the filter or a closed summary. </>}
-        Enter moves on, Alt+↑/↓ reorders, Alt+Shift+→/← puts a task under the one above or takes it out. In After, write rows:
+        Enter moves on, drag a row number or press Alt+↑/↓ to reorder, Alt+Shift+→/← puts a task under the one above or takes it out.
+        In After, write task IDs (type a number or part of a name to pick one):
         {' '}<kbd>2</kbd>, <kbd>2+3</kbd> to wait three working days, <kbd>2SS</kbd> to start with it, <kbd>2FF</kbd> to finish with it.
         On the chart, drag a bar to move it, its right end to change its length, or the dot after it onto another task to link them.
       </p>
@@ -1159,7 +1276,9 @@ function TaskTable({
 }
 
 /** The table's natural width in the split; keep in step with `.task-split .task-table`. */
-const TABLE_WIDTH = 884;
+const TABLE_WIDTH = 932;
+/** How far a row number travels before a press becomes a drag, as for booking bars. */
+const DRAG_SLOP = 4;
 /** Row number and task name: never hide those. */
 const SPLIT_MIN_TABLE = 240;
 const SPLIT_MIN_CHART = 160;
@@ -1231,6 +1350,160 @@ function CellInput({
 }
 
 /**
+ * After, with the task list at hand: typing a number or part of a name offers
+ * the matching TaskIDs; ↑/↓ choose, Enter takes one, Escape closes the list.
+ * The list is fixed to the viewport so the table's clipped cells cannot cut it off.
+ */
+function AfterInput({
+  value, onValue, choices, ownId, label, placeholder, invalid, field, onEnter, onEscape, onBlur,
+}: {
+  value: string;
+  onValue: (v: string) => void;
+  choices: readonly { id: number; code: number; name: string }[];
+  ownId: number;
+  label: string;
+  placeholder?: string;
+  invalid?: boolean;
+  field?: string;
+  onEnter?: () => void;
+  onEscape?: () => void;
+  onBlur?: () => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  const listId = useId();
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [caret, setCaret] = useState(0);
+  const found = useMemo(() => afterSuggestions(value, caret, choices, ownId), [value, caret, choices, ownId]);
+  const shown = open && found.items.length > 0;
+  const at = shown ? ref.current?.getBoundingClientRect() : undefined;
+
+  // The list sits where the input was; once the page scrolls, it is simply closed.
+  // The input's own text scrolling sideways in a narrow cell does not count.
+  useEffect(() => {
+    if (!shown) return;
+    const close = (e: Event) => { if (e.target !== ref.current) setOpen(false); };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
+  }, [shown]);
+
+  const pick = (code: number) => {
+    const next = applySuggestion(value, found.from, found.to, code);
+    onValue(next.text);
+    setOpen(false);
+    requestAnimationFrame(() => { ref.current?.setSelectionRange(next.caret, next.caret); setCaret(next.caret); });
+  };
+
+  return (
+    <>
+      <input
+        ref={ref}
+        data-field={field}
+        aria-label={label}
+        aria-invalid={invalid || undefined}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={shown}
+        aria-controls={listId}
+        aria-activedescendant={shown ? `${listId}-${active}` : undefined}
+        autoComplete="off"
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => { onValue(e.target.value); setCaret(e.target.selectionStart ?? e.target.value.length); setOpen(true); setActive(0); }}
+        onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+        onBlur={() => { setOpen(false); onBlur?.(); }}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' && !e.altKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!shown) { setCaret(e.currentTarget.selectionStart ?? 0); setOpen(true); setActive(0); } else setActive((i) => (i + 1) % found.items.length);
+          } else if (e.key === 'ArrowUp' && shown && !e.altKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            setActive((i) => (i - 1 + found.items.length) % found.items.length);
+          } else if (e.key === 'Enter' && shown) {
+            e.preventDefault();
+            e.stopPropagation();
+            pick(found.items[Math.min(active, found.items.length - 1)].code);
+          } else if (e.key === 'Escape' && shown) {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(false);
+          } else if (e.key === 'Enter') {
+            e.preventDefault();
+            onEnter?.();
+          } else if (e.key === 'Escape') {
+            onEscape?.();
+          }
+        }}
+      />
+      {shown && at && (
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label={`Tasks for ${label}`}
+          className="after-suggest"
+          style={{ top: at.bottom + 2, left: at.left, minWidth: Math.max(at.width, 220) }}
+        >
+          {found.items.map((item, i) => (
+            <li
+              key={item.code}
+              id={`${listId}-${i}`}
+              role="option"
+              aria-selected={i === active}
+              onPointerDown={(e) => { e.preventDefault(); pick(item.code); }}
+              onPointerEnter={() => setActive(i)}
+            >
+              <span className="after-suggest-code">{item.code}</span>
+              <span className="after-suggest-name">{item.name}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/** The After cell: the table's commit-on-leave editing, over AfterInput. */
+function AfterCell({ value, choices, ownId, onCommit }: {
+  value: string;
+  choices: readonly { id: number; code: number; name: string }[];
+  ownId: number;
+  onCommit: (v: string) => Promise<boolean> | boolean | undefined;
+}) {
+  const [text, setText] = useState(value);
+  const [invalid, setInvalid] = useState(false);
+  const committing = useRef(false);
+  useEffect(() => { setText(value); setInvalid(false); }, [value]);
+
+  const commit = async () => {
+    if (committing.current || text === value) return;
+    committing.current = true;
+    const result = await onCommit(text);
+    committing.current = false;
+    if (result === false) setInvalid(true);
+    else if (result === undefined) setText(value);
+  };
+
+  return (
+    <AfterInput
+      field="after"
+      label="After tasks"
+      value={text}
+      onValue={(v) => { setText(v); setInvalid(false); }}
+      choices={choices}
+      ownId={ownId}
+      placeholder="—"
+      invalid={invalid}
+      onBlur={() => void commit()}
+      onEnter={() => void commit()}
+      onEscape={() => { setText(value); setInvalid(false); }}
+    />
+  );
+}
+
+/**
  * A scheduled date you can overwrite. The picker commits at once; typing waits
  * until the date is whole (a four-digit year) and the caret has rested, so a
  * half-typed year never reschedules the plan.
@@ -1284,11 +1557,12 @@ function DateCell({ field, label, value, onCommit }: {
 // ---------------------------------------------------------------- task editor
 
 function TaskEditor({
-  task, plan, rowOf, outlineRows, schedule, environments, envName, saving, today, holidays, onClose, onSave, onDelete,
+  task, plan, rowOf, codeOf, outlineRows, schedule, environments, envName, saving, today, holidays, onClose, onSave, onDelete,
 }: {
   task: Task;
   plan: PlanData;
   rowOf: ReadonlyMap<number, number>;
+  codeOf: ReadonlyMap<number, number>;
   outlineRows: ReadonlyMap<number, OutlineRow>;
   today: ISODate;
   holidays: ReadonlySet<ISODate>;
@@ -1303,7 +1577,8 @@ function TaskEditor({
   const [name, setName] = useState(task.name);
   const [envId, setEnvId] = useState<number | null>(task.environment_id);
   const [duration, setDuration] = useState(String(task.duration));
-  const [after, setAfter] = useState(formatPredecessors(plan.dependencies, task.id, rowOf));
+  const [after, setAfter] = useState(formatPredecessors(plan.dependencies, task.id, codeOf));
+  const [codeText, setCodeText] = useState(String(codeOf.get(task.id) ?? ''));
   const [notBefore, setNotBefore] = useState(task.not_before ?? '');
   const [status, setStatus] = useState<TaskStatus>(task.status);
   const [actualStart, setActualStart] = useState(task.actual_start ?? '');
@@ -1320,9 +1595,15 @@ function TaskEditor({
   const [deleteImpact, setDeleteImpact] = useState<PlanImpact | null>(null);
   const [editImpact, setEditImpact] = useState<PlanImpact | null>(null);
 
-  const parsed = parsePredecessors(after, plan.tasks.length, rowOf.get(task.id)!);
+  const idOfCode = useMemo(() => taskIdsByCode(plan.tasks), [plan.tasks]);
+  const choices = useMemo(() => plan.tasks.map((t) => ({ id: t.id, code: codeOf.get(t.id)!, name: t.name })), [plan.tasks, codeOf]);
+  const parsed = parseAfter(after, idOfCode, task.id);
+  const code = Number(codeText.trim());
+  const codeHolder = idOfCode.get(code);
+  const codeError = !Number.isInteger(code) || code < 1 || code > TASK_CODE_MAX ? `A whole number, 1 to ${TASK_CODE_MAX}.`
+    : codeHolder != null && codeHolder !== task.id ? `Already ${plan.tasks.find((x) => x.id === codeHolder)?.name}.` : null;
   const days = Number(duration);
-  const valid = name.trim() && Number.isInteger(days) && days >= 0 && parsed.ok && progressOk;
+  const valid = name.trim() && Number.isInteger(days) && days >= 0 && parsed.ok && progressOk && !codeError;
 
   /** Only what changed goes to the server, so undo and the audit log stay precise. */
   const fields = useMemo<TaskInput>(() => {
@@ -1330,9 +1611,8 @@ function TaskEditor({
     if (name.trim() !== task.name) f.name = name.trim();
     if (envId !== task.environment_id) f.environment_id = envId;
     if (Number.isInteger(days) && days !== task.duration) f.duration = days;
-    if (parsed.ok && after.trim() !== formatPredecessors(plan.dependencies, task.id, rowOf)) {
-      f.predecessors = parsed.rows.map((r) => ({ id: plan.tasks[r.row - 1].id, lag: r.lag, type: r.type }));
-    }
+    if (parsed.ok && after.trim() !== formatPredecessors(plan.dependencies, task.id, codeOf)) f.predecessors = parsed.links;
+    if (!codeError && code !== task.code) f.code = code;
     if (parentId !== (task.parent_id ?? null)) f.parent_id = parentId;
     if (progressOk && progressN !== (task.progress ?? null)) f.progress = progressN;
     if ((notBefore || null) !== task.not_before) f.not_before = notBefore || null;
@@ -1342,7 +1622,7 @@ function TaskEditor({
     if ((assignee.trim() || null) !== task.assignee) f.assignee = assignee.trim() || null;
     if ((note.trim() || null) !== task.note) f.note = note.trim() || null;
     return f;
-  }, [name, envId, days, after, notBefore, status, actualStart, actualEnd, assignee, note, parentId, progressN, progressOk, task, plan, rowOf]);
+  }, [name, envId, days, after, code, codeError, notBefore, status, actualStart, actualEnd, assignee, note, parentId, progressN, progressOk, task, plan, codeOf]);
 
   const dirty = Object.keys(fields).length > 0;
   const key = JSON.stringify(fields);
@@ -1370,7 +1650,7 @@ function TaskEditor({
     <Modal
       title={task.name}
       subtitle={[
-        `Row ${rowOf.get(task.id)}`,
+        `ID ${codeOf.get(task.id)}, row ${rowOf.get(task.id)}`,
         envName(task.environment_id) ? `on ${envName(task.environment_id)}` : 'no environment',
         schedule ? formatRange(schedule.start, schedule.end) : null,
         schedule ? (schedule.critical ? 'critical' : `${schedule.total_float} days float`) : null,
@@ -1394,10 +1674,17 @@ function TaskEditor({
       }
     >
       <div className="dialog-body task-editor">
-        <label className="stack">
-          Task
-          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-        </label>
+        <div className="pair name-pair">
+          <label className="stack">
+            Task
+            <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          </label>
+          <label className="stack">
+            ID
+            <input inputMode="numeric" value={codeText} onChange={(e) => setCodeText(e.target.value)} aria-invalid={!!codeError || undefined} />
+            {codeError && <span className="field-hint">{codeError}</span>}
+          </label>
+        </div>
         <label className="stack">
           Part of
           <select value={parentId ?? ''} onChange={(e) => setParentId(e.target.value ? Number(e.target.value) : null)}>
@@ -1430,9 +1717,17 @@ function TaskEditor({
         )}
         <div className="pair">
           <label className="stack">
-            After rows
-            <input value={after} onChange={(e) => setAfter(e.target.value)} placeholder="e.g. 2, 3+1, 4SS" aria-invalid={!parsed.ok || undefined} />
-            <span className="field-hint">{parsed.ok ? 'Starts when these rows finish, plus any lag. SS starts with a row, FF finishes with it.' : parsed.error}</span>
+            After tasks
+            <AfterInput
+              value={after}
+              onValue={setAfter}
+              choices={choices}
+              ownId={task.id}
+              label="After tasks"
+              placeholder="e.g. 2, 3+1, 4SS"
+              invalid={!parsed.ok}
+            />
+            <span className="field-hint">{parsed.ok ? 'IDs of the tasks it waits for, plus any lag. SS starts with one, FF finishes with it. Type a name to find an ID.' : parsed.error}</span>
           </label>
           <label className="stack">
             Start no earlier than

@@ -126,8 +126,14 @@ is left out of scheduling and holds; its dates, float and criticality roll up fr
 under it, and `checkOutline` (server/plan.ts) clears its environment. Links to or from a summary
 are expanded onto its working tasks (`expandLinks`) and must be FS. The outline is read
 depth-first every time (`outline`, `inOutlineOrder`); `sort_order` only orders siblings, so never
-number rows by `sort_order` alone. Row numbers, the After column, CSV and MSPDI all use outline
-order.
+number rows by `sort_order` alone. Row numbers and MSPDI use outline order.
+
+**TaskIDs are typed labels, not row numbers.** `task.code` is unique per project (index in
+`server/db.ts`, checked in `applyChange` so a preview refuses a clash too). A create without one
+gets `nextTaskCode` (count + 1, or the next free). After and CSV are written in codes; links
+stay stored by `task.id`. `fillTaskCodes` backfills NULL codes on start in outline order, so
+older plans read as they did. Dragging a row (`moveBefore` in `shared/wbs.ts`) is an outline
+change like Alt+↑/↓ and goes through the same `outline` op.
 
 **Link types live in the scheduler, not the chart.** `task_dependency.type` is FS, SS or FF;
 `scheduleProject` applies it in both passes and in free float. A missing type reads as FS.

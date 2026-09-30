@@ -210,10 +210,10 @@ transaction(() => {
         const actual = t.actual ?? [];
         taskIds.set(t.key, Number(run(
           `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, assignee, sort_order,
-                             actual_start, actual_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             actual_start, actual_end, code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           projectId, t.env ? envIds.get(t.env) : null, t.name, t.dur, t.status ?? 'todo',
           t.not_before != null ? d(t.not_before) : null, t.assignee ?? null, i,
-          actual[0] != null ? d(actual[0]) : null, actual[1] != null ? d(actual[1]) : null,
+          actual[0] != null ? d(actual[0]) : null, actual[1] != null ? d(actual[1]) : null, i + 1,
         ).lastInsertRowid));
       });
       for (const t of project.tasks as readonly SeedTask[]) {

@@ -1,6 +1,7 @@
 import type { Environment, LinkType, Task, TaskDependency, TaskSchedule, TaskStatus } from '../shared/types.ts';
 import type { OutlineRow } from '../shared/wbs.ts';
 import { formatPredecessors, parsePredecessors } from './predecessors.ts';
+import { codesById } from '../shared/taskCode.ts';
 
 /**
  * A plan in and out of files: CSV for spreadsheets, and MS Project's XML
@@ -13,6 +14,8 @@ import { formatPredecessors, parsePredecessors } from './predecessors.ts';
  */
 
 export type ImportRow = {
+  /** The file's TaskID, kept when it is free in the plan. */
+  code?: number | null;
   name: string;
   duration: number;
   environment?: string | null;
@@ -39,16 +42,16 @@ const STATUS_WORDS: Record<TaskStatus, string> = { todo: 'To do', in_progress: '
 
 // ---------------------------------------------------------------- CSV
 
-const CSV_HEAD = ['Row', 'WBS', 'Task', 'Summary', 'Environment', 'Days', 'After', 'Start', 'Finish', 'Float', 'Status', 'Progress', 'Assignee', 'Note'];
+const CSV_HEAD = ['ID', 'WBS', 'Task', 'Summary', 'Environment', 'Days', 'After', 'Start', 'Finish', 'Float', 'Status', 'Progress', 'Assignee', 'Note'];
 
 function csvCell(v: string | number | null | undefined): string {
   const s = v == null ? '' : String(v);
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-/** The table as a spreadsheet: row numbers and After exactly as the table shows them. */
+/** The table as a spreadsheet: TaskIDs and After exactly as the table shows them. */
 export function toCsv(plan: Plan): string {
-  const rowOf = new Map(plan.tasks.map((t, i) => [t.id, i + 1]));
+  const rowOf = codesById(plan.tasks);
   const byId = new Map(plan.outline.map((r) => [r.id, r]));
   const lines = [CSV_HEAD.join(',')];
   for (const t of plan.tasks) {
@@ -166,7 +169,9 @@ export function fromCsv(text: string): ImportResult {
     const status = statusFrom(cell(r, 'status'));
     if (cell(r, 'status') && !status) warnings.push(`Row ${n}: status “${cell(r, 'status')}” was not understood, so it is To do`);
     const nb = cell(r, 'not_before');
+    const code = Number(cell(r, 'row'));
     rows.push({
+      code: Number.isInteger(code) && code > 0 ? code : null,
       name, duration, parent, predecessors: parsed.rows,
       environment: cell(r, 'environment') || null,
       assignee: cell(r, 'assignee') || null,

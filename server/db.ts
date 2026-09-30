@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { inOutlineOrder } from '../shared/wbs.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -45,6 +46,10 @@ if (!taskColumns.has('parent_id')) {
   db.exec('ALTER TABLE task ADD COLUMN parent_id INTEGER REFERENCES task(id) ON DELETE SET NULL');
   db.exec('ALTER TABLE task ADD COLUMN progress INTEGER CHECK (progress IS NULL OR progress BETWEEN 0 AND 100)');
 }
+if (!taskColumns.has('code')) {
+  db.exec('ALTER TABLE task ADD COLUMN code INTEGER CHECK (code IS NULL OR code > 0)');
+}
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS task_code ON task (project_id, code)');
 const depColumns = new Set(
   db.prepare('PRAGMA table_info(task_dependency)').all().map((c) => (c as { name: string }).name),
 );
@@ -71,6 +76,28 @@ if (!projectColumns.has('baseline_at')) db.exec('ALTER TABLE project ADD COLUMN 
 // One-day bookings are CUSTOM events (see shared/bookings.ts); bring older
 // rows into line. Idempotent, so it is safe on every start.
 db.exec(`UPDATE booking SET kind = 'CUSTOM' WHERE start_date = end_date AND kind NOT IN ('RELEASE', 'CUSTOM')`);
+
+/**
+ * Give every task without a TaskID one: tasks made before IDs existed keep their
+ * row number, so After reads the same as it did; others get the next free one.
+ * Idempotent, so it runs on every start (and after the seed).
+ */
+export function fillTaskCodes() {
+  const projects = db.prepare('SELECT DISTINCT project_id AS id FROM task WHERE code IS NULL').all() as { id: number }[];
+  for (const { id } of projects) {
+    const tasks = inOutlineOrder(db.prepare('SELECT id, sort_order, parent_id, code FROM task WHERE project_id = ?').all(id)
+      .map((r) => ({ ...r }) as { id: number; sort_order: number; parent_id: number | null; code: number | null }));
+    const used = new Set(tasks.map((t) => t.code).filter((c) => c != null));
+    tasks.forEach((t, i) => {
+      if (t.code != null) return;
+      let code = i + 1;
+      while (used.has(code)) code++;
+      used.add(code);
+      db.prepare('UPDATE task SET code = ? WHERE id = ?').run(code, t.id);
+    });
+  }
+}
+fillTaskCodes();
 
 /** node:sqlite returns null-prototype rows; spread them so JSON and spread operators behave. */
 export function all<T>(sql: string, ...params: unknown[]): T[] {

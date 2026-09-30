@@ -56,7 +56,7 @@ export type SavedLayout = {
 /** What a task form sends. `predecessors` replaces the whole set when present. */
 export type TaskInput = Partial<Pick<Task,
   'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'assignee' | 'note' | 'actual_start' | 'actual_end'
-  | 'parent_id' | 'progress'>>
+  | 'parent_id' | 'progress' | 'code'>>
   & { predecessors?: { id: number; lag: number; type?: LinkType }[] };
 
 export type TaskChange =

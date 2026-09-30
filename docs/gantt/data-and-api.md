@@ -65,9 +65,11 @@ type ImportRow = {
 
 Export columns, in order:
 
-`Row, WBS, Task, Summary, Environment, Days, After, Start, Finish, Float, Status, Progress, Assignee, Note`
+`ID, WBS, Task, Summary, Environment, Days, After, Start, Finish, Float, Status, Progress, Assignee, Note`
 
-`Summary` is the parent's row number; `After` uses the table's notation (`2`, `3+1`, `4SS`).
+`Summary` is the parent's ID; `After` uses the table's notation in IDs (`2`, `3+1`, `4SS`).
+On import each task keeps the file's ID when it is free in the plan, and gets the next free
+one otherwise.
 Start, Finish and Float are for reading; import ignores them (dates are scheduled).
 
 Import accepts commas, semicolons or tabs, quoted cells and a BOM. Header aliases:
@@ -85,7 +87,7 @@ Import accepts commas, semicolons or tabs, quoted cells and a BOM. Header aliase
 | Assignee | Assignee, Owner, Resource, Resource names |
 | Note | Note, Notes |
 
-If the file has a `Row` column, After and Summary refer to it; otherwise to line positions.
+If the file has an `ID` (or `Row`, `#`) column, After and Summary refer to it; otherwise to line positions.
 
 ## MS Project XML (MSPDI)
 

@@ -14,6 +14,7 @@ import { autoBookingKind, isManaged, type ReconcileBooking } from '../shared/tas
 import { defaultProjectStart } from '../shared/schedule.ts';
 import { descendants, inOutlineOrder, MAX_DEPTH, outline, parentOf, summaryIds, type OutlinePlacement } from '../shared/wbs.ts';
 import { effectiveKind } from '../shared/bookings.ts';
+import { nextTaskCode } from '../shared/taskCode.ts';
 import { today } from '../shared/dates.ts';
 import type {
   Booking, Environment, ISODate, LinkType, PlanImpact, Project, Task, TaskDependency, TaskStatus,
@@ -128,7 +129,7 @@ export type Predecessor = { id: number; lag: number; type?: LinkType };
 
 export type TaskFields = Partial<Pick<Task,
   'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'assignee' | 'note' | 'actual_start' | 'actual_end'
-  | 'parent_id' | 'progress'>>
+  | 'parent_id' | 'progress' | 'code'>>
   & { predecessors?: Predecessor[] };
 
 export type Change =
@@ -187,6 +188,7 @@ export function applyChange(state: PlanState, change: Change): PlanState {
       id: NEW_TASK_ID, project_id: state.project.id, environment_id: null, name: '', duration: 1, status: 'todo',
       not_before: null, assignee: null, note: null, sort_order: 0, actual_start: null, actual_end: null,
       start_date: null, end_date: null, total_float: null, critical: 0, parent_id: inherited, progress: null,
+      code: nextTaskCode(tasks),
       ...stripPreds(change.fields),
     };
     if ('parent_id' in change.fields && task.parent_id != null) {
@@ -235,6 +237,7 @@ export function applyChange(state: PlanState, change: Change): PlanState {
       }
     }
   }
+  checkCodes(tasks, change.op === 'create' ? NEW_TASK_ID : change.op === 'update' ? change.id : null);
   // Moving a task under a summary makes any link between them meaningless (the
   // summary is made of it), so an outline change drops it rather than refusing.
   const moved = change.op === 'outline' || (change.op !== 'delete' && 'parent_id' in change.fields && !change.fields.predecessors);
@@ -280,6 +283,20 @@ export function checkOutline(tasks: Task[], deps: TaskDependency[]): { tasks: Ta
   };
 }
 
+/** Two tasks of a plan never share a TaskID: After would not know which one it means. */
+function checkCodes(tasks: readonly Task[], changed: number | null) {
+  const seen = new Map<number, Task>();
+  for (const t of tasks) {
+    if (t.code == null) continue;
+    const other = seen.get(t.code);
+    if (other) {
+      const holder = other.id === changed ? t : other;
+      throw new PlanError(`ID ${t.code} is already ${holder.name}; pick another`);
+    }
+    seen.set(t.code, t);
+  }
+}
+
 function stripPreds(fields: TaskFields): Partial<Task> {
   const { predecessors: _, ...rest } = fields;
   return rest;
@@ -295,11 +312,11 @@ export function writeState(before: PlanState, next: PlanState): number | null {
 
   for (const t of next.tasks) {
     const cols = [t.environment_id, t.name, t.duration, t.status, t.not_before, t.assignee, t.note, t.sort_order,
-      t.actual_start, t.actual_end, t.parent_id ?? null, t.progress ?? null];
+      t.actual_start, t.actual_end, t.parent_id ?? null, t.progress ?? null, t.code ?? null];
     if (t.id === NEW_TASK_ID) {
       createdId = Number(run(
         `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, assignee, note, sort_order,
-                           actual_start, actual_end, parent_id, progress) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                           actual_start, actual_end, parent_id, progress, code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         next.project.id, ...cols,
       ).lastInsertRowid);
       continue;
@@ -308,9 +325,10 @@ export function writeState(before: PlanState, next: PlanState): number | null {
     if (old.status !== t.status) audit('task', t.id, 'status', old.status, t.status);
     if (old.duration !== t.duration) audit('task', t.id, 'duration', old.duration, t.duration);
     if ((old.parent_id ?? null) !== (t.parent_id ?? null)) audit('task', t.id, 'parent_id', old.parent_id, t.parent_id);
+    if ((old.code ?? null) !== (t.code ?? null)) audit('task', t.id, 'code', old.code, t.code);
     run(
       `UPDATE task SET environment_id = ?, name = ?, duration = ?, status = ?, not_before = ?, assignee = ?, note = ?,
-                       sort_order = ?, actual_start = ?, actual_end = ?, parent_id = ?, progress = ? WHERE id = ?`,
+                       sort_order = ?, actual_start = ?, actual_end = ?, parent_id = ?, progress = ?, code = ? WHERE id = ?`,
       ...cols, t.id,
     );
   }

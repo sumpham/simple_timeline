@@ -2156,6 +2156,9 @@ kbd {
 .task-table .c-num { width: 58px; text-align: right; }
 .task-table th.c-num { text-align: right; }
 .task-table .c-after { width: 80px; }
+.task-table .c-code { width: 52px; }
+.task-table .c-code input { text-align: right; color: var(--muted); font-size: 13px; }
+.task-table .c-code input:focus { color: var(--ink); }
 .task-table .c-date { width: 124px; color: var(--muted); }
 .task-table .c-date input { color: var(--muted); font-size: 13px; padding-right: 2px; }
 .task-table .c-date input:focus { color: var(--ink); }
@@ -2179,6 +2182,36 @@ kbd {
 }
 .row-num:hover { border-color: var(--ink); color: var(--ink); }
 .row-num.is-new { display: inline-block; text-align: center; cursor: default; }
+/* The row number is also the handle that drags a row (and what is under it). */
+.task-split .row-num { cursor: grab; touch-action: none; }
+.task-table.is-reordering, .task-table.is-reordering .row-num { cursor: grabbing; user-select: none; }
+.task-table tr.is-dragged td { opacity: 0.45; }
+/* Where the row lands: a line along the top of the row it goes above. Ink, not
+   a hue, so it never competes with the environment colours or the alarm. */
+.task-table tr.is-drop-before > td { box-shadow: inset 0 2px 0 var(--focus); }
+.task-table tr.is-drop-before.is-critical > td:first-child { box-shadow: inset 0 2px 0 var(--focus), inset 4px 0 0 var(--critical); }
+
+/* After's list of tasks to pick: fixed, so a clipped table cell cannot cut it off. */
+.after-suggest {
+  position: fixed;
+  z-index: 50;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  max-height: 260px;
+  max-width: 360px;
+  overflow-y: auto;
+  background: var(--lane);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(22, 32, 43, 0.16);
+  font-size: 13px;
+}
+.after-suggest li { display: flex; gap: 10px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+.after-suggest li[aria-selected='true'] { background: var(--paper); }
+.after-suggest-code { min-width: 28px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.after-suggest-name { overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.name-pair { grid-template-columns: 1fr 96px; }
 
 /* Cells are editable in place: an input that looks like text until you touch it. */
 .task-table td input,
@@ -2344,13 +2377,14 @@ kbd {
 .split-handle:focus-visible::after { background: var(--focus); }
 .split-handle:focus-visible { outline: none; }
 /* Fixed layout, so the chart gets the room the inputs would otherwise claim. */
-.task-split .task-table { width: 884px; table-layout: fixed; }
+.task-split .task-table { width: 932px; table-layout: fixed; }
 /* Once the divider sets a width, a wider table gives the room to the task name. */
-.task-split-table.is-sized .task-table { width: max(884px, 100%); }
+.task-split-table.is-sized .task-table { width: max(932px, 100%); }
 .task-split .task-table .c-name { width: auto; min-width: 0; }
 .task-split .task-table .c-env { width: 104px; }
 .task-split .task-table .c-num { width: 52px; }
 .task-split .task-table .c-after { width: 64px; }
+.task-split .task-table .c-code { width: 48px; }
 .task-split .task-table .c-date { width: 114px; }
 .task-split .task-table .c-status { width: 140px; }
 .task-split .task-table td { overflow: hidden; }

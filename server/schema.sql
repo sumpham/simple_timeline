@@ -111,7 +111,11 @@ CREATE TABLE IF NOT EXISTS task (
   -- children a level (server/plan.ts), so SET NULL is only a safety net.
   parent_id      INTEGER REFERENCES task(id) ON DELETE SET NULL,
   -- Percent complete as typed; NULL means work it out from status. Not scheduling.
-  progress       INTEGER CHECK (progress IS NULL OR progress BETWEEN 0 AND 100)
+  progress       INTEGER CHECK (progress IS NULL OR progress BETWEEN 0 AND 100),
+  -- The task's ID as people write it, in After and in files: a whole number,
+  -- unique in its project (index in server/db.ts), typed or given the next free
+  -- one. Links are stored by `id`, so renumbering never breaks one.
+  code           INTEGER CHECK (code IS NULL OR code > 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_project ON task(project_id, sort_order);
