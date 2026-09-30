@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { api, type BoardData, type PlanData, type SavedLayout, type TaskChange, type TaskInput } from '../api.ts';
 import type {
-  BookingView, Environment, ISODate, LinkType, PlanImpact, Project, Task, TaskDependency, TaskSchedule, TaskStatus,
+  BookingView, Environment, ISODate, LinkType, PlanImpact, Project, Resource, Task, TaskDependency, TaskSchedule, TaskStatus,
 } from '../../shared/types.ts';
+import { applyResourcePick, formatResources, parseResources, resourceSuggestions, type ResourceSuggestion } from '../../shared/resources.ts';
 import { formatDate, formatRange } from '../layout.ts';
 import { addDays, isWorkingDay, isValidISODate, maxDate, workingDays } from '../../shared/dates.ts';
 import { afterSuggestions, applySuggestion, formatPredecessors, parseAfter } from '../predecessors.ts';
@@ -52,7 +53,7 @@ function normalize(p: PlanData): PlanData {
 }
 
 export function PlanView({
-  projectId, projects, environments, holidays, today, onBack, onSwitchProject, onChanged, onRelease,
+  projectId, projects, environments, holidays, today, onBack, onSwitchProject, onChanged, onRelease, peopleVersion = 0,
 }: {
   projectId: number;
   /** Non-working days besides weekends; a typed finish counts working days around them. */
@@ -65,6 +66,8 @@ export function PlanView({
   /** Something on the board may have moved; refresh it. */
   onChanged: () => void;
   onRelease: (b: BookingView) => Promise<void>;
+  /** Changes when people are renamed or merged elsewhere; the plan reloads to show it. */
+  peopleVersion?: number;
 }) {
   const [plan, setPlanRaw] = useState<PlanData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +100,7 @@ export function PlanView({
   }, [projectId]);
 
   useEffect(() => { setPlanRaw(null); setBoard(null); setEditing(null); setOutcome(null); setArrangeUndo(null); void load(); }, [load]);
+  useEffect(() => { if (peopleVersion) void load(); }, [peopleVersion]);
 
   // The strip and the drag preview need everyone's bookings, not just this plan's.
   const teamId = plan?.project.team_id;
@@ -114,6 +118,8 @@ export function PlanView({
   /** TaskIDs, which After is written in; rows only number the table. */
   const codeOf = useMemo(() => codesById(plan?.tasks ?? []), [plan]);
   const outlineRows = useMemo(() => new Map(outline(plan?.tasks ?? []).map((r) => [r.id, r])), [plan]);
+  /** Everyone by id: tasks name their people by `resource_ids`. */
+  const people = useMemo(() => new Map((plan?.resources ?? []).map((r) => [r.id, r])), [plan]);
 
   /** Apply a server answer: the new plan, and a nudge to the board behind us. */
   const accept = (next: PlanData) => {
@@ -164,6 +170,8 @@ export function PlanView({
       if (k === 'predecessors') {
         back.predecessors = plan!.dependencies.filter((d) => d.successor_id === t.id)
           .map((d) => ({ id: d.predecessor_id, lag: d.lag, type: d.type ?? 'FS' }));
+      } else if (k === 'resources') {
+        back.resources = formatResources(t.resource_ids, people);
       } else {
         (back as Record<string, unknown>)[k] = t[k as keyof Task] ?? null;
       }
@@ -321,6 +329,7 @@ export function PlanView({
     schedule,
     deps: plan!.dependencies,
     environments,
+    resources: plan!.resources,
   });
   const exportCsv = () => download(`${slug(plan!.project.name)}-plan.csv`, toCsv(fileData()), 'text/csv');
   const exportXml = () => download(`${slug(plan!.project.name)}-plan.xml`,
@@ -642,19 +651,27 @@ function download(name: string, text: string, type: string) {
 
 // ---------------------------------------------------------------- chart settings
 
-type ChartPrefs = { zoom: Zoom; show: GanttShow; /** The table's WBS column (1.2.3). */ wbs: boolean };
+type ChartPrefs = {
+  zoom: Zoom;
+  show: GanttShow;
+  /** The table's WBS column (1.2.3). */
+  wbs: boolean;
+  /** The table's Who column: the people on each task. */
+  who: boolean;
+};
 const PREFS_KEY = 'plan.chart';
 const DEFAULT_PREFS: ChartPrefs = {
   zoom: 'day',
   show: { float: true, labels: true, baseline: true, bookings: false, strip: true },
   wbs: false,
+  who: true,
 };
 
 function readPrefs(): ChartPrefs {
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? 'null');
     if (!raw || !ZOOMS.includes(raw.zoom)) return DEFAULT_PREFS;
-    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true };
+    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true, who: raw.who !== false };
   } catch {
     return DEFAULT_PREFS;
   }
@@ -727,6 +744,7 @@ function TaskTable({
   const nextCode = nextTaskCode(plan.tasks);
   const idOfCode = useMemo(() => taskIdsByCode(plan.tasks), [plan.tasks]);
   const choices = useMemo(() => plan.tasks.map((t) => ({ id: t.id, code: codeOf.get(t.id)!, name: t.name })), [plan.tasks, codeOf]);
+  const people = useMemo(() => new Map(plan.resources.map((r) => [r.id, r])), [plan.resources]);
   const tableRef = useRef<HTMLTableElement>(null);
   const splitRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -790,10 +808,10 @@ function TaskTable({
     (id) => {
       const t = plan.tasks.find((x) => x.id === id)!;
       if (criticalOnly && !schedule.get(id)?.critical) return false;
-      return !q || t.name.toLowerCase().includes(q) || (t.assignee ?? '').toLowerCase().includes(q) || String(codeOf.get(id)) === q;
+      return !q || t.name.toLowerCase().includes(q) || formatResources(t.resource_ids, people).toLowerCase().includes(q) || String(codeOf.get(id)) === q;
     },
     collapsed,
-  ), [outlineRows, plan.tasks, schedule, criticalOnly, q, collapsed, codeOf]);
+  ), [outlineRows, plan.tasks, schedule, criticalOnly, q, collapsed, codeOf, people]);
   const hiddenCount = plan.tasks.length - visible.size;
 
   const progress = useMemo(() => {
@@ -1015,6 +1033,10 @@ function TaskTable({
               <input type="checkbox" checked={prefs.wbs} onChange={(e) => setPrefs((p) => ({ ...p, wbs: e.target.checked }))} />
               <span>WBS column<small>Each task’s place in the outline, as 1.2.3</small></span>
             </label>
+            <label className="check" title="Who does each task">
+              <input type="checkbox" checked={prefs.who} onChange={(e) => setPrefs((p) => ({ ...p, who: e.target.checked }))} />
+              <span>Who column<small>The people on each task; type names with commas between</small></span>
+            </label>
           </div>
         </details>
         {deepest > 0 && (
@@ -1078,7 +1100,7 @@ function TaskTable({
         className={`task-split-table${tableWidth != null && plan.tasks.length ? ' is-sized' : ''}`}
         style={tableWidth != null && plan.tasks.length ? { width: tableWidth } : undefined}
       >
-      <table className={`task-table${rowDrag ? ' is-reordering' : ''}${prefs.wbs ? ' has-wbs' : ''}`} ref={tableRef}>
+      <table className={`task-table${rowDrag ? ' is-reordering' : ''}${prefs.wbs ? ' has-wbs' : ''}${prefs.who ? ' has-who' : ''}`} ref={tableRef}>
         <thead>
           <tr>
             <th scope="col" className="c-row"><span className="visually-hidden">Row</span></th>
@@ -1088,6 +1110,7 @@ function TaskTable({
             <th scope="col" className="c-env">Environment</th>
             <th scope="col" className="c-num">Days</th>
             <th scope="col" className="c-after" title="IDs of the tasks this one waits for. 2+3 means three working days after task 2 ends; 2SS starts with it, 2FF finishes with it.">After</th>
+            {prefs.who && <th scope="col" className="c-who" title="Who does the task, with commas between names. A new name adds that person; a summary's people are its owners.">Who</th>}
             <th scope="col" className="c-date">Start</th>
             <th scope="col" className="c-date">Finish</th>
             <th scope="col" className="c-num">Float</th>
@@ -1163,7 +1186,6 @@ function TaskTable({
                       if (rowOf.get(t.id) === plan.tasks.length) addRef.current?.focus();
                     }}
                   />
-                  {t.assignee && <span className="task-assignee" title={summary ? 'Owner' : 'Assignee'}>{t.assignee}</span>}
                   {summary && (
                     <span className="task-count" title={`${done} of ${leaves.length} done`}>
                       {leaves.length} task{leaves.length === 1 ? '' : 's'}{blocked ? `, ${blocked} blocked` : ''}
@@ -1226,6 +1248,21 @@ function TaskTable({
                     }}
                   />
                 </td>
+                {prefs.who && (
+                  <td className="c-who" data-label={summary ? 'Owner' : 'Who'}>
+                    <ResourceCell
+                      value={formatResources(t.resource_ids, people)}
+                      resources={plan.resources}
+                      label={summary ? `Owner of ${t.name}` : `Who does ${t.name}`}
+                      onCommit={(v) => {
+                        const parsed = parseResources(v);
+                        if (!parsed.ok) { onError(parsed.error); return false; }
+                        if (parsed.names.join(', ') === formatResources(t.resource_ids, people)) return undefined;
+                        return onUpdate(t, { resources: parsed.names.join(', ') });
+                      }}
+                    />
+                  </td>
+                )}
                 <td className="c-date" data-label="Start">
                   {!s ? '—' : summary ? <span className="cell-quiet">{formatDate(s.start)}</span>
                     : <DateCell field="start" label={`Start of ${t.name}`} value={s.start} onCommit={(d) => onSetStart(t, d)} />}
@@ -1336,6 +1373,7 @@ function TaskTable({
           baseline={baseline}
           bookings={plan.bookings}
           progress={progress}
+          people={people}
           strip={strip}
           command={command}
           preview={preview}
@@ -1353,6 +1391,7 @@ function TaskTable({
         Enter moves on, drag a row number or press Alt+↑/↓ to reorder, Alt+Shift+→/← puts a task under the one above or takes it out.
         In After, write task IDs (type a number or part of a name to pick one):
         {' '}<kbd>2</kbd>, <kbd>2+3</kbd> to wait three working days, <kbd>2SS</kbd> to start with it, <kbd>2FF</kbd> to finish with it.
+        In Who, write names with commas between (<kbd>Mai, Tuan</kbd>); a new name adds that person.
         On the chart, drag a bar to move it, its right end to change its length, or the dot after it onto another task to link them.
       </p>
     </div>
@@ -1643,6 +1682,162 @@ function AfterCell({ value, choices, ownId, onCommit }: {
 }
 
 /**
+ * Who, with everyone at hand: the name under the caret offers the people who
+ * match it, and a name nobody has yet shows as new, with the known person it is
+ * probably a slip for first (`Tuấn` typed where `Tuan` exists).
+ */
+function ResourceInput({
+  value, onValue, resources, label, placeholder, invalid, field, onEnter, onEscape, onBlur,
+}: {
+  value: string;
+  onValue: (v: string) => void;
+  resources: readonly Resource[];
+  label: string;
+  placeholder?: string;
+  invalid?: boolean;
+  field?: string;
+  onEnter?: () => void;
+  onEscape?: () => void;
+  onBlur?: () => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  const listId = useId();
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [caret, setCaret] = useState(0);
+  const found = useMemo(() => resourceSuggestions(value, caret, resources), [value, caret, resources]);
+  const shown = open && found.items.length > 0;
+  const at = shown ? ref.current?.getBoundingClientRect() : undefined;
+
+  useEffect(() => {
+    if (!shown) return;
+    const close = (e: Event) => { if (e.target !== ref.current) setOpen(false); };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
+  }, [shown]);
+
+  const pick = (item: ResourceSuggestion) => {
+    const next = applyResourcePick(value, found.from, found.to, item.kind === 'known' ? item.resource.name : item.name);
+    onValue(next.text);
+    setOpen(false);
+    requestAnimationFrame(() => { ref.current?.setSelectionRange(next.caret, next.caret); setCaret(next.caret); });
+  };
+
+  return (
+    <>
+      <input
+        ref={ref}
+        data-field={field}
+        aria-label={label}
+        aria-invalid={invalid || undefined}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={shown}
+        aria-controls={listId}
+        aria-activedescendant={shown ? `${listId}-${active}` : undefined}
+        autoComplete="off"
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => { onValue(e.target.value); setCaret(e.target.selectionStart ?? e.target.value.length); setOpen(true); setActive(0); }}
+        onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+        onBlur={() => { setOpen(false); onBlur?.(); }}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' && !e.altKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!shown) { setCaret(e.currentTarget.selectionStart ?? 0); setOpen(true); setActive(0); } else setActive((i) => (i + 1) % found.items.length);
+          } else if (e.key === 'ArrowUp' && shown && !e.altKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            setActive((i) => (i - 1 + found.items.length) % found.items.length);
+          } else if (e.key === 'Enter' && shown) {
+            e.preventDefault();
+            e.stopPropagation();
+            pick(found.items[Math.min(active, found.items.length - 1)]);
+          } else if (e.key === 'Escape' && shown) {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(false);
+          } else if (e.key === 'Enter') {
+            e.preventDefault();
+            onEnter?.();
+          } else if (e.key === 'Escape') {
+            onEscape?.();
+          }
+        }}
+      />
+      {shown && at && (
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label={`People for ${label}`}
+          className="after-suggest"
+          style={{ top: at.bottom + 2, left: at.left, minWidth: Math.max(at.width, 220) }}
+        >
+          {found.items.map((item, i) => (
+            <li
+              key={item.kind === 'known' ? item.resource.id : `new:${item.name}`}
+              id={`${listId}-${i}`}
+              role="option"
+              aria-selected={i === active}
+              onPointerDown={(e) => { e.preventDefault(); pick(item); }}
+              onPointerEnter={() => setActive(i)}
+            >
+              {item.kind === 'known' ? (
+                <span className="after-suggest-name">{item.resource.name}</span>
+              ) : (
+                <>
+                  <span className="after-suggest-code" aria-hidden="true">＋</span>
+                  <span className="after-suggest-name">New: {item.name}</span>
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/** The Who cell: the table's commit-on-leave editing, over ResourceInput. */
+function ResourceCell({ value, resources, label, onCommit }: {
+  value: string;
+  resources: readonly Resource[];
+  label: string;
+  onCommit: (v: string) => Promise<boolean> | boolean | undefined;
+}) {
+  const [text, setText] = useState(value);
+  const [invalid, setInvalid] = useState(false);
+  const committing = useRef(false);
+  useEffect(() => { setText(value); setInvalid(false); }, [value]);
+
+  const commit = async () => {
+    if (committing.current || text === value) return;
+    committing.current = true;
+    const result = await onCommit(text);
+    committing.current = false;
+    if (result === false) setInvalid(true);
+    else if (result === undefined) setText(value);
+  };
+
+  return (
+    <ResourceInput
+      field="who"
+      label={label}
+      value={text}
+      onValue={(v) => { setText(v); setInvalid(false); }}
+      resources={resources}
+      placeholder="—"
+      invalid={invalid}
+      onBlur={() => void commit()}
+      onEnter={() => void commit()}
+      onEscape={() => { setText(value); setInvalid(false); }}
+    />
+  );
+}
+
+/**
  * A scheduled date you can overwrite. The picker commits at once; typing waits
  * until the date is whole (a four-digit year) and the caret has rested, so a
  * half-typed year never reschedules the plan.
@@ -1723,7 +1918,8 @@ function TaskEditor({
   const [status, setStatus] = useState<TaskStatus>(task.status);
   const [actualStart, setActualStart] = useState(task.actual_start ?? '');
   const [actualEnd, setActualEnd] = useState(task.actual_end ?? '');
-  const [assignee, setAssignee] = useState(task.assignee ?? '');
+  const people = useMemo(() => new Map(plan.resources.map((r) => [r.id, r])), [plan.resources]);
+  const [who, setWho] = useState(() => formatResources(task.resource_ids, people));
   const [note, setNote] = useState(task.note ?? '');
   const [parentId, setParentId] = useState<number | null>(task.parent_id ?? null);
   const [progressText, setProgressText] = useState(task.progress == null ? '' : String(task.progress));
@@ -1745,7 +1941,8 @@ function TaskEditor({
   const codeError = !Number.isInteger(code) || code < 1 || code > TASK_CODE_MAX ? `A whole number, 1 to ${TASK_CODE_MAX}.`
     : codeHolder != null && codeHolder !== task.id ? `Already ${plan.tasks.find((x) => x.id === codeHolder)?.name}.` : null;
   const days = Number(duration);
-  const valid = name.trim() && Number.isInteger(days) && days >= 0 && parsed.ok && progressOk && !codeError;
+  const whoParsed = parseResources(who);
+  const valid = name.trim() && Number.isInteger(days) && days >= 0 && parsed.ok && progressOk && !codeError && whoParsed.ok;
 
   /** Only what changed goes to the server, so undo and the audit log stay precise. */
   const fields = useMemo<TaskInput>(() => {
@@ -1761,10 +1958,10 @@ function TaskEditor({
     if (status !== task.status) f.status = status;
     if ((actualStart || null) !== task.actual_start && status !== 'todo') f.actual_start = actualStart || null;
     if ((actualEnd || null) !== task.actual_end && status === 'done') f.actual_end = actualEnd || null;
-    if ((assignee.trim() || null) !== task.assignee) f.assignee = assignee.trim() || null;
+    if (whoParsed.ok && whoParsed.names.join(', ') !== formatResources(task.resource_ids, people)) f.resources = whoParsed.names.join(', ');
     if ((note.trim() || null) !== task.note) f.note = note.trim() || null;
     return f;
-  }, [name, envId, days, after, code, codeError, notBefore, status, actualStart, actualEnd, assignee, note, parentId, progressN, progressOk, task, plan, codeOf]);
+  }, [name, envId, days, after, code, codeError, notBefore, status, actualStart, actualEnd, who, note, parentId, progressN, progressOk, task, plan, codeOf, people]);
 
   const dirty = Object.keys(fields).length > 0;
   const key = JSON.stringify(fields);
@@ -1901,8 +2098,16 @@ function TaskEditor({
             </label>
           )}
           <label className="stack">
-            {summary ? 'Owner' : 'Assignee'}
-            <input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder={summary ? 'Who is accountable for it' : 'Who does it'} />
+            {summary ? 'Owner' : 'Who'}
+            <ResourceInput
+              value={who}
+              onValue={setWho}
+              resources={plan.resources}
+              label={summary ? 'Owner' : 'Who'}
+              placeholder={summary ? 'Who is accountable for it' : 'e.g. Mai, Tuan'}
+              invalid={!whoParsed.ok}
+            />
+            <span className="field-hint">{whoParsed.ok ? 'Names with commas between. A new name adds that person.' : whoParsed.error}</span>
           </label>
         </div>
         {!summary && (

@@ -9,7 +9,7 @@ const MON = '2026-03-02';
 function task(id: number, duration: number, partial: Partial<Task> = {}): Task {
   return {
     id, project_id: 1, environment_id: null, name: `T${id}`, duration, status: 'todo', not_before: null,
-    assignee: null, note: null, sort_order: id, actual_start: null, actual_end: null,
+    note: null, sort_order: id, actual_start: null, actual_end: null,
     start_date: null, end_date: null, total_float: null, critical: 0, ...partial,
   };
 }

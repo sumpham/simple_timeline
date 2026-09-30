@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { calendarDays, isWeekend, workingDays } from '../../shared/dates.ts';
 import { defaultTimelineText, effectiveKind, timelineTextToStore } from '../../shared/bookings.ts';
-import { MARKERS, type BookingView, type Environment, type ISODate, type Marker, type Project, type Team } from '../../shared/types.ts';
+import { MARKERS, type BookingView, type Environment, type ISODate, type Marker, type Project, type Resource, type Team } from '../../shared/types.ts';
 import { MarkerIcon } from './Board.tsx';
 import { formatRange as formatRangeShort } from '../layout.ts';
 
@@ -749,6 +749,106 @@ export function TeamsDialog({
             </div>
           </div>
         )}
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * The people tasks name. Nobody is added here: a name typed in a task's Who
+ * column makes the person. This is for tidying up: renaming (every task
+ * follows), merging a slip into the right person, and removing.
+ */
+export function ResourcesDialog({
+  resources, onUpdate, onMerge, onDelete, onClose, error, busy,
+}: {
+  /** Null while the list loads. */
+  resources: Resource[] | null;
+  onUpdate: (id: number, r: { name?: string; active?: boolean }) => void;
+  onMerge: (id: number, into: number) => void;
+  onDelete: (id: number) => void;
+  onClose: () => void;
+  error?: string;
+  busy?: boolean;
+}) {
+  const [mergeInto, setMergeInto] = useState<Record<number, number>>({});
+  const count = (n: number | undefined, one: string) => `${n ?? 0} ${one}${n === 1 ? '' : 's'}`;
+
+  return (
+    <Modal
+      title="Resources"
+      busy={busy}
+      subtitle="Everyone named in a task’s Who column, across all teams. Type a new name on a task to add someone."
+      onClose={onClose}
+      footer={
+        <>
+          <span className="spacer" />
+          <button type="button" className="btn" onClick={onClose}>Done</button>
+        </>
+      }
+    >
+      <div className="dialog-body">
+        {error && <p className="note warn">{error}</p>}
+        {resources == null && <p className="manager-meta">Loading…</p>}
+        {resources?.length === 0 && (
+          <p className="manager-meta">Nobody yet. Type names in a task’s Who column, with commas between them.</p>
+        )}
+
+        {resources?.map((r) => {
+          const others = resources.filter((o) => o.id !== r.id);
+          const target = mergeInto[r.id];
+          return (
+            <div key={r.id} className="manager-item">
+              <div className="manager-row">
+                <label className="stack grow">
+                  Name
+                  <input
+                    key={r.name}
+                    defaultValue={r.name}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (v && v !== r.name) onUpdate(r.id, { name: v });
+                      else e.target.value = r.name;
+                    }}
+                  />
+                </label>
+                <label className="check" title="Inactive people keep their tasks but are no longer suggested">
+                  <input type="checkbox" checked={r.active !== 0} onChange={(e) => onUpdate(r.id, { active: e.target.checked })} />
+                  <span>Active</span>
+                </label>
+                <DangerButton
+                  label="Remove"
+                  confirmLabel={r.task_count ? `Takes them off ${count(r.task_count, 'task')} — go ahead?` : 'Remove them?'}
+                  onConfirm={() => onDelete(r.id)}
+                />
+              </div>
+              <div className="manager-row indent">
+                <span className="manager-meta grow">
+                  {r.task_count ? `${count(r.task_count, 'task')} · ${count(r.project_count, 'project')}` : 'Unassigned'}
+                  {r.active === 0 ? ' · inactive' : ''}
+                </span>
+                {others.length > 0 && (
+                  <>
+                    <select
+                      aria-label={`Merge ${r.name} into`}
+                      value={target ?? ''}
+                      onChange={(e) => setMergeInto((m) => ({ ...m, [r.id]: Number(e.target.value) }))}
+                    >
+                      <option value="" disabled>Merge into…</option>
+                      {others.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    </select>
+                    <DangerButton
+                      label="Merge"
+                      disabled={target == null}
+                      confirmLabel={`Moves ${count(r.task_count, 'task')} to ${others.find((o) => o.id === target)?.name ?? ''} — go ahead?`}
+                      onConfirm={() => { if (target != null) onMerge(r.id, target); }}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </Modal>
   );

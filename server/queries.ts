@@ -1,7 +1,7 @@
 import { all } from './db.ts';
 import { calendarDays, workingDays } from '../shared/dates.ts';
 import { releaseFrom, taskSpan } from '../shared/taskHolds.ts';
-import type { BookingView, Environment, Holiday, ISODate, Project, Task, Team } from '../shared/types.ts';
+import type { BookingView, Environment, Holiday, ISODate, Project, Resource, Task, Team } from '../shared/types.ts';
 
 type RawBooking = Omit<BookingView, 'calendar_days' | 'working_days' | 'is_milestone' | 'auto' | 'tasks' | 'release_from'>;
 
@@ -142,5 +142,26 @@ function tasksOnEnvironments(projectIds: number[]) {
 }
 
 export function listTasks(projectId: number): Task[] {
-  return all<Task>('SELECT * FROM task WHERE project_id = ? ORDER BY sort_order, id', projectId);
+  const who = new Map<number, number[]>();
+  for (const r of all<{ task_id: number; resource_id: number }>(
+    `SELECT tr.task_id, tr.resource_id FROM task_resource tr JOIN task t ON t.id = tr.task_id
+     WHERE t.project_id = ? ORDER BY tr.task_id, tr.sort_order`, projectId,
+  )) {
+    if (!who.has(r.task_id)) who.set(r.task_id, []);
+    who.get(r.task_id)!.push(r.resource_id);
+  }
+  return all<Task>('SELECT * FROM task WHERE project_id = ? ORDER BY sort_order, id', projectId)
+    .map((t) => ({ ...t, resource_ids: who.get(t.id) ?? [] }));
+}
+
+/** Every person, with how much they are on; for the Resources dialog and the Who suggestions. */
+export function listResources(): Resource[] {
+  return all<Resource>(
+    `SELECT r.id, r.name, r.active,
+            COUNT(tr.task_id) AS task_count, COUNT(DISTINCT t.project_id) AS project_count
+     FROM resource r
+     LEFT JOIN task_resource tr ON tr.resource_id = r.id
+     LEFT JOIN task t ON t.id = tr.task_id
+     GROUP BY r.id ORDER BY r.name COLLATE NOCASE`,
+  );
 }

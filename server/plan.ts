@@ -137,7 +137,7 @@ export function replanAll() {
 export type Predecessor = { id: number; lag: number; type?: LinkType };
 
 export type TaskFields = Partial<Pick<Task,
-  'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'assignee' | 'note' | 'actual_start' | 'actual_end'
+  'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'note' | 'actual_start' | 'actual_end'
   | 'parent_id' | 'progress' | 'code'>>
   & { predecessors?: Predecessor[] };
 
@@ -196,7 +196,7 @@ export function applyChange(state: PlanState, change: Change): PlanState {
     const inherited = afterIndex >= 0 ? tasks[afterIndex].parent_id ?? null : null;
     const task: Task = {
       id: NEW_TASK_ID, project_id: state.project.id, environment_id: null, name: '', duration: 1, status: 'todo',
-      not_before: null, assignee: null, note: null, sort_order: 0, actual_start: null, actual_end: null,
+      not_before: null, note: null, sort_order: 0, actual_start: null, actual_end: null,
       start_date: null, end_date: null, total_float: null, critical: 0, parent_id: inherited, progress: null,
       code: nextTaskCode(tasks),
       ...stripPreds(change.fields),
@@ -379,12 +379,12 @@ export function writeState(before: PlanState, next: PlanState): number | null {
   for (const t of before.tasks) if (!keep.has(t.id)) run('DELETE FROM task WHERE id = ?', t.id);
 
   for (const t of next.tasks) {
-    const cols = [t.environment_id, t.name, t.duration, t.status, t.not_before, t.assignee, t.note, t.sort_order,
+    const cols = [t.environment_id, t.name, t.duration, t.status, t.not_before, t.note, t.sort_order,
       t.actual_start, t.actual_end, t.parent_id ?? null, t.progress ?? null, t.code ?? null];
     if (t.id === NEW_TASK_ID) {
       createdId = Number(run(
-        `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, assignee, note, sort_order,
-                           actual_start, actual_end, parent_id, progress, code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, note, sort_order,
+                           actual_start, actual_end, parent_id, progress, code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         next.project.id, ...cols,
       ).lastInsertRowid);
       continue;
@@ -395,7 +395,7 @@ export function writeState(before: PlanState, next: PlanState): number | null {
     if ((old.parent_id ?? null) !== (t.parent_id ?? null)) audit('task', t.id, 'parent_id', old.parent_id, t.parent_id);
     if ((old.code ?? null) !== (t.code ?? null)) audit('task', t.id, 'code', old.code, t.code);
     run(
-      `UPDATE task SET environment_id = ?, name = ?, duration = ?, status = ?, not_before = ?, assignee = ?, note = ?,
+      `UPDATE task SET environment_id = ?, name = ?, duration = ?, status = ?, not_before = ?, note = ?,
                        sort_order = ?, actual_start = ?, actual_end = ?, parent_id = ?, progress = ?, code = ? WHERE id = ?`,
       ...cols, t.id,
     );

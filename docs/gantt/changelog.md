@@ -11,3 +11,4 @@ All on `main`, 2026-09-29.
 | `21f9af5` | Critical links red on the chart |
 | `52f1053` | Critical arrows red in the network diagram (hovered arrows keep an ink head) |
 | `afd29d4` | Critical bars and arrows red in the portfolio |
+| — | People on tasks (2026-09-30): Who column typed like After, several people per task, a global resource list built from what is typed, Resources dialog, labels after bars, CSV and MSPDI Resources/Assignments. `reqs/resources.md` |

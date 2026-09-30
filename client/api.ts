@@ -1,5 +1,5 @@
 import type {
-  Booking, Conflict, Environment, Holiday, ISODate, PlanImpact, Project, Task, TaskDependency, TaskHold, TaskSchedule, Team,
+  Booking, Conflict, Environment, Holiday, ISODate, PlanImpact, Project, Resource, Task, TaskDependency, TaskHold, TaskSchedule, Team,
 } from '../shared/types.ts';
 import type { BookingView, LinkType } from '../shared/types.ts';
 import type { OutlinePlacement } from '../shared/wbs.ts';
@@ -30,6 +30,8 @@ export type PlanData = {
   bookings: BookingView[];
   /** Each task's dates when the baseline was saved; empty without one. */
   baseline: { task_id: number; start_date: ISODate; end_date: ISODate }[];
+  /** Every person, for names and the Who suggestions; tasks name them by `resource_ids`. */
+  resources: Resource[];
 };
 
 /** Every plan of a team, for the portfolio chart. Read-only. */
@@ -53,11 +55,14 @@ export type SavedLayout = {
   dependencies: ({ predecessor_id: number; successor_id: number } & LinkRoute)[];
 };
 
-/** What a task form sends. `predecessors` replaces the whole set when present. */
+/**
+ * What a task form sends. `predecessors` replaces the whole set when present;
+ * so does `resources`, the Who text (`Mai, Tuan`), whose new names become people.
+ */
 export type TaskInput = Partial<Pick<Task,
-  'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'assignee' | 'note' | 'actual_start' | 'actual_end'
+  'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'note' | 'actual_start' | 'actual_end'
   | 'parent_id' | 'progress' | 'code'>>
-  & { predecessors?: { id: number; lag: number; type?: LinkType }[] };
+  & { predecessors?: { id: number; lag: number; type?: LinkType }[]; resources?: string };
 
 export type TaskChange =
   | { op: 'create'; fields: TaskInput; after_id?: number | null }
@@ -147,6 +152,13 @@ export const api = {
   portfolio: (teamId: number) => request<PortfolioData>(`/api/teams/${teamId}/portfolio`),
   releaseBooking: (id: number) =>
     request<Booking & { previous_end: ISODate }>(`/api/bookings/${id}/release`, { method: 'POST' }),
+
+  resources: () => request<Resource[]>('/api/resources'),
+  updateResource: (id: number, body: { name?: string; active?: boolean }) =>
+    request<Resource>(`/api/resources/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  mergeResource: (id: number, into: number) =>
+    request<Resource>(`/api/resources/${id}/merge`, { method: 'POST', body: JSON.stringify({ into }) }),
+  deleteResource: (id: number) => request<void>(`/api/resources/${id}`, { method: 'DELETE' }),
 
   resolveConflict: (body: { environment_id: number; booking_ids: number[] }) =>
     request<{ key: string }>('/api/conflicts/resolve', { method: 'POST', body: JSON.stringify(body) }),

@@ -11,7 +11,7 @@ Scroll the chart sideways; the table stays put.
 | **Fit** | Picks the widest step that shows the whole plan and scrolls to its start |
 | **Today** | Scrolls to this week (the chart also opens there) |
 | **Show ▾** | Labels, Float, Baseline, Bookings, Environments. Remembered in this browser |
-| **Find a task or person** | Filters rows by name, assignee or ID. A match keeps its summaries so the outline still reads |
+| **Find a task or person** | Filters rows by name, person or ID. A match keeps its summaries so the outline still reads |
 | **Critical only** | Shows only critical tasks |
 | **Save / Update baseline** | Keeps every task's current dates to compare against later |
 | **Clear baseline** | Removes it (click twice: it arms first) |
@@ -96,7 +96,7 @@ that a parent is the sum of its parts:
 - it books no environment. The first sub-task it gains takes its environment, so its booking
   moves down to the work instead of disappearing;
 - its **Start no earlier than** holds every task under it;
-- its assignee reads as its **Owner**, the person accountable for it;
+- its Who reads as its **Owner**, the people accountable for it;
 - the table says how many tasks it holds and how many are blocked, and the ▾ folds it.
 
 Status rolls up as: done when every task is done, in progress once any has started (even if
@@ -154,7 +154,7 @@ link types and lags, progress and "start no earlier than".
 
 **Import** reads either format and adds the tasks after the plan's last row, all at once. CSV
 headers are matched loosely (`Task` or `Name`, `Days` or `Duration`, `After` or `Predecessors`,
-`Summary` or a `WBS` column like `1.2`, `Environment`, `Status`, `Progress`, `Assignee`,
+`Summary` or a `WBS` column like `1.2`, `Environment`, `Status`, `Progress`, `Resources` (or `Assignee`),
 `Start no earlier than`, `Note`). An environment the team does not have is left out, and the
 note after the import says so.
 

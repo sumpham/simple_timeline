@@ -93,7 +93,6 @@ CREATE TABLE IF NOT EXISTS task (
   status         TEXT    NOT NULL DEFAULT 'todo'
                          CHECK (status IN ('todo','in_progress','blocked','done')),
   not_before     TEXT,
-  assignee       TEXT,
   note           TEXT,
   sort_order     INTEGER NOT NULL DEFAULT 0,
   actual_start   TEXT,
@@ -154,6 +153,30 @@ CREATE TABLE IF NOT EXISTS task_baseline (
 );
 
 CREATE INDEX IF NOT EXISTS idx_baseline_project ON task_baseline(project_id);
+
+-- A person (later, any named resource) who does work on tasks. Made the first
+-- time a name is typed on a task (shared/resources.ts); global, not per team, so
+-- one person's work is counted wherever it is. Outlives its tasks: removed only
+-- by delete or merge.
+CREATE TABLE IF NOT EXISTS resource (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT    NOT NULL,
+  -- resourceKey(name): case-insensitive, accents kept. The match rule.
+  name_key   TEXT    NOT NULL UNIQUE,
+  active     INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Who does a task, in the order typed. Written by the task routes, never by
+-- replan, and never read by scheduling.
+CREATE TABLE IF NOT EXISTS task_resource (
+  task_id     INTEGER NOT NULL REFERENCES task(id)     ON DELETE CASCADE,
+  resource_id INTEGER NOT NULL REFERENCES resource(id) ON DELETE CASCADE,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (task_id, resource_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_resource_res ON task_resource(resource_id);
 
 CREATE TABLE IF NOT EXISTS holiday (
   date TEXT PRIMARY KEY,

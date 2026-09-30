@@ -2,7 +2,7 @@
  * Demo data. Deliberately contains double-bookings -- an empty board proves nothing
  * about the feature the tool exists for.
  */
-import { db, run, transaction } from './db.ts';
+import { db, ensureResources, run, setTaskResources, transaction } from './db.ts';
 import { replan } from './plan.ts';
 import { addWorkingDays, snapToWorkingDay, today } from '../shared/dates.ts';
 import type { ISODate } from '../shared/types.ts';
@@ -27,11 +27,11 @@ const TEAMS = [
         // A plan whose UAT work outgrows the UAT booking made by hand, so the booking stretches.
         tasks: [
           { key: 'hsm', name: 'Deploy HSM stub', dur: 2, status: 'done', actual: [-8, -7] },
-          { key: 'vault', name: 'Build card vault', dur: 4, after: ['hsm'], status: 'done', actual: [-6, -3], assignee: 'Mai' },
-          { key: 'sit', name: 'Vault regression in SIT', env: 'SIT', dur: 8, after: ['vault'], status: 'in_progress', actual: [-2], assignee: 'Tuan' },
-          { key: 'pen', name: 'Pen test scoping', dur: 2, after: ['vault'] },
+          { key: 'vault', name: 'Build card vault', dur: 4, after: ['hsm'], status: 'done', actual: [-6, -3], who: ['Mai'] },
+          { key: 'sit', name: 'Vault regression in SIT', env: 'SIT', dur: 8, after: ['vault'], status: 'in_progress', actual: [-2], who: ['Tuan', 'Lan'] },
+          { key: 'pen', name: 'Pen test scoping', dur: 2, after: ['vault'], who: ['Mai'] },
           { key: 'nft', name: 'Tokenisation soak test', env: 'NFT', dur: 5, after: ['sit'] },
-          { key: 'uat', name: 'Merchant UAT', env: 'UAT', dur: 12, after: [['sit', 1]], assignee: 'Lan' },
+          { key: 'uat', name: 'Merchant UAT', env: 'UAT', dur: 12, after: [['sit', 1]], who: ['Lan'] },
           { key: 'live', name: 'Go / no-go', dur: 0, after: ['nft', 'uat'] },
         ],
         bookings: [
@@ -58,9 +58,9 @@ const TEAMS = [
         start: 10,
         // No NFT booking by hand: the load test books NFT itself and lands on tokenisation's soak.
         tasks: [
-          { key: 'api', name: 'Refund endpoints', dur: 5 },
+          { key: 'api', name: 'Refund endpoints', dur: 5, who: ['Linh', 'Tuan'] },
           { key: 'load', name: 'Refund load test', env: 'NFT', dur: 5, after: ['api'], not_before: 16 },
-          { key: 'docs', name: 'Partner docs', dur: 3, after: ['api'] },
+          { key: 'docs', name: 'Partner docs', dur: 3, after: ['api'], who: ['Linh'] },
         ],
         bookings: [
           { env: 'SIT', kind: 'SIT', start: 16, end: 23 },
@@ -146,7 +146,7 @@ const TEAMS = [
 ] as const;
 
 type SeedTask = {
-  key: string; name: string; dur: number; env?: string; status?: string; assignee?: string;
+  key: string; name: string; dur: number; env?: string; status?: string; who?: readonly string[];
   after?: readonly (string | readonly [string, number])[]; not_before?: number; actual?: readonly number[];
 };
 
@@ -155,10 +155,10 @@ const HOLIDAYS = [
 ];
 
 transaction(() => {
-  for (const table of ['audit_log', 'task_dependency', 'task', 'booking', 'project', 'environment', 'holiday', 'team']) {
+  for (const table of ['audit_log', 'task_resource', 'resource', 'task_dependency', 'task', 'booking', 'project', 'environment', 'holiday', 'team']) {
     run(`DELETE FROM ${table}`);
   }
-  db.exec("DELETE FROM sqlite_sequence WHERE name IN ('team','environment','project','booking','task')");
+  db.exec("DELETE FROM sqlite_sequence WHERE name IN ('team','environment','project','booking','task','resource')");
 
   for (const h of HOLIDAYS) run('INSERT OR REPLACE INTO holiday (date, name) VALUES (?, ?)', h.date, h.name);
 
@@ -209,14 +209,15 @@ transaction(() => {
       project.tasks.forEach((t: SeedTask, i) => {
         const actual = t.actual ?? [];
         taskIds.set(t.key, Number(run(
-          `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, assignee, sort_order,
-                             actual_start, actual_end, code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, sort_order,
+                             actual_start, actual_end, code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           projectId, t.env ? envIds.get(t.env) : null, t.name, t.dur, t.status ?? 'todo',
-          t.not_before != null ? d(t.not_before) : null, t.assignee ?? null, i,
+          t.not_before != null ? d(t.not_before) : null, i,
           actual[0] != null ? d(actual[0]) : null, actual[1] != null ? d(actual[1]) : null, i + 1,
         ).lastInsertRowid));
       });
       for (const t of project.tasks as readonly SeedTask[]) {
+        if (t.who) setTaskResources(taskIds.get(t.key)!, ensureResources(t.who));
         for (const a of t.after ?? []) {
           const [key, lag] = typeof a === 'string' ? [a, 0] : a;
           run('INSERT INTO task_dependency (predecessor_id, successor_id, lag) VALUES (?, ?, ?)',

@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { all, audit, get, run, transaction } from './db.ts';
-import { listBookings, listEnvironments, listHolidays, listProjects, listTeams } from './queries.ts';
+import { all, audit, ensureResources, get, run, setTaskResources, transaction } from './db.ts';
+import { listBookings, listEnvironments, listHolidays, listProjects, listResources, listTeams } from './queries.ts';
 import { applyResolutions, conflictKey, detectConflicts } from '../shared/conflicts.ts';
 import { isValidISODate, isWorkingDay, snapToWorkingDay } from '../shared/dates.ts';
 import { effectiveKind } from '../shared/bookings.ts';
@@ -8,6 +8,7 @@ import { holidaySet, listTasks } from './queries.ts';
 import { applyChange, checkOutline, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
 import { lateBy } from '../shared/schedule.ts';
 import { TASK_CODE_MAX } from '../shared/taskCode.ts';
+import { cleanResourceName, formatResources, parseResources, RESOURCE_NAME_MAX, resourceKey } from '../shared/resources.ts';
 import {
   LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
   type Task,
@@ -557,6 +558,8 @@ function planResponse(projectId: number) {
     baseline: all<{ task_id: number; start_date: ISODate; end_date: ISODate }>(
       'SELECT task_id, start_date, end_date FROM task_baseline WHERE project_id = ?', projectId,
     ),
+    // Everyone, not only this plan's people: the Who column suggests from all of them.
+    resources: listResources(),
   };
 }
 
@@ -595,7 +598,6 @@ function taskFields(body: Record<string, unknown> | undefined, teamId: number): 
   if (body.not_before !== undefined) f.not_before = optionalDate(body.not_before, 'not_before');
   if (body.actual_start !== undefined) f.actual_start = optionalDate(body.actual_start, 'actual_start');
   if (body.actual_end !== undefined) f.actual_end = optionalDate(body.actual_end, 'actual_end');
-  if (body.assignee !== undefined) f.assignee = typeof body.assignee === 'string' && body.assignee.trim() ? body.assignee.trim() : null;
   if (body.note !== undefined) f.note = noteValue(body.note);
   if (body.parent_id !== undefined) {
     // Which project it belongs to is checked with the rest of the outline (checkOutline).
@@ -633,18 +635,53 @@ function taskFields(body: Record<string, unknown> | undefined, teamId: number): 
   return f;
 }
 
+/**
+ * The people a request puts on a task, as names; undefined when it leaves them
+ * alone. Takes the Who text or a list of names, split by the same rule either way.
+ */
+function resourcesFrom(body: Record<string, unknown> | undefined): string[] | undefined {
+  const raw = body?.resources;
+  if (raw === undefined) return undefined;
+  if (raw !== null && typeof raw !== 'string' && !Array.isArray(raw)) throw bad('resources must be text or a list of names');
+  const parsed = parseResources(Array.isArray(raw) ? raw.map((n) => String(n ?? '').replace(/[,;]/g, ' ')).join(',') : raw);
+  if (!parsed.ok) throw bad(parsed.error);
+  return parsed.names;
+}
+
+/** Put these people on a task, making any not seen before, and log the change. Call inside a transaction. */
+function assign(taskId: number, names: string[]) {
+  const byId = new Map(all<{ id: number; name: string }>('SELECT id, name FROM resource').map((r) => [r.id, r]));
+  const old = all<{ resource_id: number }>('SELECT resource_id FROM task_resource WHERE task_id = ? ORDER BY sort_order', taskId)
+    .map((r) => r.resource_id);
+  const ids = ensureResources(names);
+  if (ids.join(',') === old.join(',')) return;
+  setTaskResources(taskId, ids);
+  for (const r of all<{ id: number; name: string }>('SELECT id, name FROM resource')) byId.set(r.id, r);
+  audit('task', taskId, 'resources', formatResources(old, byId) || null, formatResources(ids, byId) || null);
+}
+
 function taskProject(taskId: number): Project {
   const p = get<Project>('SELECT p.* FROM project p JOIN task t ON t.project_id = p.id WHERE t.id = ?', taskId);
   if (!p) throw missing('Task');
   return p;
 }
 
-/** Apply a change and replan, all or nothing. Returns the created task id for a create. */
-function commit(projectId: number, change: Change): number | null {
+/**
+ * Apply a change and replan, all or nothing. Returns the created task id for a
+ * create. `who` puts people on the task in the same transaction; people are not
+ * plan state, so an update that changes only them skips the replan.
+ */
+function commit(projectId: number, change: Change, who?: string[]): number | null {
   return transaction(() => {
+    if (change.op === 'update' && who && !Object.keys(change.fields).length) {
+      assign(change.id, who);
+      return null;
+    }
     const before = loadState(projectId);
     const created = writeState(before, applyChange(before, change));
     replan(projectId);
+    const taskId = change.op === 'create' ? created : change.op === 'update' ? change.id : null;
+    if (who && taskId != null) assign(taskId, who);
     return created;
   });
 }
@@ -678,14 +715,15 @@ router.post('/tasks', handle((req, res) => {
   if (!project) throw bad('A valid project is required');
   const fields = taskFields(req.body, project.team_id);
   if (!fields.name) throw bad('Task name is required');
-  const id = commit(project.id, { op: 'create', fields: fields as TaskFields & { name: string }, after_id: intParam(req.body?.after_id) ?? null });
+  const id = commit(project.id, { op: 'create', fields: fields as TaskFields & { name: string }, after_id: intParam(req.body?.after_id) ?? null },
+    resourcesFrom(req.body));
   res.status(201).json({ id, plan: planResponse(project.id) });
 }));
 
 router.patch('/tasks/:id', handle((req, res) => {
   const id = Number(req.params.id);
   const project = taskProject(id);
-  commit(project.id, { op: 'update', id, fields: taskFields(req.body, project.team_id) });
+  commit(project.id, { op: 'update', id, fields: taskFields(req.body, project.team_id) }, resourcesFrom(req.body));
   res.json({ id, plan: planResponse(project.id) });
 }));
 
@@ -751,6 +789,15 @@ router.delete('/projects/:id/baseline', handle((req, res) => {
 
 const IMPORT_MAX = 2000;
 
+/** A file row's people: `resources` as the Who text or names, or `assignee` from older callers. */
+function resourcesOfRow(r: Record<string, unknown>, at: string): string[] {
+  try {
+    return resourcesFrom({ resources: r.resources ?? r.assignee ?? null }) ?? [];
+  } catch (err) {
+    throw bad(`${at}: ${(err as Error).message}`);
+  }
+}
+
 /**
  * Append tasks from a file (CSV or MS Project XML, parsed in the browser). Rows
  * refer to each other by their 1-based position in the import: `parent` names a
@@ -798,7 +845,7 @@ router.post('/projects/:id/import', handle((req, res) => {
       code: code != null && code >= 1 && code <= TASK_CODE_MAX ? code : null,
       status: r.status ? oneOf(r.status, TASK_STATUSES, 'status') : 'todo' as const,
       not_before: optionalDate(r.not_before, 'not_before'),
-      assignee: typeof r.assignee === 'string' && r.assignee.trim() ? r.assignee.trim() : null,
+      resources: resourcesOfRow(r, at),
       note: noteValue(r.note),
     };
   });
@@ -820,12 +867,13 @@ router.post('/projects/:id/import', handle((req, res) => {
         code = next++;
       }
       ids.push(Number(run(
-        `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, assignee, note, sort_order, parent_id, progress, code)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        projectId, t.environment_id, t.name, t.duration, t.status, t.not_before, t.assignee, t.note, base + i,
+        `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, note, sort_order, parent_id, progress, code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        projectId, t.environment_id, t.name, t.duration, t.status, t.not_before, t.note, base + i,
         t.parent != null ? ids[t.parent - 1] : null, t.progress, code,
       ).lastInsertRowid));
     });
+    parsed.forEach((t, i) => { if (t.resources.length) assign(ids[i], t.resources); });
     parsed.forEach((t, i) => {
       for (const p of t.predecessors) {
         run('INSERT OR IGNORE INTO task_dependency (predecessor_id, successor_id, lag, type) VALUES (?, ?, ?, ?)',
@@ -976,6 +1024,63 @@ router.post('/tasks/preview', handle((req, res) => {
   const projectId = intParam(req.body?.project_id);
   if (projectId == null || !get('SELECT id FROM project WHERE id = ?', projectId)) throw bad('A valid project is required');
   res.json(previewChange(projectId, changeFrom(req, projectId)));
+}));
+
+// ---------------------------------------------------------------- resources
+
+router.get('/resources', handle((_req, res) => res.json(listResources())));
+
+/** Rename or (de)activate. Renaming onto someone else's name is a merge, so it is refused here. */
+router.patch('/resources/:id', handle((req, res) => {
+  const id = Number(req.params.id);
+  const existing = get<{ id: number; name: string; active: number }>('SELECT * FROM resource WHERE id = ?', id);
+  if (!existing) throw missing('Person');
+  let name = existing.name;
+  if (req.body?.name != null) {
+    name = cleanResourceName(nonEmpty(req.body.name, 'Name'));
+    const parsed = parseResources(name);
+    if (!parsed.ok) throw bad(parsed.error);
+    if (parsed.names.length !== 1 || parsed.names[0] !== name) throw bad('A name cannot contain , or ;');
+    if (name.length > RESOURCE_NAME_MAX) throw bad(`A name can be at most ${RESOURCE_NAME_MAX} characters`);
+    const other = get<{ id: number; name: string }>('SELECT id, name FROM resource WHERE name_key = ? AND id <> ?', resourceKey(name), id);
+    if (other) throw new HttpError(409, `${other.name} already exists. Merge into them instead.`);
+  }
+  const active = req.body?.active != null ? (req.body.active ? 1 : 0) : existing.active;
+  transaction(() => {
+    if (name !== existing.name) audit('resource', id, 'name', existing.name, name);
+    run('UPDATE resource SET name = ?, name_key = ?, active = ? WHERE id = ?', name, resourceKey(name), active, id);
+  });
+  res.json(listResources().find((r) => r.id === id));
+}));
+
+/** Fold one person into another: their tasks move across, and they go. For typos. */
+router.post('/resources/:id/merge', handle((req, res) => {
+  const id = Number(req.params.id);
+  const into = intParam(req.body?.into);
+  const from = get<{ id: number; name: string }>('SELECT id, name FROM resource WHERE id = ?', id);
+  const to = into != null ? get<{ id: number; name: string }>('SELECT id, name FROM resource WHERE id = ?', into) : undefined;
+  if (!from) throw missing('Person');
+  if (!to) throw bad('Choose who to merge into');
+  if (to.id === from.id) throw bad('Choose someone else to merge into');
+  transaction(() => {
+    // Where both were on a task, the one merged into keeps their place.
+    run(`INSERT OR IGNORE INTO task_resource (task_id, resource_id, sort_order)
+         SELECT task_id, ?, sort_order FROM task_resource WHERE resource_id = ?`, to.id, from.id);
+    run('DELETE FROM resource WHERE id = ?', from.id);
+    audit('resource', to.id, 'merged', from.name, to.name);
+  });
+  res.json(listResources().find((r) => r.id === to.id));
+}));
+
+router.delete('/resources/:id', handle((req, res) => {
+  const id = Number(req.params.id);
+  const existing = get<{ name: string }>('SELECT name FROM resource WHERE id = ?', id);
+  if (!existing) throw missing('Person');
+  transaction(() => {
+    run('DELETE FROM resource WHERE id = ?', id);
+    audit('resource', id, 'deleted', existing.name, null);
+  });
+  res.status(204).end();
 }));
 
 // ---------------------------------------------------------------- holidays

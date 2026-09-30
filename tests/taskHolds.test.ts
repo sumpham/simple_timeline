@@ -9,7 +9,7 @@ const UAT = 11;
 function task(id: number, start: string, end: string, partial: Partial<Task> = {}): Task {
   return {
     id, project_id: 1, environment_id: SIT, name: `T${id}`, duration: 1, status: 'todo', not_before: null,
-    assignee: null, note: null, sort_order: id, actual_start: null, actual_end: null,
+    note: null, sort_order: id, actual_start: null, actual_end: null,
     start_date: start, end_date: end, total_float: 0, critical: 0, ...partial,
   };
 }

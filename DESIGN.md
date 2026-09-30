@@ -72,8 +72,10 @@ project(id, team_id, parent_id, name, status, priority, owner, description, exte
         start_date, target_date)
 booking(id, project_id, environment_id, kind, start_date, end_date, confidence, optional, note, marker,
         timeline_text, manual_start, manual_end, hold_start, hold_end, hold_done)
-task(id, project_id, environment_id NULL, name, duration, status, not_before, assignee, note,
+task(id, project_id, environment_id NULL, name, duration, status, not_before, note,
      sort_order, actual_start, actual_end, start_date, end_date, total_float, critical)
+resource(id, name, name_key UNIQUE, active)        -- people, global; reqs/resources.md
+task_resource(task_id, resource_id, sort_order)    -- who does a task, in the order typed
 task_dependency(predecessor_id, successor_id, lag)
 holiday(date PRIMARY KEY, name)
 audit_log(id, entity, entity_id, field, old_value, new_value, actor, at)

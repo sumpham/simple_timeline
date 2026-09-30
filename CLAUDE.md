@@ -11,7 +11,7 @@ everything else supports it.
 
 `reqs.md` holds the requirements and the answered scoping questions; `reqs/` holds later
 feature requirements (task management: `reqs/simple_task_management.md`; the plan's Gantt
-chart: `reqs/gantt_chart.md`).
+chart: `reqs/gantt_chart.md`; people on tasks: `reqs/resources.md`).
 `DESIGN.md` holds the architecture and UI design, including why things look the way they do.
 `docs/gantt/` explains the Gantt chart for later work: user guide, architecture, data and API,
 file formats, testing recipe, roadmap. `DESIGN.md` wins where they disagree.
@@ -161,6 +161,27 @@ read by scheduling or replan. Progress (`task.progress`) never moves a date eith
 refuses while tasks use it, saying how many. The network layout (`client/network.ts`) is bounded like the ruler: a
 fixed number of barycentre sweeps, one pass per rank.
 
+## People on tasks
+
+`reqs/resources.md` has the design. The rules that break things when forgotten:
+
+**Resources are typed as text but stored as rows.** The Who column (`Mai, Tuan Nguyen`) is only
+an input and output format. `resource` holds one row per person, `task_resource` one per
+assignment in the order typed. `parseResources` and `resourceKey` in `shared/resources.ts` are
+the only rules for splitting (commas and semicolons, never spaces) and matching (case ignored,
+accents kept). Never store the joined string; `task.assignee` was migrated and dropped.
+
+**Assigning people is not planning.** `task_resource` is written by the task routes (`assign` in
+`server/routes.ts`) in the same transaction as the task, never by `replan` or `writeState`, and
+scheduling never reads it. A people-only edit skips `replan`, so it cannot move a date or
+un-accept a double-booking. `resources` is not in `TaskFields` for that reason.
+
+**Resources are global and outlive their tasks.** Typing a new name makes one (`ensureResources`);
+only the Resources dialog's delete or merge removes one. A later workload view must count
+**working days** over leaf tasks: do not pass people through `detectConflicts`, which counts
+calendar days for environments. `[` and `]` are refused in names to keep `Mai[50%]` free for
+allocation.
+
 ## Drag-to-edit
 
 Three files: `client/dragMath.ts` (pure span math, tested), `client/useBookingDrag.ts`
@@ -261,4 +282,4 @@ is correctly hidden — see `buildRows`.
 ## Still to build
 
 Sub-project roll-ups, saved views, bulk shift; for tasks, cross-project links (the portfolio is
-read-only side by side), resource levelling. `DESIGN.md` §12 has the order.
+read-only side by side), resource workload and levelling (`reqs/resources.md` §7). `DESIGN.md` §12 has the order.

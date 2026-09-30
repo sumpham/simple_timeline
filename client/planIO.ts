@@ -1,4 +1,5 @@
-import type { Environment, LinkType, Task, TaskDependency, TaskSchedule, TaskStatus } from '../shared/types.ts';
+import type { Environment, LinkType, Resource, Task, TaskDependency, TaskSchedule, TaskStatus } from '../shared/types.ts';
+import { formatResources } from '../shared/resources.ts';
 import type { OutlineRow } from '../shared/wbs.ts';
 import { formatPredecessors, parsePredecessors } from './predecessors.ts';
 import { codesById } from '../shared/taskCode.ts';
@@ -21,7 +22,8 @@ export type ImportRow = {
   environment?: string | null;
   parent?: number | null;
   predecessors: { row: number; lag: number; type: LinkType }[];
-  assignee?: string | null;
+  /** Who does it, in the Who column's notation (`Mai, Tuan`); the server makes new people. */
+  resources?: string | null;
   status?: TaskStatus;
   progress?: number | null;
   not_before?: string | null;
@@ -36,13 +38,15 @@ type Plan = {
   schedule: ReadonlyMap<number, TaskSchedule>;
   deps: readonly TaskDependency[];
   environments: readonly Environment[];
+  /** Everyone the tasks' `resource_ids` may name. */
+  resources?: readonly Resource[];
 };
 
 const STATUS_WORDS: Record<TaskStatus, string> = { todo: 'To do', in_progress: 'In progress', blocked: 'Blocked', done: 'Done' };
 
 // ---------------------------------------------------------------- CSV
 
-const CSV_HEAD = ['ID', 'WBS', 'Task', 'Summary', 'Environment', 'Days', 'After', 'Start', 'Finish', 'Float', 'Status', 'Progress', 'Assignee', 'Note'];
+const CSV_HEAD = ['ID', 'WBS', 'Task', 'Summary', 'Environment', 'Days', 'After', 'Start', 'Finish', 'Float', 'Status', 'Progress', 'Resources', 'Note'];
 
 function csvCell(v: string | number | null | undefined): string {
   const s = v == null ? '' : String(v);
@@ -53,6 +57,7 @@ function csvCell(v: string | number | null | undefined): string {
 export function toCsv(plan: Plan): string {
   const rowOf = codesById(plan.tasks);
   const byId = new Map(plan.outline.map((r) => [r.id, r]));
+  const people = new Map((plan.resources ?? []).map((r) => [r.id, r]));
   const lines = [CSV_HEAD.join(',')];
   for (const t of plan.tasks) {
     const o = byId.get(t.id);
@@ -61,7 +66,7 @@ export function toCsv(plan: Plan): string {
       rowOf.get(t.id), o?.wbs, t.name, o?.parent_id != null ? rowOf.get(o.parent_id) : '',
       plan.environments.find((e) => e.id === t.environment_id)?.name ?? '',
       o?.summary ? '' : t.duration, formatPredecessors(plan.deps, t.id, rowOf),
-      s?.start, s?.end, s ? s.total_float : '', STATUS_WORDS[t.status], t.progress ?? '', t.assignee, t.note,
+      s?.start, s?.end, s ? s.total_float : '', STATUS_WORDS[t.status], t.progress ?? '', formatResources(t.resource_ids, people), t.note,
     ].map(csvCell).join(','));
   }
   return `${lines.join('\r\n')}\r\n`;
@@ -105,7 +110,7 @@ const ALIASES: Record<string, string[]> = {
   status: ['status'],
   progress: ['progress', '% complete', 'percent complete', '%'],
   not_before: ['start no earlier than', 'not before', 'snet'],
-  assignee: ['assignee', 'owner', 'resource', 'resource names'],
+  resources: ['resources', 'who', 'assignee', 'assigned to', 'owner', 'resource', 'resource names'],
   note: ['note', 'notes'],
 };
 
@@ -174,7 +179,7 @@ export function fromCsv(text: string): ImportResult {
       code: Number.isInteger(code) && code > 0 ? code : null,
       name, duration, parent, predecessors: parsed.rows,
       environment: cell(r, 'environment') || null,
-      assignee: cell(r, 'assignee') || null,
+      resources: cell(r, 'resources') || null,
       status: status ?? 'todo',
       progress,
       not_before: /^\d{4}-\d{2}-\d{2}$/.test(nb) ? nb : null,
@@ -194,7 +199,7 @@ const TENTHS_PER_DAY = 8 * 60 * 10;
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const unesc = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 
-/** MSPDI, the XML MS Project opens and saves: tasks, outline, links, progress. */
+/** MSPDI, the XML MS Project opens and saves: tasks, outline, links, progress, and who does what. */
 export function toMspdi(plan: Plan & { projectName: string; projectStart: string | null }): string {
   const rowOf = new Map(plan.tasks.map((t, i) => [t.id, i + 1]));
   const byId = new Map(plan.outline.map((r) => [r.id, r]));
@@ -232,7 +237,25 @@ export function toMspdi(plan: Plan & { projectName: string; projectStart: string
     }
     out.push('</Task>');
   }
-  out.push('</Tasks>', '</Project>');
+  out.push('</Tasks>');
+  // People as MS Project keeps them: a resource list, then one assignment per task and person.
+  const people = new Map((plan.resources ?? []).map((r) => [r.id, r]));
+  const used = [...new Set(plan.tasks.flatMap((t) => t.resource_ids ?? []))].filter((id) => people.has(id));
+  if (used.length) {
+    const uidOf = new Map(used.map((id, i) => [id, i + 1]));
+    out.push('<Resources>');
+    for (const id of used) out.push('<Resource>', tag('UID', uidOf.get(id)!), tag('ID', uidOf.get(id)!), tag('Name', people.get(id)!.name), tag('Type', 1), '</Resource>');
+    out.push('</Resources>', '<Assignments>');
+    let uid = 1;
+    for (const t of plan.tasks) {
+      for (const id of t.resource_ids ?? []) {
+        if (!uidOf.has(id)) continue;
+        out.push('<Assignment>', tag('UID', uid++), tag('TaskUID', rowOf.get(t.id)!), tag('ResourceUID', uidOf.get(id)!), tag('Units', 1), '</Assignment>');
+      }
+    }
+    out.push('</Assignments>');
+  }
+  out.push('</Project>');
   return `${out.join('\n')}\n`;
 }
 
@@ -275,6 +298,22 @@ export function fromMspdi(xml: string): ImportResult {
   }
   if (!raws.length) return { ok: false, error: 'That MS Project file has no tasks.' };
 
+  // Who does what: the resource list by UID, then each assignment onto its task.
+  const nameOfResource = new Map<string, string>();
+  for (const m of (/<Resources>([\s\S]*?)<\/Resources>/.exec(xml)?.[1] ?? '').matchAll(/<Resource>([\s\S]*?)<\/Resource>/g)) {
+    const uid = first(m[1], 'UID');
+    const name = first(m[1], 'Name');
+    if (uid && uid !== '0' && name) nameOfResource.set(uid, name.replace(/[,;[\]]/g, ' '));
+  }
+  const whoOfTask = new Map<string, string[]>();
+  for (const m of (/<Assignments>([\s\S]*?)<\/Assignments>/.exec(xml)?.[1] ?? '').matchAll(/<Assignment>([\s\S]*?)<\/Assignment>/g)) {
+    const task = first(m[1], 'TaskUID');
+    const name = nameOfResource.get(first(m[1], 'ResourceUID') ?? '');
+    if (!task || !name) continue;
+    if (!whoOfTask.has(task)) whoOfTask.set(task, []);
+    whoOfTask.get(task)!.push(name);
+  }
+
   const rowOfUid = new Map(raws.map((r, i) => [r.uid, i + 1]));
   const stack: number[] = [];
   const rows: ImportRow[] = raws.map((r, i) => {
@@ -292,6 +331,7 @@ export function fromMspdi(xml: string): ImportResult {
       name: r.name.slice(0, 200), duration: Math.max(0, Math.round(r.hours / 8)), parent, predecessors,
       progress: r.progress ? r.progress : null, status: r.progress === 100 ? 'done' as const : 'todo' as const,
       note: r.note, not_before: r.nb,
+      resources: whoOfTask.get(r.uid)?.join(', ') ?? null,
     };
   });
   return { ok: true, rows, warnings };

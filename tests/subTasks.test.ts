@@ -19,7 +19,7 @@ const MON = '2026-03-02';
 function task(id: number, duration: number, partial: Partial<Task> = {}): Task {
   return {
     id, project_id: 1, environment_id: null, name: `T${id}`, duration, status: 'todo', not_before: null,
-    assignee: null, note: null, sort_order: id, actual_start: null, actual_end: null,
+    note: null, sort_order: id, actual_start: null, actual_end: null,
     start_date: null, end_date: null, total_float: null, critical: 0, parent_id: null, progress: null, code: id, ...partial,
   };
 }
@@ -122,8 +122,8 @@ describe('applyChange with sub-tasks', () => {
     expect(() => plan.applyChange(s, { op: 'update', id: 1, fields: { duration: 4 } })).toThrow(/length comes from/);
     expect(() => plan.applyChange(s, { op: 'update', id: 1, fields: { environment_id: 7 } })).toThrow(/books nothing/);
     expect(() => plan.applyChange(s, { op: 'update', id: 1, fields: { progress: 50 } })).toThrow(/progress comes from/);
-    const next = plan.applyChange(s, { op: 'update', id: 1, fields: { name: 'Build', not_before: '2026-03-09', assignee: 'Kim', status: 'todo' } });
-    expect(next.tasks.find((t) => t.id === 1)).toMatchObject({ name: 'Build', not_before: '2026-03-09', assignee: 'Kim' });
+    const next = plan.applyChange(s, { op: 'update', id: 1, fields: { name: 'Build', not_before: '2026-03-09', status: 'todo' } });
+    expect(next.tasks.find((t) => t.id === 1)).toMatchObject({ name: 'Build', not_before: '2026-03-09' });
   });
 
   it('turns a summary back into a task with the length it showed', () => {

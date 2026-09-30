@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type {
-  BookingView, Conflict, Environment, ISODate, LinkType, Task, TaskDependency, TaskSchedule,
+  BookingView, Conflict, Environment, ISODate, LinkType, Resource, Task, TaskDependency, TaskSchedule,
 } from '../../shared/types.ts';
 import type { OutlineRow } from '../../shared/wbs.ts';
 import { occupancyByDay } from '../../shared/conflicts.ts';
@@ -80,7 +80,7 @@ type Live = { id: number; fields: TaskInput; date: ISODate; mode: 'move' | 'resi
 
 export function Gantt({
   tasks, outline, deps, schedule, environments, holidays, today, start, target, rows, head, height, zoom, show,
-  baseline, bookings, progress, strip, command, preview, onOpen, onSetStart, onSetFinish, onLink, onLinkChange, onRelease,
+  baseline, bookings, progress, people, strip, command, preview, onOpen, onSetStart, onSetFinish, onLink, onLinkChange, onRelease,
 }: {
   tasks: readonly Task[];
   outline: ReadonlyMap<number, OutlineRow>;
@@ -101,6 +101,8 @@ export function Gantt({
   baseline: ReadonlyMap<number, { start: ISODate; end: ISODate }>;
   bookings: readonly BookingView[];
   progress: ReadonlyMap<number, number>;
+  /** Every person by id, for the names after a bar. */
+  people: ReadonlyMap<number, Resource>;
   strip: StripData | null;
   command: GanttCommand | null;
   preview: (t: Task, fields: TaskInput) => GanttPreview | null;
@@ -395,11 +397,17 @@ export function Gantt({
     const b = baseline.get(t.id);
     const variance = show.baseline && b ? finishVariance(b.end, s.end, holidays) : 0;
     if (!show.labels && !variance) return null;
+    const who = (t.resource_ids ?? []).map((id) => people.get(id)?.name).filter((n): n is string => !!n);
     const tail = show.float && !s.critical && s.total_float > 0 && !g.summary ? colX(s.late_end, 'end') : g.x1;
     return (
       <text key={`l${t.id}`} className={`gantt-label${g.summary ? ' is-summary' : ''}${chain && !chain.has(t.id) ? ' is-faded' : ''}`} x={Math.max(g.x1, tail) + 9} y={g.mid + 4}>
         {show.labels && t.name}
-        {show.labels && t.assignee && <tspan className="gantt-label-who"> · {t.assignee}</tspan>}
+        {show.labels && who.length > 0 && (
+          <tspan className="gantt-label-who">
+            {' · '}{who.length > 2 ? `${who[0]} +${who.length - 1}` : who.join(', ')}
+            <title>{`${g.summary ? 'Owner' : 'Who'}: ${who.join(', ')}`}</title>
+          </tspan>
+        )}
         {variance !== 0 && (
           <tspan className="gantt-variance"> {variance > 0 ? '+' : '−'}{Math.abs(variance)}d<title>{`Finishes ${Math.abs(variance)} working day${Math.abs(variance) === 1 ? '' : 's'} ${variance > 0 ? 'later' : 'sooner'} than the baseline`}</title></tspan>
         )}

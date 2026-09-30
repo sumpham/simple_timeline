@@ -2233,7 +2233,6 @@ kbd {
 
 .name-cell { display: flex; align-items: center; gap: 8px; }
 .name-cell input { flex: 1 1 auto; min-width: 0; font-weight: 500; }
-.task-assignee { font-size: 12px; color: var(--muted); }
 
 /* The environment hue, as a stripe on the one cell it describes. */
 .task-table .c-env select { box-shadow: inset 4px 0 0 var(--env-color); padding-left: 11px; }
@@ -2464,6 +2463,14 @@ kbd {
 .task-split .task-table.has-wbs { width: 988px; }
 .task-split-table.is-sized .task-table.has-wbs { width: max(988px, 100%); }
 .task-split .task-table .c-wbs { width: 56px; }
+/* Who: names in ink, never a colour per person (DESIGN.md §6). */
+.task-table .c-who { width: 120px; }
+.task-table .c-who input { font-size: 13px; text-overflow: ellipsis; }
+.task-split .task-table.has-who { width: 1052px; }
+.task-split-table.is-sized .task-table.has-who { width: max(1052px, 100%); }
+.task-split .task-table.has-wbs.has-who { width: 1108px; }
+.task-split-table.is-sized .task-table.has-wbs.has-who { width: max(1108px, 100%); }
+.task-split .task-table .c-who { width: 120px; }
 .task-table .status-cell.cell-quiet { display: flex; gap: 2px; padding-left: 0; }
 
 /* ---- occupancy strip labels, under the table */

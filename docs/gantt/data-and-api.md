@@ -60,7 +60,7 @@ type ImportRow = {
   environment?: string | null;          // by name, case-insensitive; unknown → none + warning
   parent?: number | null;               // a row above
   predecessors: { row: number; lag: number; type: 'FS' | 'SS' | 'FF' }[];
-  assignee?: string | null;
+  resources?: string | null;            // the Who text, `Mai, Tuan`; new names become people
   status?: 'todo' | 'in_progress' | 'blocked' | 'done';
   progress?: number | null;
   not_before?: string | null;           // YYYY-MM-DD
@@ -72,7 +72,7 @@ type ImportRow = {
 
 Export columns, in order:
 
-`ID, WBS, Task, Summary, Environment, Days, After, Start, Finish, Float, Status, Progress, Assignee, Note`
+`ID, WBS, Task, Summary, Environment, Days, After, Start, Finish, Float, Status, Progress, Resources, Note`
 
 `Summary` is the parent's ID; `After` uses the table's notation in IDs (`2`, `3+1`, `4SS`).
 On import each task keeps the file's ID when it is free in the plan, and gets the next free
@@ -91,7 +91,7 @@ Import accepts commas, semicolons or tabs, quoted cells and a BOM. Header aliase
 | Status | Status (To do, In progress, Blocked, Done, and common synonyms) |
 | Progress | Progress, % complete, Percent complete, % |
 | Start no earlier than | Start no earlier than, Not before, SNET |
-| Assignee | Assignee, Owner, Resource, Resource names |
+| Resources | Resources, Who, Assignee, Assigned to, Owner, Resource, Resource names (`Mai, Tuan`: commas or semicolons between names) |
 | Note | Note, Notes |
 
 If the file has an `ID` (or `Row`, `#`) column, After and Summary refer to it; otherwise to line positions.

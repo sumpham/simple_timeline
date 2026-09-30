@@ -193,7 +193,7 @@ export function BoardSheet({
   conflicts: Conflict[];
   onSelectTeam: (id: number) => void;
   onToggleEnv: (id: number) => void;
-  onManage: (what: 'teams' | 'projects' | 'environments') => void;
+  onManage: (what: 'teams' | 'projects' | 'environments' | 'resources') => void;
   /** Open the plans; absent when the team has no projects to plan. */
   onPlans?: () => void;
   onClose: () => void;
@@ -225,6 +225,7 @@ export function BoardSheet({
       </div>
       <div className="sheet-foot manage">
         <button type="button" className="btn quiet" onClick={() => onManage('teams')}>Teams</button>
+        <button type="button" className="btn quiet" onClick={() => onManage('resources')}>Resources</button>
         {teamId != null && (
           <>
             <button type="button" className="btn quiet" onClick={() => onManage('projects')}>Projects</button>

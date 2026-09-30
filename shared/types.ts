@@ -138,6 +138,16 @@ export type Conflict = {
 
 // ---------------------------------------------------------------- tasks
 
+/** A person who does work on tasks, made the first time their name is typed (shared/resources.ts). */
+export type Resource = {
+  id: number;
+  name: string;
+  active: number;
+  /** How many tasks and projects they are on; sent by the resource list. */
+  task_count?: number;
+  project_count?: number;
+};
+
 export type TaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
 export const TASK_STATUSES: readonly TaskStatus[] = ['todo', 'in_progress', 'blocked', 'done'];
 
@@ -152,7 +162,11 @@ export type Task = {
   status: TaskStatus;
   /** Start no earlier than this date, whatever the dependencies allow. */
   not_before: ISODate | null;
-  assignee: string | null;
+  /**
+   * Who does it, in the order typed (`task_resource`, shared/resources.ts). On a
+   * summary, who is accountable: its Owner. Read-only here; never plan state.
+   */
+  resource_ids?: number[];
   note: string | null;
   sort_order: number;
   actual_start: ISODate | null;

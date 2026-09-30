@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type BoardData, type Bootstrap } from './api.ts';
 import { addDays, addWorkingDays, snapToWorkingDay, today as todayISO } from '../shared/dates.ts';
-import type { BookingView, Conflict, Environment, ISODate } from '../shared/types.ts';
+import type { BookingView, Conflict, Environment, ISODate, Resource } from '../shared/types.ts';
 import { formatDate, formatRange, makeScale, ZOOM, type Zoom } from './layout.ts';
 import { Board, buildRows, DragReadout, ENV_COLOR, rowHeights, type Mode, type Row } from './components/Board.tsx';
 import { useBookingDrag } from './useBookingDrag.ts';
@@ -22,7 +22,7 @@ import { ConflictDrawer, ConflictList } from './components/ConflictDrawer.tsx';
 import { BoardSheet, BookingSheet, EnvFilter } from './components/Sheets.tsx';
 import { PHONE_QUERY, useMediaQuery, usePinchZoom } from './touch.ts';
 import {
-  BookingDialog, EnvironmentDialog, ProjectsDialog, TeamsDialog, type BookingDraft,
+  BookingDialog, EnvironmentDialog, ProjectsDialog, ResourcesDialog, TeamsDialog, type BookingDraft,
 } from './components/Dialogs.tsx';
 import { PlanView } from './components/Plan.tsx';
 
@@ -37,7 +37,8 @@ type DialogState =
   | { kind: 'booking'; draft: BookingDraft; existing?: BookingView }
   | { kind: 'projects'; editingId?: number }
   | { kind: 'environments' }
-  | { kind: 'teams' };
+  | { kind: 'teams' }
+  | { kind: 'resources' };
 
 /** The phone's bottom sheets. Only one is up at a time. */
 type SheetState =
@@ -61,6 +62,10 @@ export function App() {
   const [data, setData] = useState<BoardData | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(true);
   const [dialog, setDialog] = useState<DialogState>({ kind: 'none' });
+  /** The Resources dialog's list, loaded when it opens. */
+  const [people, setPeople] = useState<Resource[] | null>(null);
+  /** Bumped when people are renamed or merged, so an open plan shows the new names. */
+  const [peopleVersion, setPeopleVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [dialogError, setDialogError] = useState<string | undefined>();
   /** A dialog's mutation is in flight; the managers show it as a bar along the top. */
@@ -284,6 +289,21 @@ export function App() {
     setHiddenEnvs(new Set());
     setData(null);
   }, []);
+
+  // The Resources dialog reads its own list; nothing else on the board needs it.
+  useEffect(() => {
+    if (dialog.kind !== 'resources') return;
+    let live = true;
+    setPeople(null);
+    api.resources().then((r) => { if (live) setPeople(r); }).catch((err) => {
+      if (live) { setPeople([]); setDialogError(err instanceof Error ? err.message : 'Could not load people'); }
+    });
+    return () => { live = false; };
+  }, [dialog.kind]);
+  const changedPeople = async () => {
+    setPeople(await api.resources());
+    setPeopleVersion((v) => v + 1);
+  };
 
   /** Run a mutation, refresh, and report failure inside the dialog that caused it. */
   const run = async (fn: () => Promise<unknown>, alsoClose = true) => {
@@ -706,6 +726,9 @@ export function App() {
         <button type="button" className="btn quiet" onClick={() => setDialog({ kind: 'teams' })}>
           Teams
         </button>
+        <button type="button" className="btn quiet" onClick={() => setDialog({ kind: 'resources' })} title="Everyone named on tasks: rename, merge, remove">
+          Resources
+        </button>
         {team && (
           <button type="button" className="btn quiet" onClick={() => setDialog({ kind: 'projects' })}>
             Projects
@@ -775,6 +798,7 @@ export function App() {
             onSwitchProject={(id) => openPlan(id)}
             onChanged={() => void refresh()}
             onRelease={releaseBooking}
+            peopleVersion={peopleVersion}
           />
         ) : rows.length === 0 ? (
           <div className="empty">
@@ -1035,6 +1059,18 @@ export function App() {
           onCreate={(e) => run(() => api.createEnvironment({ ...e, team_id: teamId } as Parameters<typeof api.createEnvironment>[0]), false)}
           onUpdate={(id, e) => run(() => api.updateEnvironment(id, e), false)}
           onDelete={(id) => run(() => api.deleteEnvironment(id), false)}
+        />
+      )}
+
+      {dialog.kind === 'resources' && (
+        <ResourcesDialog
+          resources={people}
+          error={dialogError}
+          busy={busy}
+          onClose={closeDialog}
+          onUpdate={(id, r) => run(() => api.updateResource(id, r).then(changedPeople), false)}
+          onMerge={(id, into) => run(() => api.mergeResource(id, into).then(changedPeople), false)}
+          onDelete={(id) => run(() => api.deleteResource(id).then(changedPeople), false)}
         />
       )}
 

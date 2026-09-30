@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inOutlineOrder } from '../shared/wbs.ts';
+import { parseResources, RESOURCE_NAME_MAX, RESOURCES_PER_TASK_MAX, resourceKey } from '../shared/resources.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -98,6 +99,47 @@ export function fillTaskCodes() {
   }
 }
 fillTaskCodes();
+
+/**
+ * The ids of these people, in order, making the ones not seen before. The only
+ * place resources are created by typing (reqs/resources.md R3).
+ */
+export function ensureResources(names: readonly string[]): number[] {
+  return names.map((name) => {
+    const key = resourceKey(name);
+    const found = db.prepare('SELECT id FROM resource WHERE name_key = ?').get(key) as { id: number } | undefined;
+    if (found) return found.id;
+    return Number(db.prepare('INSERT INTO resource (name, name_key) VALUES (?, ?)').run(name, key).lastInsertRowid);
+  });
+}
+
+/** Replace who does a task. */
+export function setTaskResources(taskId: number, resourceIds: readonly number[]) {
+  db.prepare('DELETE FROM task_resource WHERE task_id = ?').run(taskId);
+  const insert = db.prepare('INSERT OR IGNORE INTO task_resource (task_id, resource_id, sort_order) VALUES (?, ?, ?)');
+  resourceIds.forEach((id, i) => insert.run(taskId, id, i));
+}
+
+// Tasks once named people in one free-text `assignee`. Split it into resources
+// and assignments, then drop it, so there is one source of truth. One transaction.
+if (taskColumns.has('assignee')) {
+  db.exec('BEGIN');
+  try {
+    const rows = db.prepare('SELECT id, assignee FROM task WHERE assignee IS NOT NULL').all() as { id: number; assignee: string }[];
+    for (const r of rows) {
+      // Lenient: an old value too long for the column's rules is cut, never lost.
+      const cut = r.assignee.replace(/[[\]]/g, '').split(/[,;]/).map((n) => n.trim().slice(0, RESOURCE_NAME_MAX)).join(',');
+      const parsed = parseResources(cut);
+      const names = parsed.ok ? parsed.names : cut.split(',').map((n) => n.trim()).filter(Boolean).slice(0, RESOURCES_PER_TASK_MAX);
+      setTaskResources(r.id, ensureResources(names));
+    }
+    db.exec('ALTER TABLE task DROP COLUMN assignee');
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
 
 /** node:sqlite returns null-prototype rows; spread them so JSON and spread operators behave. */
 export function all<T>(sql: string, ...params: unknown[]): T[] {
