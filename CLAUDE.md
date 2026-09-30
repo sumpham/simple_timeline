@@ -193,6 +193,18 @@ in `rules.ts`, `server/assistant.ts`, the drawer in `client/components/Assistant
 Phase 2 (Best/Worst estimates in `shared/estimates.ts`, the Monte Carlo in `forecast.ts`, P1 on
 its P80). The rules that break things when forgotten:
 
+Phases 3 and 4 (better plans: `moves.ts`, `optimise.ts`, the drawer's Better plans) are built too.
+
+**A suggestion is change ops, applied by the save's own functions.** `SearchContext.apply` is
+the server's `applyChange`; `applyOps` (server/assistant.ts) runs `applyChange` → `writeState`
+per op and one `replan`, in one transaction, refusing a stale `planVersion` with 409. Never give
+the optimiser its own applier in production code: its verdict would drift from the save's.
+
+**The search is bounded and lexicographic** (`BEAM_WIDTH`, `BEAM_DEPTH`, `CANDIDATES_PER_STEP`,
+`SEARCH_BUDGET`). A plan with a new open double-booking is never kept, whatever else it gains;
+`tests/assistantOptimise.test.ts` checks that on random plans, and that P80 never gets later.
+Trade-off moves (M3, M6, M7) only enter the aggressive profile and always carry a `tradeoff`.
+
 **The forecast runs the scheduler's forward pass on sampled durations**, over a copy of the
 index network floored at the status date. It never reimplements float or link maths, and a zero-
 width range must give the CPM finish (a test pins it).

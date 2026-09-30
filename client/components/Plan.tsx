@@ -15,6 +15,8 @@ import { Gantt, STRIP_HEAD, STRIP_LANE, type GanttCommand, type GanttPreview, ty
 import { Portfolio } from './Portfolio.tsx';
 import { AssistantDrawer, openFindings } from './Assistant.tsx';
 import type { AssistantReport, Finding } from '../../shared/assistant/rules.ts';
+import { planVersion, type SuggestionReport } from '../../shared/assistant/optimise.ts';
+import type { PlanOp } from '../../shared/assistant/moves.ts';
 import { edgeKey, type Route } from '../network.ts';
 import type { Arrangement } from '../smartLayout.ts';
 import {
@@ -95,6 +97,9 @@ export function PlanView({
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(readAssistantOpen);
+  const [better, setBetter] = useState<SuggestionReport | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [betterError, setBetterError] = useState<string | null>(null);
   /** Rows the assistant was asked to show; `at` makes asking twice show them twice. */
   const [spotlight, setSpotlight] = useState<{ ids: number[]; at: number } | null>(null);
 
@@ -133,7 +138,43 @@ export function PlanView({
       .catch((err) => { if (live) setReportError(err instanceof Error ? err.message : 'The assistant could not read this plan'); });
     return () => { live = false; };
   }, [plan, projectId]);
-  useEffect(() => { setReport(null); setSpotlight(null); }, [projectId]);
+  useEffect(() => { setReport(null); setSpotlight(null); setBetter(null); setBetterError(null); }, [projectId]);
+  // Suggestions are worked out on one version of the plan; once it changes they are stale.
+  useEffect(() => {
+    if (better && plan && better.version !== planVersion({ tasks: plan.tasks, deps: plan.dependencies }, plan.project)) setBetter(null);
+  }, [plan]);
+
+  const findBetter = async () => {
+    setSearching(true);
+    setBetterError(null);
+    try {
+      setBetter(await api.suggestions(projectId));
+    } catch (err) {
+      setBetterError(err instanceof Error ? err.message : 'The search did not finish');
+    } finally { setSearching(false); }
+  };
+  const previewOps = async (ops: PlanOp[]) => {
+    try { return await api.previewOps(projectId, ops); } catch (err) { fail(err); return null; }
+  };
+  /** Apply through the plan's write path, then say what it did, with Undo, as a hand edit does. */
+  const applyOps = async (ops: PlanOp[], version: string | null, title: string) => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const impact = await api.previewOps(projectId, ops);
+      const res = await api.applyOps(projectId, ops, version);
+      accept(res.plan);
+      setBetter(null);
+      setError(null);
+      const undo = async () => {
+        try { accept((await api.applyOps(projectId, res.undo, null)).plan); setOutcome(null); } catch (err) { fail(err); }
+      };
+      setOutcome({ title: `Applied: ${title}`, impact, undo });
+    } catch (err) {
+      fail(err);
+      if (err instanceof Error && /changed since/.test(err.message)) setBetter(null);
+    } finally { setSaving(false); }
+  };
   useEffect(() => {
     try { localStorage.setItem(ASSISTANT_KEY, assistantOpen ? '1' : '0'); } catch { /* a remembered panel is a convenience */ }
   }, [assistantOpen]);
@@ -662,7 +703,7 @@ export function PlanView({
         <AssistantDrawer
           report={report}
           error={reportError}
-          busy={reportBusy}
+          busy={reportBusy || saving}
           target={plan?.project.target_date ?? null}
           taskLabel={(id) => {
             const t = plan?.tasks.find((x) => x.id === id);
@@ -671,6 +712,15 @@ export function PlanView({
           onClose={() => setAssistantOpen(false)}
           onShow={showFinding}
           onShowTasks={(ids) => { setTab('tasks'); setSpotlight({ ids, at: Date.now() }); }}
+          better={{
+            report: better,
+            searching,
+            error: betterError,
+            onFind: () => void findBetter(),
+            onPreview: previewOps,
+            onApply: (ops, version, title) => void applyOps(ops, version, title),
+            renderImpact: (impact) => <ImpactList title="Applying would" impact={impact} />,
+          }}
           onDismiss={(f) => void setAside(f, false)}
           onRestore={(f) => void setAside(f, true)}
         />

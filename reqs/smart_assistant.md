@@ -668,9 +668,9 @@ Where it differs from the plan:
   pessimistic). They round-trip through this app; they are not yet checked against a file
   saved by MS Project itself.
 
-### Phase 3: safe suggestions
+### Phase 3: safe suggestions (built 2026-09-30)
 
-- [ ] `shared/assistant/moves.ts`: candidate generators for
+- [x] `shared/assistant/moves.ts`: candidate generators for
   - M1: level within free float;
   - M2: switch to another environment of the same kind;
   - M4: drop a driving `not_before`;
@@ -678,33 +678,53 @@ Where it differs from the plan:
   - M8: add a buffer milestone sized P80 − P50.
 
   Each move is expressed as existing change ops, in task codes.
-- [ ] `shared/assistant/optimise.ts`:
+- [x] `shared/assistant/optimise.ts`:
   - A lexicographic objective (§5.4) and a beam search: width 3, depth 3, ≤ 40 candidates per
     step, ≤ 500 `planProject` calls.
   - A short Monte Carlo on the finalists only.
   - Up to 3 alternative plans.
-- [ ] Every suggestion carries a plan version. On Apply, the preview is re-run first if the
+- [x] Every suggestion carries a plan version. On Apply, the preview is re-run first if the
       plan has changed.
-- [ ] Panel: each suggestion shows its reason and trade-off.
+- [x] Panel: each suggestion shows its reason and trade-off.
   - **Preview** opens the existing impact banner (`POST /api/tasks/preview`).
   - **Apply** runs through the existing routes with Undo.
   - Moves inside one plan can be accepted one at a time.
-- [ ] Tests:
+- [x] Tests:
   - On randomised plans (like `smartLayout.test.ts`), a suggestion **never makes a new open
     double-booking** and never makes P80 later.
   - Applying a suggestion through the routes gives exactly the previewed dates.
   - Accepted double-bookings stay accepted after an M1/M2 apply, because auto-booking ids are
     kept.
 
-### Phase 4: trade-off suggestions
+### Phase 4: trade-off suggestions (built 2026-09-30, with Phase 3)
 
-- [ ] Add moves M3 (fast-track, overlap ≤ 50%), M6 (crash: "−N days needs about +M
+- [x] Add moves M3 (fast-track, overlap ≤ 50%), M6 (crash: "−N days needs about +M
       person-days") and M7 (split a long task). These always carry a trade-off, are ranked
       below the safe moves, and only appear in the "Aggressive" alternative.
-- [ ] Add M9 as action items, not plan changes: blocked critical tasks with an escalation
+- [x] Add M9 as action items, not plan changes: blocked critical tasks with an escalation
       line.
-- [ ] Tests: fast-track never overlaps more than 50%, M7 never proposes a split on a summary,
+- [x] Tests: fast-track never overlaps more than 50%, M7 never proposes a split on a summary,
       and a trade-off move never appears in the "Safe" plan.
+
+Built as: `shared/assistant/moves.ts` (M1–M7 as change ops), `shared/assistant/optimise.ts` (the
+search, `suggest`, `planVersion`), `GET /api/projects/:id/assistant/suggestions`,
+`POST …/assistant/preview` and `POST …/assistant/apply` (`{ ops, version }` → `{ plan, undo }`),
+and the **Better plans** section at the foot of the drawer. Where it differs from the plan:
+
+- **The search runs when asked** (Find a better plan), not with every report: it may schedule
+  the plan hundreds of times. It runs in well under a second on the demo plans.
+- **The optimiser is handed the save's own `applyChange`** (`SearchContext.apply`), so a
+  candidate is refused by exactly the rules a save refuses it by. Tests hand it a small stand-in.
+- **Apply is one endpoint, not a sequence of task calls.** A split (M7) is an update and a
+  create, and must be all or nothing. The endpoint runs the same `applyChange` → `writeState` →
+  `replan` path as a hand edit, in one transaction. It returns the ops that undo it, which the
+  banner's Undo posts back.
+- **M8 is advice, not a buffer task.** A task holding the buffer would be forecast as work, so
+  the P80 would move out by the buffer and P1 would warn about the protection itself. The
+  advice sizes the buffer (P80 − P50) and says whether it fits before the target.
+- Accepted double-bookings stay accepted after an apply because apply ends in `replan`, which
+  keeps auto booking ids (`reconcileBookings`). That guarantee is the existing one; it is not
+  tested again here.
 
 ### Phase 5: LLM seam (no provider yet)
 

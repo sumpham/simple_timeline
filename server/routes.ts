@@ -10,7 +10,7 @@ import { lateBy } from '../shared/schedule.ts';
 import { TASK_CODE_MAX } from '../shared/taskCode.ts';
 import { ESTIMATE_MAX, estimateError, type Estimate } from '../shared/estimates.ts';
 import { cleanSettingsPatch } from '../shared/assistant/settings.ts';
-import { assistantReport, assistantSettings } from './assistant.ts';
+import { applyOps, assistantReport, assistantSettings, opsFrom, previewOps, StaleError, suggestionReport } from './assistant.ts';
 import { cleanResourceName, formatResources, parseResources, RESOURCE_NAME_MAX, resourceKey } from '../shared/resources.ts';
 import {
   LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
@@ -1203,10 +1203,30 @@ router.post('/projects/:id/assistant/restore', handle((req, res) => {
   res.json(assistantReport(id, req.body?.date == null ? undefined : requireDate(req.body.date, 'date')));
 }));
 
+/** Better plans: a bounded search, run when asked rather than on every edit. */
+router.get('/projects/:id/assistant/suggestions', handle((req, res) => {
+  const id = assistantProject(req);
+  res.json(suggestionReport(id, req.query.date == null ? undefined : requireDate(req.query.date, 'date')));
+}));
+
+/** What applying a suggestion (or any of its moves) would do, before it is done. */
+router.post('/projects/:id/assistant/preview', handle((req, res) => {
+  const id = assistantProject(req);
+  res.json(previewOps(id, opsFrom(req.body?.ops)));
+}));
+
+/** Apply a suggestion through the plan's write path. Returns the plan and the ops that undo it. */
+router.post('/projects/:id/assistant/apply', handle((req, res) => {
+  const id = assistantProject(req);
+  const version = req.body?.version == null ? null : String(req.body.version);
+  const undo = applyOps(id, opsFrom(req.body?.ops), version);
+  res.json({ plan: planResponse(id), undo });
+}));
+
 // ---------------------------------------------------------------- errors
 
 router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err instanceof HttpError ? err.status : err instanceof PlanError ? 400 : 500;
+  const status = err instanceof HttpError ? err.status : err instanceof StaleError ? 409 : err instanceof PlanError ? 400 : 500;
   const message = err instanceof Error ? err.message : 'Something went wrong';
   if (status === 500) console.error(err);
   res.status(status).json({ error: message });

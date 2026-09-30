@@ -5,6 +5,8 @@ import type { BookingView, LinkType } from '../shared/types.ts';
 import type { OutlinePlacement } from '../shared/wbs.ts';
 import type { ImportRow } from './planIO.ts';
 import type { AssistantReport } from '../shared/assistant/rules.ts';
+import type { SuggestionReport } from '../shared/assistant/optimise.ts';
+import type { PlanOp } from '../shared/assistant/moves.ts';
 
 export type Bootstrap = { teams: Team[]; environments: Environment[]; holidays: Holiday[] };
 export type BoardData = {
@@ -169,6 +171,11 @@ export const api = {
   assistant: (projectId: number) => request<AssistantReport>(`/api/projects/${projectId}/assistant`),
   dismissFinding: (projectId: number, key: string) =>
     request<AssistantReport>(`/api/projects/${projectId}/assistant/dismiss`, { method: 'POST', body: JSON.stringify({ key }) }),
+  suggestions: (projectId: number) => request<SuggestionReport>(`/api/projects/${projectId}/assistant/suggestions`),
+  previewOps: (projectId: number, ops: PlanOp[]) =>
+    request<PlanImpact>(`/api/projects/${projectId}/assistant/preview`, { method: 'POST', body: JSON.stringify({ ops }) }),
+  applyOps: (projectId: number, ops: PlanOp[], version: string | null) =>
+    request<{ plan: PlanData; undo: PlanOp[] }>(`/api/projects/${projectId}/assistant/apply`, { method: 'POST', body: JSON.stringify({ ops, version }) }),
   restoreFinding: (projectId: number, key: string) =>
     request<AssistantReport>(`/api/projects/${projectId}/assistant/restore`, { method: 'POST', body: JSON.stringify({ key }) }),
 };

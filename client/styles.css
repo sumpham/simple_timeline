@@ -3154,3 +3154,24 @@ kbd {
 .forecast-list .link-button { text-align: left; }
 .forecast-num { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
 .forecast-note { margin: 0; font-size: 12px; color: var(--muted); }
+
+/* Better plans: cards like the warnings, with the profile as a word. */
+.better { border-bottom: 1px solid var(--rule); }
+.better-body { padding: 0 16px 12px; display: grid; gap: 8px; justify-items: start; font-size: 13px; }
+.better-intro, .better-meta { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.better-error { margin: 0; font-size: 12.5px; }
+.better-sub { margin: 0; padding: 12px 16px 4px; font-size: 12px; font-weight: 700; }
+.suggestion {
+  background: var(--lane);
+  border-bottom: 1px solid var(--rule-soft);
+  border-left: 3px solid var(--rule);
+  padding: 10px 16px 8px 14px;
+}
+.suggestion[data-profile='safe'] { border-left-color: var(--ink); }
+.suggestion[data-profile='balanced'] { border-left-color: var(--muted); }
+.suggestion-effect { margin-top: 4px; }
+.suggestion-moves { margin: 6px 0; padding-left: 18px; display: grid; gap: 8px; font-size: 13px; }
+.suggestion-move { font-weight: 600; text-align: left; }
+.suggestion-reason, .suggestion-tradeoff { margin: 2px 0 0; font-size: 12.5px; line-height: 1.45; }
+.suggestion-tradeoff { color: var(--muted); }
+.suggestion .impact { margin: 6px 0; }

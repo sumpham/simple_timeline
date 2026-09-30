@@ -1,6 +1,9 @@
 import type { AssistantReport, Finding, FindingGroup } from '../../shared/assistant/rules.ts';
 import type { Forecast } from '../../shared/assistant/forecast.ts';
-import type { ISODate } from '../../shared/types.ts';
+import type { ISODate, PlanImpact } from '../../shared/types.ts';
+import type { Advice, Suggestion, SuggestionReport } from '../../shared/assistant/optimise.ts';
+import type { PlanOp } from '../../shared/assistant/moves.ts';
+import { useState, type ReactNode } from 'react';
 import { formatDate } from '../layout.ts';
 
 /**
@@ -29,9 +32,20 @@ export function openFindings(report: AssistantReport | null): Finding[] {
   return report?.findings.filter((f) => !f.dismissed) ?? [];
 }
 
+export type BetterPlansProps = {
+  report: SuggestionReport | null;
+  searching: boolean;
+  error: string | null;
+  onFind: () => void;
+  onPreview: (ops: PlanOp[]) => Promise<PlanImpact | null>;
+  onApply: (ops: PlanOp[], version: string, title: string) => void;
+  renderImpact: (impact: PlanImpact) => ReactNode;
+};
+
 export function AssistantDrawer({
-  report, error, busy, target, taskLabel, onClose, onShow, onShowTasks, onDismiss, onRestore,
+  report, error, busy, target, taskLabel, onClose, onShow, onShowTasks, onDismiss, onRestore, better,
 }: {
+  better: BetterPlansProps;
   report: AssistantReport | null;
   error: string | null;
   busy: boolean;
@@ -81,6 +95,7 @@ export function AssistantDrawer({
           </section>
         );
       })}
+      {report && <BetterPlans {...better} busy={busy} onShowTasks={onShowTasks} />}
     </aside>
   );
 }
@@ -176,5 +191,138 @@ function ForecastCard({ forecast: f, target, taskLabel, onShowTasks }: {
         )}
       </div>
     </section>
+  );
+}
+
+const PROFILE_WORD: Record<Suggestion['profile'], string> = {
+  safe: 'Safe', balanced: 'Balanced', aggressive: 'Aggressive', tidy: 'Tidy-up',
+};
+
+/**
+ * Better plans (reqs/smart_assistant.md §4.3): found when asked, since the
+ * search tries hundreds of plans. Each is the plan's own change ops, previewed
+ * by the same impact check as a hand edit and applied through the same path,
+ * with Undo. A single move can be taken on its own.
+ */
+function BetterPlans({
+  report, searching, error, busy, onFind, onPreview, onApply, renderImpact, onShowTasks,
+}: BetterPlansProps & { busy: boolean; onShowTasks: (ids: number[]) => void }) {
+  return (
+    <section className="better" aria-label="Better plans">
+      <h3 className="assistant-group-title">Better plans <span className="drawer-sub">Less risk of delay</span></h3>
+      <div className="better-body">
+        {!report && (
+          <p className="better-intro">
+            Tries moves a planner would: level work within its float, switch to a free environment, clear a date that
+            holds the critical path, and, when asked for more, overlap or shorten critical work. Nothing changes until you apply it.
+          </p>
+        )}
+        <button type="button" className="btn" disabled={searching || busy} onClick={onFind}>
+          {searching ? 'Searching…' : report ? 'Search again' : 'Find a better plan'}
+        </button>
+        {error && <p className="better-error" role="alert">{error}</p>}
+        {report && (
+          <p className="better-meta">
+            Tried {report.evaluated} plan{report.evaluated === 1 ? '' : 's'}.{' '}
+            {!report.suggestions.length && 'None was better without making a new double-booking or a later finish.'}
+          </p>
+        )}
+      </div>
+      {report?.suggestions.map((s) => (
+        <SuggestionCard key={s.id} s={s} busy={busy} onPreview={onPreview} onApply={onApply} renderImpact={renderImpact} onShowTasks={onShowTasks} />
+      ))}
+      {report && report.tidy.length > 0 && (
+        <>
+          <h4 className="better-sub">Tidy-ups <span className="drawer-sub">No date moves</span></h4>
+          {report.tidy.map((s) => (
+            <SuggestionCard key={s.id} s={s} busy={busy} onPreview={onPreview} onApply={onApply} renderImpact={renderImpact} onShowTasks={onShowTasks} />
+          ))}
+        </>
+      )}
+      {report && report.advice.length > 0 && (
+        <>
+          <h4 className="better-sub">Advice <span className="drawer-sub">Not a plan change</span></h4>
+          {report.advice.map((a) => <AdviceCard key={a.title} a={a} onShowTasks={onShowTasks} />)}
+        </>
+      )}
+    </section>
+  );
+}
+
+function effectLine(s: Suggestion): string[] {
+  const e = s.effect;
+  const out: string[] = [];
+  if (e.finish.before && e.finish.after && e.finish.before !== e.finish.after) out.push(`Finish ${formatDate(e.finish.before)} → ${formatDate(e.finish.after)}`);
+  if (e.p80 && e.p80.before !== e.p80.after) out.push(`P80 ${formatDate(e.p80.before)} → ${formatDate(e.p80.after)}`);
+  if (e.on_time && e.on_time.before != null && e.on_time.after != null && e.on_time.before !== e.on_time.after) {
+    out.push(`On time ${pct(e.on_time.before)} → ${pct(e.on_time.after)}`);
+  }
+  for (const c of e.clashes_cleared) out.push(`Clears ${c.env_name} ${formatDate(c.start_date)} – ${formatDate(c.end_date)}`);
+  return out;
+}
+
+function SuggestionCard({ s, busy, onPreview, onApply, renderImpact, onShowTasks }: {
+  s: Suggestion;
+  busy: boolean;
+  onPreview: BetterPlansProps['onPreview'];
+  onApply: BetterPlansProps['onApply'];
+  renderImpact: BetterPlansProps['renderImpact'];
+  onShowTasks: (ids: number[]) => void;
+}) {
+  const [impact, setImpact] = useState<{ at: number; impact: PlanImpact } | null>(null);
+  const preview = async (at: number, ops: PlanOp[]) => {
+    if (impact?.at === at) { setImpact(null); return; }
+    const i = await onPreview(ops);
+    if (i) setImpact({ at, impact: i });
+  };
+  const whole = -1;
+  const effect = effectLine(s);
+  return (
+    <article className="suggestion" data-profile={s.profile}>
+      <div className="finding-top">
+        <span className="finding-title">{s.profile === 'tidy' ? s.title : s.title.replace(/^[A-Z][a-z]+: /, '')}</span>
+        <span className="finding-level">{PROFILE_WORD[s.profile]}</span>
+      </div>
+      {effect.length > 0 && <ul className="finding-evidence suggestion-effect">{effect.map((x) => <li key={x}>{x}</li>)}</ul>}
+      <ol className="suggestion-moves">
+        {s.moves.map((m, i) => (
+          <li key={i}>
+            <button type="button" className="link-button suggestion-move" onClick={() => onShowTasks(m.task_ids)}>{m.title}</button>
+            <p className="suggestion-reason">{m.reason}</p>
+            {m.tradeoff && <p className="suggestion-tradeoff"><strong>Trade-off.</strong> {m.tradeoff}</p>}
+            {s.moves.length > 1 && (
+              <div className="finding-actions">
+                <button type="button" className="btn quiet" disabled={busy} onClick={() => void preview(i, m.ops)} aria-pressed={impact?.at === i}>Preview</button>
+                <button type="button" className="btn quiet" disabled={busy} onClick={() => onApply(m.ops, s.version, m.title)}>Apply this move</button>
+              </div>
+            )}
+            {impact && impact.at === i && renderImpact(impact.impact)}
+          </li>
+        ))}
+      </ol>
+      {impact?.at === whole && renderImpact(impact.impact)}
+      <div className="finding-actions">
+        <button type="button" className="btn quiet" disabled={busy} onClick={() => void preview(whole, s.ops)} aria-pressed={impact?.at === whole}>
+          Preview{s.moves.length > 1 ? ' all' : ''}
+        </button>
+        <button type="button" className="btn" disabled={busy} onClick={() => onApply(s.ops, s.version, s.title)}>
+          Apply{s.moves.length > 1 ? ` all ${s.moves.length}` : ''}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function AdviceCard({ a, onShowTasks }: { a: Advice; onShowTasks: (ids: number[]) => void }) {
+  return (
+    <article className="suggestion" data-profile="advice">
+      <div className="finding-top"><span className="finding-title">{a.title}</span></div>
+      <p className="suggestion-reason">{a.text}</p>
+      {a.task_ids.length > 0 && (
+        <div className="finding-actions">
+          <button type="button" className="btn quiet" onClick={() => onShowTasks(a.task_ids)}>Show task{a.task_ids.length === 1 ? '' : 's'}</button>
+        </div>
+      )}
+    </article>
   );
 }
