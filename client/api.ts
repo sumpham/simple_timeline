@@ -62,7 +62,7 @@ export type TaskInput = Partial<Pick<Task,
 export type TaskChange =
   | { op: 'create'; fields: TaskInput; after_id?: number | null }
   | { op: 'update'; id: number; fields: TaskInput }
-  | { op: 'delete'; id: number; bridge?: boolean }
+  | { op: 'delete'; id: number; bridge?: boolean; children?: 'lift' | 'delete' }
   | { op: 'outline'; placements: OutlinePlacement[] };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -117,8 +117,10 @@ export const api = {
     }),
   updateTask: (id: number, fields: TaskInput) =>
     request<{ id: number; plan: PlanData }>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(fields) }),
-  deleteTask: (id: number, bridge: boolean) =>
-    request<{ plan: PlanData }>(`/api/tasks/${id}${bridge ? '?bridge=1' : ''}`, { method: 'DELETE' }),
+  deleteTask: (id: number, bridge: boolean, children?: 'lift' | 'delete') => {
+    const q = new URLSearchParams({ ...(bridge ? { bridge: '1' } : {}), ...(children ? { children } : {}) }).toString();
+    return request<{ plan: PlanData }>(`/api/tasks/${id}${q ? `?${q}` : ''}`, { method: 'DELETE' });
+  },
   reorderTasks: (projectId: number, ids: number[]) =>
     request<{ plan: PlanData }>('/api/tasks/reorder', { method: 'POST', body: JSON.stringify({ project_id: projectId, ids }) }),
   previewTask: (projectId: number, change: TaskChange) =>

@@ -21,8 +21,9 @@ New or extended for the chart. All task-changing routes replan in the same trans
 |---|---|---|
 | `GET /api/projects/:id/plan` | | Plan, now with `baseline: {task_id, start_date, end_date}[]` |
 | `POST /api/tasks` · `PATCH /api/tasks/:id` | Also `parent_id`, `progress`, `predecessors: {id, lag, type}[]` | `{ id, plan }` |
+| `DELETE /api/tasks/:id` | Query `bridge=1` keeps the chain; `children=delete` takes a summary's branch with it, `children=lift` (default) moves its tasks up a level | `{ plan }` |
 | `POST /api/tasks/outline` | `{ project_id, placements: {id, parent_id, sort_order}[] }` | `{ plan }` |
-| `POST /api/tasks/preview` | `{ project_id, change }`, where change may be `{ op: 'outline', placements }` | Impact |
+| `POST /api/tasks/preview` | `{ project_id, change }`, where change may be `{ op: 'outline', placements }` or `{ op: 'delete', id, bridge, children }` | Impact |
 | `POST /api/projects/:id/baseline` | | `{ plan }` |
 | `DELETE /api/projects/:id/baseline` | | `{ plan }` |
 | `POST /api/projects/:id/import` | `{ rows: ImportRow[] }` (at most 2000) | `{ plan, created, warnings }` |
@@ -34,13 +35,19 @@ New or extended for the chart. All task-changing routes replan in the same trans
 | Situation | Message |
 |---|---|
 | Link between a task and its own summary (by hand) | "… are in the same summary line; link the tasks inside it instead" |
-| SS or FF to or from a summary | "Links to or from a summary task are finish-to-start only" |
+| SS or FF to or from a summary | "… would be a summary, and links to or from a summary are finish-to-start only: A → B is SS. Make that link FS first" |
+| Status, length, actual dates, progress or environment sent for a summary | "… is a summary: its status comes from the tasks under it" (and the like) |
 | A task under one of its own tasks | "… cannot sit under one of its own tasks" |
 | Deeper than 8 levels | "An outline can be at most 8 levels deep" |
 | Progress outside 0–100 | "Progress is a whole percentage, 0 to 100" |
 
 An outline move (indent, **Part of**) that would create a task-to-own-summary link drops that
 link instead of refusing.
+
+A summary's `status`, `actual_start` and `actual_end` are written by `replan` from its tasks
+(`rolledUp` in `shared/wbs.ts`), and its `progress` is kept NULL, so every reader (API, CSV,
+MSPDI, portfolio) sees the rolled-up values. The server replans every plan that has summaries
+on start, which fills these in for older rows.
 
 ## Import rows
 

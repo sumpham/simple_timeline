@@ -154,7 +154,7 @@ describe('planImpact', () => {
     const deps = [{ predecessor_id: 1, successor_id: 2, lag: 0 }];
     const before = plan([t(1, 3, null), t(2, 2, null)], deps);
     const after = plan([t(2, 2, null)], []);
-    const impact = planImpact(before, after, { ...ctx, deletedTaskId: 1 });
+    const impact = planImpact(before, after, { ...ctx, deletedTaskIds: [1] });
     expect(impact.unlinked).toEqual([{ id: 2, name: 'T2' }]);
     expect(impact.risk).toBe('high');
     expect(impact.moved).toEqual([expect.objectContaining({ id: 2, days: -3 })]);

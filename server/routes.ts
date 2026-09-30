@@ -661,8 +661,15 @@ function changeFrom(req: Request, projectId: number): Change {
   if (id == null) throw bad('A task id is required');
   if (taskProject(id).id !== projectId) throw bad('That task belongs to another project');
   if (change.op === 'update') return { op: 'update', id, fields: taskFields(change.fields, project.team_id) };
-  if (change.op === 'delete') return { op: 'delete', id, bridge: Boolean(change.bridge) };
+  if (change.op === 'delete') return { op: 'delete', id, bridge: Boolean(change.bridge), children: childrenMode(change.children) };
   throw bad('op must be create, update, delete or outline');
+}
+
+/** What happens to a deleted summary's tasks: they go with it, or move up a level (the default). */
+function childrenMode(raw: unknown): 'lift' | 'delete' {
+  if (raw == null || raw === '' || raw === 'lift') return 'lift';
+  if (raw === 'delete') return 'delete';
+  throw bad('children must be lift or delete');
 }
 
 router.post('/tasks', handle((req, res) => {
@@ -685,7 +692,7 @@ router.patch('/tasks/:id', handle((req, res) => {
 router.delete('/tasks/:id', handle((req, res) => {
   const id = Number(req.params.id);
   const project = taskProject(id);
-  commit(project.id, { op: 'delete', id, bridge: req.query.bridge === '1' });
+  commit(project.id, { op: 'delete', id, bridge: req.query.bridge === '1', children: childrenMode(req.query.children) });
   res.json({ plan: planResponse(project.id) });
 }));
 

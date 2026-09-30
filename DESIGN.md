@@ -530,7 +530,19 @@ criticality roll up from its tasks, it books nothing (its environment is cleared
 length stops counting. A link to a summary holds every task under it and a link from one waits
 for all of them (`expandLinks`); such links are finish-to-start only, and a link between a task
 and its own summary is refused, or dropped when an outline move creates it. Deleting a summary
-lifts its tasks a level. Summaries fold in the table, and the network draws only working tasks.
+lifts its tasks a level, or takes them with it; the editor asks, defaulting to the branch.
+Summaries fold in the table, and the network draws only working tasks.
+
+*Sub-tasks to the WBS standard* (`reqs/sub_tasks.md`). A summary is the sum of its parts (the
+100% rule), with no work of its own. Its status and actual dates are rolled up (`rolledUp`,
+shared/wbs.ts) and stored by `replan`, so no view keeps a stale value, and the server refuses
+a status, length, progress, actual date or environment sent for it. Its "start no earlier
+than" holds every task under it (`inheritedFloors`, read by `scheduleProject`). The first
+sub-task a task gains takes its environment, so the booking moves down to the work. A summary
+left with no tasks becomes a task again with the length it last showed. **＋** on a row (shown
+on hover and focus) and **Add sub-task** in the editor add a task last under it with the caret
+in its name. There is no Tab to indent, because Tab moves focus (§5). An **Outline** menu shows
+levels, **Show** adds a WBS column, and a summary's baseline is rolled up from its tasks'.
 
 **Link types.** FS, SS and FF, with lag, in the After column as `2`, `2SS`, `2FF+1`. Scheduling
 and float follow the type in both passes; the chart draws SS round the left and FF round the

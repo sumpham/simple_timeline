@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dayColumn, ganttDays, ganttScale, GANTT_DAY, GANTT_MIN_WEEKS, spanX } from '../client/gantt.ts';
+import { dayColumn, rolledBaseline, ganttDays, ganttScale, GANTT_DAY, GANTT_MIN_WEEKS, spanX } from '../client/gantt.ts';
 import { linkPath } from '../client/components/Gantt.tsx';
 
 describe('ganttScale', () => {
@@ -187,5 +187,23 @@ describe('link types on the chart', () => {
   it('draws SS round the left into the start and FF round the right into the finish', () => {
     expect(linkPath(p, s, 'SS')).toBe('M22 19H14V58H43');
     expect(linkPath(p, s, 'FF')).toBe('M110 19H118V58H89');
+  });
+});
+
+describe('rolledBaseline', () => {
+  it('gives a summary its tasks’ earliest start and latest finish, and none when they have none', () => {
+    const tasks = [
+      { id: 10, sort_order: 0 }, { id: 1, sort_order: 1, parent_id: 10 }, { id: 2, sort_order: 2, parent_id: 10 },
+      { id: 20, sort_order: 3 }, { id: 3, sort_order: 4, parent_id: 20 },
+    ];
+    const saved = new Map([
+      [1, { start: '2026-03-02', end: '2026-03-04' }],
+      [2, { start: '2026-03-05', end: '2026-03-10' }],
+      [20, { start: '2026-01-01', end: '2026-01-02' }],
+    ]);
+    const out = rolledBaseline(tasks, saved);
+    expect(out.get(10)).toEqual({ start: '2026-03-02', end: '2026-03-10' });
+    expect(out.has(20)).toBe(false);
+    expect(out.get(1)).toEqual(saved.get(1));
   });
 });

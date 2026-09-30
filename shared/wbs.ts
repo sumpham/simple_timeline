@@ -185,3 +185,48 @@ export function moveBefore(tasks: readonly Node[], id: number, beforeId: number 
 function renumber(ids: number[], parent: number | null): OutlinePlacement[] {
   return ids.map((id, i) => ({ id, parent_id: parent, sort_order: i }));
 }
+
+// ---------------------------------------------------------------- roll-up
+
+type Rolled = Pick<Task, 'status' | 'actual_start' | 'actual_end'>;
+
+/**
+ * A summary's status and actuals, from the tasks under it (the 100% rule: it has
+ * none of its own). Done when every task is; in progress once any has started,
+ * even if another is blocked; blocked when one is and nothing has started.
+ */
+export function rolledUp(leaves: readonly Rolled[]): Rolled {
+  if (!leaves.length) return { status: 'todo', actual_start: null, actual_end: null };
+  const done = leaves.every((t) => t.status === 'done');
+  const started = leaves.some((t) => t.status === 'in_progress' || t.status === 'done');
+  const status = done ? 'done' : started ? 'in_progress' : leaves.some((t) => t.status === 'blocked') ? 'blocked' : 'todo';
+  const starts = leaves.map((t) => t.actual_start).filter((d): d is string => !!d).sort();
+  const ends = leaves.map((t) => t.actual_end).filter((d): d is string => !!d).sort();
+  return {
+    status,
+    actual_start: status === 'todo' || status === 'blocked' ? null : starts[0] ?? null,
+    actual_end: done ? ends[ends.length - 1] ?? null : null,
+  };
+}
+
+/**
+ * A task's "start no earlier than" as scheduling feels it: the latest of its own
+ * and every summary above it, since a summary's constraint holds all its tasks.
+ */
+export function inheritedFloors(tasks: readonly (Node & { not_before?: string | null })[]): Map<number, string | null> {
+  const parent = parentOf(tasks);
+  const own = new Map(tasks.map((t) => [t.id, t.not_before ?? null]));
+  const out = new Map<number, string | null>();
+  for (const t of tasks) {
+    let floor = own.get(t.id) ?? null;
+    let cur = parent.get(t.id) ?? null;
+    let guard = 0;
+    while (cur != null && guard++ <= tasks.length) {
+      const nb = own.get(cur) ?? null;
+      if (nb && (!floor || nb > floor)) floor = nb;
+      cur = parent.get(cur) ?? null;
+    }
+    out.set(t.id, floor);
+  }
+  return out;
+}

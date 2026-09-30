@@ -1,3 +1,4 @@
+import { leavesOf, summaryIds } from '../shared/wbs.ts';
 import type { ISODate, Task, TaskDependency } from '../shared/types.ts';
 import type { TaskInput } from './api.ts';
 import {
@@ -212,6 +213,26 @@ export function progressOf(t: ProgressTask, today: ISODate, holidays?: HolidaySe
   if (t.status === 'done') return 100;
   if (t.status !== 'in_progress' || !t.actual_start || t.duration <= 0 || today < t.actual_start) return 0;
   return Math.min(95, Math.round((workingDays(t.actual_start, today, holidays) / t.duration) * 100));
+}
+
+/**
+ * Baselines with each summary's rolled up from its tasks' (earliest start, latest
+ * finish), so a summary made or reshaped after the baseline still compares.
+ */
+export function rolledBaseline(
+  tasks: readonly { id: number; sort_order: number; parent_id?: number | null }[],
+  saved: ReadonlyMap<number, { start: ISODate; end: ISODate }>,
+): Map<number, { start: ISODate; end: ISODate }> {
+  const out = new Map(saved);
+  for (const id of summaryIds(tasks)) {
+    const spans = leavesOf(tasks, id).map((l) => saved.get(l)).filter((b): b is { start: ISODate; end: ISODate } => !!b);
+    if (!spans.length) { out.delete(id); continue; }
+    out.set(id, {
+      start: spans.reduce((m, b) => (b.start < m ? b.start : m), spans[0].start),
+      end: spans.reduce((m, b) => (b.end > m ? b.end : m), spans[0].end),
+    });
+  }
+  return out;
 }
 
 /** A summary's progress: its tasks' progress weighted by their length. */

@@ -1,6 +1,7 @@
 import { applyResolutions, detectConflicts, openConflicts } from './conflicts.ts';
 import { calendarDays, diffDays, type HolidaySet } from './dates.ts';
 import { lateBy, scheduleProject, type ScheduleResult } from './schedule.ts';
+import { leavesOf, rolledUp } from './wbs.ts';
 import { reconcileBookings, taskHolds, type Reconciliation, type ReconcileBooking } from './taskHolds.ts';
 import type {
   BookingView, Conflict, Environment, ISODate, PlanImpact, PlanRisk, Task, TaskDependency, TaskHold,
@@ -35,9 +36,12 @@ export function planProject(input: PlanInput): PlanOutcome | { cycle: number[] }
   });
   if ('cycle' in schedule) return schedule;
 
+  const byId = new Map(input.tasks.map((t) => [t.id, t]));
   const tasks = input.tasks.map((t) => {
     const s = schedule.tasks.get(t.id)!;
-    return { ...t, start_date: s.start, end_date: s.end, total_float: s.total_float, critical: s.critical ? 1 : 0 };
+    const dated = { ...t, start_date: s.start, end_date: s.end, total_float: s.total_float, critical: s.critical ? 1 : 0 };
+    // A summary has no status or actuals of its own: they are its tasks', rolled up.
+    return s.summary ? { ...dated, ...rolledUp(leavesOf(input.tasks, t.id).map((id) => byId.get(id)!)) } : dated;
   });
   // A summary is a roll-up, not work: it never books an environment itself.
   const holds = taskHolds(tasks.filter((t) => !schedule.tasks.get(t.id)!.summary), input.holidays);
@@ -51,8 +55,8 @@ export type ImpactContext = {
   environments: readonly Environment[];
   resolved: ReadonlySet<string>;
   holidays?: HolidaySet;
-  /** The task being deleted, when the change is a delete. */
-  deletedTaskId?: number;
+  /** The tasks being deleted, when the change is a delete: one, or a summary with its branch. */
+  deletedTaskIds?: readonly number[];
 };
 
 /** What changing a plan from `before` to `after` would do, and how risky that is. */
@@ -79,11 +83,11 @@ export function planImpact(before: PlanOutcome, after: PlanOutcome | { cycle: nu
     moved.push({ id: t.id, name: t.name, days: diffDays(b.start_date, t.start_date) });
   }
 
-  const deleted = ctx.deletedTaskId;
-  // Successors that lose a predecessor when a task goes, whether or not the chain is kept.
-  const unlinked = deleted == null ? [] : before.deps
-    .filter((d) => d.predecessor_id === deleted && afterTasks.has(d.successor_id))
-    .map((d) => ({ id: d.successor_id, name: names.get(d.successor_id)! }));
+  const deleted = new Set(ctx.deletedTaskIds ?? []);
+  // Successors that lose a predecessor when tasks go, whether or not the chain is kept.
+  const unlinked = [...new Map(before.deps
+    .filter((d) => deleted.has(d.predecessor_id) && afterTasks.has(d.successor_id))
+    .map((d) => [d.successor_id, { id: d.successor_id, name: names.get(d.successor_id)! }])).values()];
 
   const finishAfter = after.tasks.length ? after.schedule.finish : null;
   const lateBefore = lateBy(finishBefore, ctx.project.target_date, ctx.holidays);
@@ -114,7 +118,7 @@ export function planImpact(before: PlanOutcome, after: PlanOutcome | { cycle: nu
   };
   impact.risk = riskOf(impact, {
     lateGrew: lateAfter > lateBefore,
-    deletedCriticalWithSuccessors: deleted != null && critBefore.has(deleted) && unlinked.length > 0,
+    deletedCriticalWithSuccessors: [...deleted].some((id) => critBefore.has(id)) && unlinked.length > 0,
   });
   return impact;
 }

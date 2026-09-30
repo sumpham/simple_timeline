@@ -2414,6 +2414,30 @@ kbd {
 .task-table tr.is-summary td { background: var(--lane-alt); }
 .task-table tr.is-summary .c-name input { font-weight: 650; }
 .cell-quiet { color: var(--muted); padding: 4px 6px; font-size: 13px; display: inline-block; }
+/* Sub-tasks: a quiet count on a summary, and an add button that shows on the row in use. */
+.task-count { flex: none; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.add-sub {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+}
+.add-sub svg { width: 10px; height: 10px; stroke: currentColor; stroke-width: 1.6; fill: none; }
+.task-table tr:hover .add-sub, .task-table tr:focus-within .add-sub { opacity: 1; }
+.add-sub:hover:not(:disabled), .add-sub:focus-visible { color: var(--ink); border-color: var(--ink); }
+@media (hover: none) { .add-sub { opacity: 1; } }
+.task-table .c-wbs { width: 56px; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.task-split .task-table.has-wbs { width: 988px; }
+.task-split-table.is-sized .task-table.has-wbs { width: max(988px, 100%); }
+.task-split .task-table .c-wbs { width: 56px; }
 .task-table .status-cell.cell-quiet { display: flex; gap: 2px; padding-left: 0; }
 
 /* ---- occupancy strip labels, under the table */
@@ -2683,7 +2707,7 @@ kbd {
   @page { size: landscape; margin: 10mm; }
   body { background: #fff; }
   .topbar, .m-topbar, .plan-back, .plan-title-row .segmented, .gantt-toolbar, .table-hint, .holds,
-  .impact-banner, .error-bar, .task-add, .split-handle, .rail, .drawer, .gantt-link-handle { display: none !important; }
+  .impact-banner, .error-bar, .task-add, .add-sub, .split-handle, .rail, .drawer, .gantt-link-handle { display: none !important; }
   .plan, .plan-body, .task-table-wrap, .task-split { overflow: visible !important; height: auto !important; display: block; }
   .task-split { display: flex !important; }
   .task-split-table { position: static; box-shadow: none; }
@@ -2723,6 +2747,9 @@ kbd {
 .task-editor label.stack { align-content: start; }
 .task-editor .delete-impact { display: grid; gap: 8px; }
 .task-editor .delete-impact:empty { display: none; }
+.task-editor .field-static { display: grid; gap: 2px; padding: 5px 0; font-weight: 500; }
+.task-editor fieldset.choice { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.task-editor fieldset.choice legend { padding: 0; margin-bottom: 4px; font-size: 13px; font-weight: 500; }
 
 /* ---------------------------------------------------------------- holds */
 

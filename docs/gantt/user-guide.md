@@ -83,20 +83,38 @@ Summary bars cannot be dragged: their dates are their tasks'.
 | Divider | ← / → (Shift for bigger steps) | Resize table and chart |
 | Divider | Home / End or Enter | Narrowest table / whole table |
 
-## Summary tasks
+## Sub-tasks and summary tasks
 
-Put a task under another with Alt+Shift+→, or with **Part of** in the task editor. The task it
-goes under becomes a summary:
+Add a sub-task with the **＋** that appears on a row when you point at it or tab into it, or
+with **Add sub-task** in the task editor. The new task goes last under that row, with the caret
+in its name. You can also put a task under another with Alt+Shift+→, by dragging its row number,
+or with **Part of** in the editor. The task above becomes a summary, following the WBS rule
+that a parent is the sum of its parts:
 
-- its dates, float and critical flag come from the tasks under it;
-- it books no environment, and its own length stops counting;
-- the ▾ in the table folds it.
+- its dates, float, critical flag, status, actual dates and progress come from the tasks under
+  it, and the editor shows them rather than letting you type them;
+- it books no environment. The first sub-task it gains takes its environment, so its booking
+  moves down to the work instead of disappearing;
+- its **Start no earlier than** holds every task under it;
+- its assignee reads as its **Owner**, the person accountable for it;
+- the table says how many tasks it holds and how many are blocked, and the ▾ folds it.
+
+Status rolls up as: done when every task is done, in progress once any has started (even if
+another is blocked), blocked when one is blocked and none has started, otherwise to do.
 
 A link *to* a summary holds every task under it; a link *from* one waits for all of them.
-Those links are finish-to-start. If you indent a task under the task it was linked to, that
-link is removed, because a task cannot wait for its own summary.
+Those links are finish-to-start: a task linked start-to-start or finish-to-finish cannot become
+a summary until that link is FS, and the refusal names the link. If you indent a task under
+the task it was linked to, that link is removed, because a task cannot wait for its own
+summary. When the last task leaves a summary, it becomes a task again, keeping the length it
+last showed.
 
-Deleting a summary keeps its tasks: they move up a level into its place.
+**Deleting a summary** asks what happens to its sub-tasks. **Go with it** (the default)
+deletes the whole branch. **Stay, moved up a level** keeps them where the summary was. The
+impact under the button covers the whole branch.
+
+**Outline** in the toolbar opens everything or shows only the top levels. **Show → WBS
+column** adds each task's outline number (1.2.3).
 
 ## IDs and the After column
 

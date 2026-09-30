@@ -15,7 +15,7 @@ import { defaultProjectStart } from '../shared/schedule.ts';
 import { descendants, inOutlineOrder, MAX_DEPTH, outline, parentOf, summaryIds, type OutlinePlacement } from '../shared/wbs.ts';
 import { effectiveKind } from '../shared/bookings.ts';
 import { nextTaskCode } from '../shared/taskCode.ts';
-import { today } from '../shared/dates.ts';
+import { today, workingDays } from '../shared/dates.ts';
 import type {
   Booking, Environment, ISODate, LinkType, PlanImpact, Project, Task, TaskDependency, TaskStatus,
 } from '../shared/types.ts';
@@ -89,6 +89,15 @@ export function replan(projectId: number): PlanOutcome {
     run('UPDATE task SET start_date = ?, end_date = ?, total_float = ?, critical = ? WHERE id = ?',
       t.start_date, t.end_date, t.total_float, t.critical, t.id);
   }
+  // A summary's status and actuals are rolled up, and stored so every reader agrees.
+  for (const t of outcome.tasks) {
+    if (!outcome.schedule.tasks.get(t.id)?.summary) continue;
+    const was = before.get(t.id)!;
+    if (was.status === t.status && was.actual_start === t.actual_start && was.actual_end === t.actual_end) continue;
+    if (was.status !== t.status) audit('task', t.id, 'status', was.status, t.status);
+    run('UPDATE task SET status = ?, actual_start = ?, actual_end = ?, progress = NULL WHERE id = ?',
+      t.status, t.actual_start, t.actual_end, t.id);
+  }
 
   const { create, update, remove } = outcome.reconciliation;
   for (const id of remove) {
@@ -135,7 +144,8 @@ export type TaskFields = Partial<Pick<Task,
 export type Change =
   | { op: 'create'; fields: TaskFields & { name: string }; after_id?: number | null }
   | { op: 'update'; id: number; fields: TaskFields }
-  | { op: 'delete'; id: number; bridge?: boolean }
+  /** `children`: a summary's tasks go with it ('delete') or move up a level ('lift', the default). */
+  | { op: 'delete'; id: number; bridge?: boolean; children?: 'lift' | 'delete' }
   /** Indent, outdent or move within the outline: new parents and sibling orders. */
   | { op: 'outline'; placements: OutlinePlacement[] };
 
@@ -203,6 +213,7 @@ export function applyChange(state: PlanState, change: Change): PlanState {
   } else if (change.op === 'update') {
     const i = tasks.findIndex((t) => t.id === change.id);
     if (i < 0) throw new PlanError('Task not found');
+    if (summaryIds(tasks).has(change.id)) refuseSummaryFields(tasks[i], change.fields);
     const next = { ...tasks[i], ...stripPreds(change.fields) };
     if ('parent_id' in change.fields && (change.fields.parent_id ?? null) !== (tasks[i].parent_id ?? null)) {
       next.sort_order = lastUnder(next.parent_id ?? null, next.id);
@@ -216,20 +227,26 @@ export function applyChange(state: PlanState, change: Change): PlanState {
   } else {
     const gone = tasks.find((t) => t.id === change.id);
     if (!gone) throw new PlanError('Task not found');
-    // A deleted summary's tasks move up a level into its place, never with it.
-    const siblings = outline(tasks).filter((r) => r.parent_id === (gone.parent_id ?? null)).map((r) => r.id);
-    const children = outline(tasks).filter((r) => r.parent_id === gone.id).map((r) => r.id);
-    siblings.splice(siblings.indexOf(gone.id), 1, ...children);
-    const order = new Map(siblings.map((id, n) => [id, n]));
-    tasks = tasks.map((t) => (order.has(t.id) ? { ...t, parent_id: gone.parent_id ?? null, sort_order: order.get(t.id)! } : t));
-    const into = deps.filter((d) => d.successor_id === change.id);
-    const outOf = deps.filter((d) => d.predecessor_id === change.id);
-    tasks = tasks.filter((t) => t.id !== change.id);
-    deps = deps.filter((d) => d.predecessor_id !== change.id && d.successor_id !== change.id);
+    // The branch that goes: the task alone, or with everything under it.
+    const branch = new Set([change.id, ...(change.children === 'delete' ? descendants(tasks, change.id) : [])]);
+    if (change.children !== 'delete') {
+      // A deleted summary's tasks move up a level into its place, never with it.
+      const siblings = outline(tasks).filter((r) => r.parent_id === (gone.parent_id ?? null)).map((r) => r.id);
+      const children = outline(tasks).filter((r) => r.parent_id === gone.id).map((r) => r.id);
+      siblings.splice(siblings.indexOf(gone.id), 1, ...children);
+      const order = new Map(siblings.map((id, n) => [id, n]));
+      tasks = tasks.map((t) => (order.has(t.id) ? { ...t, parent_id: gone.parent_id ?? null, sort_order: order.get(t.id)! } : t));
+    }
+    // Links crossing into and out of the branch; those inside it go with it.
+    const into = deps.filter((d) => branch.has(d.successor_id) && !branch.has(d.predecessor_id));
+    const outOf = deps.filter((d) => branch.has(d.predecessor_id) && !branch.has(d.successor_id));
+    tasks = tasks.filter((t) => !branch.has(t.id));
+    deps = deps.filter((d) => !branch.has(d.predecessor_id) && !branch.has(d.successor_id));
     if (change.bridge) {
-      // Keep the chain: each successor now waits on what the deleted task waited on.
+      // Keep the chain: each successor now waits on what the deleted work waited on.
       for (const a of into) {
         for (const b of outOf) {
+          if (a.predecessor_id === b.successor_id) continue;
           if (!deps.some((d) => d.predecessor_id === a.predecessor_id && d.successor_id === b.successor_id)) {
             deps.push({ predecessor_id: a.predecessor_id, successor_id: b.successor_id, lag: a.lag + b.lag, type: 'FS' });
           }
@@ -245,7 +262,56 @@ export function applyChange(state: PlanState, change: Change): PlanState {
     deps = deps.filter((d) => !descendants(tasks, d.predecessor_id).has(d.successor_id)
       && !descendants(tasks, d.successor_id).has(d.predecessor_id));
   }
+  tasks = passEnvironmentDown(state.tasks, tasks);
+  tasks = revertFormerSummaries(state.tasks, tasks);
   return { ...state, ...checkOutline(tasks, deps) };
+}
+
+/** The fields a summary does not have: they are its tasks', rolled up (the 100% rule). */
+function refuseSummaryFields(t: Task, f: TaskFields) {
+  const sent = (k: keyof TaskFields) => k in f && (f[k] ?? null) !== (t[k as keyof Task] ?? null);
+  if (sent('status')) throw new PlanError(`${t.name} is a summary: its status comes from the tasks under it`);
+  if (sent('duration')) throw new PlanError(`${t.name} is a summary: its length comes from the tasks under it`);
+  if (sent('actual_start') || sent('actual_end')) throw new PlanError(`${t.name} is a summary: its actual dates come from the tasks under it`);
+  if (f.progress != null) throw new PlanError(`${t.name} is a summary: its progress comes from the tasks under it`);
+  if (f.environment_id != null) throw new PlanError(`${t.name} is a summary and books nothing; give its tasks the environment`);
+}
+
+/**
+ * A task that becomes a summary hands its environment to the sub-tasks it just
+ * gained that have none, so its booking moves down to the work instead of
+ * vanishing when checkOutline clears it.
+ */
+function passEnvironmentDown(before: readonly Task[], after: Task[]): Task[] {
+  const wasSummary = summaryIds(before);
+  const was = new Map(before.map((t) => [t.id, t]));
+  const env = new Map<number, number>();
+  for (const id of summaryIds(after)) {
+    const t = after.find((x) => x.id === id)!;
+    if (!wasSummary.has(id) && t.environment_id != null) env.set(id, t.environment_id);
+  }
+  if (!env.size) return after;
+  const summaries = summaryIds(after);
+  return after.map((t) => {
+    const e = t.parent_id != null ? env.get(t.parent_id) : undefined;
+    const joined = (was.get(t.id)?.parent_id ?? null) !== (t.parent_id ?? null);
+    return e != null && joined && t.environment_id == null && !summaries.has(t.id) ? { ...t, environment_id: e } : t;
+  });
+}
+
+/**
+ * A summary whose last task left is a task again. It keeps the length it showed
+ * as a summary, not whatever Days it had before it became one.
+ */
+function revertFormerSummaries(before: readonly Task[], after: Task[]): Task[] {
+  const wasSummary = summaryIds(before);
+  const isSummary = summaryIds(after);
+  if (![...wasSummary].some((id) => !isSummary.has(id))) return after;
+  const holidays = holidaySet();
+  return after.map((t) => {
+    if (!wasSummary.has(t.id) || isSummary.has(t.id) || !t.start_date || !t.end_date) return t;
+    return { ...t, duration: workingDays(t.start_date, t.end_date, holidays), progress: null };
+  });
 }
 
 /**
@@ -274,7 +340,9 @@ export function checkOutline(tasks: Task[], deps: TaskDependency[]): { tasks: Ta
       throw new PlanError(`${name(d.successor_id)} and ${name(d.predecessor_id)} are in the same summary line; link the tasks inside it instead`);
     }
     if ((summaries.has(d.predecessor_id) || summaries.has(d.successor_id)) && (d.type ?? 'FS') !== 'FS') {
-      throw new PlanError('Links to or from a summary task are finish-to-start only');
+      const summary = summaries.has(d.successor_id) ? d.successor_id : d.predecessor_id;
+      throw new PlanError(`${name(summary)} would be a summary, and links to or from a summary are finish-to-start only: `
+        + `${name(d.predecessor_id)} → ${name(d.successor_id)} is ${d.type}. Make that link FS first`);
     }
   }
   return {
@@ -367,7 +435,9 @@ export function previewChange(projectId: number, change: Change): PlanImpact {
       'SELECT r.key FROM conflict_resolution r JOIN environment e ON e.id = r.environment_id WHERE e.team_id = ?', teamId,
     ).map((r) => r.key)),
     holidays: holidaySet(),
-    deletedTaskId: change.op === 'delete' ? change.id : undefined,
+    deletedTaskIds: change.op === 'delete'
+      ? [change.id, ...(change.children === 'delete' ? descendants(state.tasks, change.id) : [])]
+      : undefined,
   });
 }
 

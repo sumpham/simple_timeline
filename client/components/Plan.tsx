@@ -21,7 +21,7 @@ import { expandLinks } from '../../shared/schedule.ts';
 import { bookingsFor, conflictChanges, conflictsFor, planProject, type ImpactContext } from '../../shared/plan.ts';
 import { isManaged, type ReconcileBooking } from '../../shared/taskHolds.ts';
 import {
-  finishFields, progressOf, rolledProgress, startFields, visibleRows, zoomToFit, ZOOM_LABEL, ZOOMS, type Zoom,
+  finishFields, progressOf, rolledBaseline, rolledProgress, startFields, visibleRows, zoomToFit, ZOOM_LABEL, ZOOMS, type Zoom,
 } from '../gantt.ts';
 import { fromCsv, fromMspdi, toCsv, toMspdi } from '../planIO.ts';
 
@@ -72,6 +72,8 @@ export function PlanView({
   const [showEnvs, setShowEnvs] = useState(false);
   const [criticalOnly, setCriticalOnly] = useState(false);
   const [editing, setEditing] = useState<number | null>(null);
+  /** A row whose name should take the caret once it shows: a sub-task just added. */
+  const [focusTask, setFocusTask] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   /** What the last change did, with a way to take it back. */
   const [outcome, setOutcome] = useState<{ title: string; impact: PlanImpact; undo?: () => Promise<void> } | null>(null);
@@ -141,7 +143,7 @@ export function PlanView({
       if (change.op === 'create') res = await api.createTask(projectId, { name: 'New task', ...change.fields } as TaskInput & { name: string }, change.after_id);
       else if (change.op === 'update') res = await api.updateTask(change.id, change.fields);
       else if (change.op === 'outline') res = await api.outlineTasks(projectId, change.placements);
-      else res = await api.deleteTask(change.id, !!change.bridge);
+      else res = await api.deleteTask(change.id, !!change.bridge, change.children);
       accept(res.plan);
       setError(null);
       if (impact && impact.risk !== 'low') setOutcome({ title, impact, undo });
@@ -210,6 +212,14 @@ export function PlanView({
       setNotice(`${t.name} finishes ${formatDate(got)}: ${formatDate(date)} is not a working day, so it is not counted.`);
     }
     return !!next;
+  };
+
+  /** A new task as the last one under `parent`; its id, so the table can put the caret in its name. */
+  const addSubTask = async (parent: Task): Promise<number | null> => {
+    if (!plan) return null;
+    const had = new Set(plan.tasks.map((t) => t.id));
+    const next = await save({ op: 'create', fields: { name: 'New sub-task', parent_id: parent.id } }, `Added a sub-task under ${parent.name}`);
+    return next?.tasks.find((t) => !had.has(t.id))?.id ?? null;
   };
 
   const addTask = async (name: string, code: number) => {
@@ -534,6 +544,9 @@ export function PlanView({
             onMoveTo={moveTo}
             onIndent={indentTask}
             onOutdent={outdentTask}
+            onAddSub={(t) => addSubTask(t).then((id) => { if (id != null) setFocusTask(id); })}
+            focusTask={focusTask}
+            onFocused={() => setFocusTask(null)}
             onLink={addLink}
             onLinkChange={changeLink}
             onOpen={setEditing}
@@ -599,9 +612,12 @@ export function PlanView({
           holidays={holidays}
           onClose={() => setEditing(null)}
           onSave={async (fields) => { if (await updateTask(editingTask, fields)) setEditing(null); }}
-          onDelete={async (bridge) => {
-            if (await save({ op: 'delete', id: editingTask.id, bridge }, `Deleted ${editingTask.name}`)) setEditing(null);
+          onDelete={async (bridge, children) => {
+            const summary = !!outlineRows.get(editingTask.id)?.summary;
+            const title = summary && children === 'delete' ? `Deleted ${editingTask.name} and the tasks under it` : `Deleted ${editingTask.name}`;
+            if (await save({ op: 'delete', id: editingTask.id, bridge, children: summary ? children : undefined }, title)) setEditing(null);
           }}
+          onAddSub={() => { const parent = editingTask; setEditing(null); void addSubTask(parent).then((id) => id != null && setFocusTask(id)); }}
         />
       )}
     </section>
@@ -626,18 +642,19 @@ function download(name: string, text: string, type: string) {
 
 // ---------------------------------------------------------------- chart settings
 
-type ChartPrefs = { zoom: Zoom; show: GanttShow };
+type ChartPrefs = { zoom: Zoom; show: GanttShow; /** The table's WBS column (1.2.3). */ wbs: boolean };
 const PREFS_KEY = 'plan.chart';
 const DEFAULT_PREFS: ChartPrefs = {
   zoom: 'day',
   show: { float: true, labels: true, baseline: true, bookings: false, strip: true },
+  wbs: false,
 };
 
 function readPrefs(): ChartPrefs {
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? 'null');
     if (!raw || !ZOOMS.includes(raw.zoom)) return DEFAULT_PREFS;
-    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show } };
+    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true };
   } catch {
     return DEFAULT_PREFS;
   }
@@ -667,8 +684,8 @@ const SHOW_HINT: Record<keyof GanttShow, string> = {
 
 function TaskTable({
   plan, schedule, rowOf, codeOf, outlineRows, environments, holidays, today, saving, addRef, board, preview,
-  onUpdate, onSetStart, onSetFinish, onAdd, onMove, onMoveTo, onIndent, onOutdent, onLink, onLinkChange, onOpen, onError, onRelease,
-  onSaveBaseline, onClearBaseline, onExportCsv, onExportXml, onImport,
+  onUpdate, onSetStart, onSetFinish, onAdd, onMove, onMoveTo, onIndent, onOutdent, onAddSub, focusTask, onFocused,
+  onLink, onLinkChange, onOpen, onError, onRelease, onSaveBaseline, onClearBaseline, onExportCsv, onExportXml, onImport,
 }: {
   plan: PlanData;
   schedule: ReadonlyMap<number, TaskSchedule>;
@@ -690,6 +707,9 @@ function TaskTable({
   onMoveTo: (t: Task, beforeId: number | null) => Promise<void>;
   onIndent: (t: Task) => Promise<void>;
   onOutdent: (t: Task) => Promise<void>;
+  onAddSub: (parent: Task) => Promise<void>;
+  focusTask: number | null;
+  onFocused: () => void;
   onLink: (predecessorId: number, successorId: number) => Promise<unknown>;
   onLinkChange: (dep: TaskDependency, next: { type: LinkType; lag: number } | null) => Promise<unknown>;
   onOpen: (id: number) => void;
@@ -720,12 +740,38 @@ function TaskTable({
   useEffect(() => {
     try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* a remembered view is a convenience */ }
   }, [prefs]);
+  const keepCollapsed = (next: Set<number>) => {
+    try { localStorage.setItem(`plan.collapsed.${plan.project.id}`, JSON.stringify([...next])); } catch { /* convenience */ }
+    return next;
+  };
   const toggle = (id: number) => setCollapsed((c) => {
     const next = new Set(c);
     if (next.has(id)) next.delete(id); else next.add(id);
-    try { localStorage.setItem(`plan.collapsed.${plan.project.id}`, JSON.stringify([...next])); } catch { /* convenience */ }
-    return next;
+    return keepCollapsed(next);
   });
+  /** Show the outline to `level` (1 is top-level tasks only); null opens everything. */
+  const showLevel = (level: number | null) => setCollapsed(keepCollapsed(new Set(
+    [...outlineRows.values()].filter((r) => r.summary && level != null && r.depth >= level - 1).map((r) => r.id),
+  )));
+  const deepest = Math.max(0, ...[...outlineRows.values()].filter((r) => r.summary).map((r) => r.depth + 1));
+
+  // A sub-task just added: open the summaries above it, then put the caret in its name.
+  useEffect(() => {
+    if (focusTask == null) return;
+    const row = outlineRows.get(focusTask);
+    if (!row) return;
+    const above: number[] = [];
+    for (let p = row.parent_id, guard = 0; p != null && guard < 64; p = outlineRows.get(p)?.parent_id ?? null, guard++) above.push(p);
+    if (above.some((id) => collapsed.has(id))) {
+      setCollapsed((c) => keepCollapsed(new Set([...c].filter((id) => !above.includes(id)))));
+      return;
+    }
+    const input = tableRef.current?.querySelector<HTMLInputElement>(`[data-task="${focusTask}"] [data-field="name"]`);
+    onFocused();
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [focusTask, outlineRows, collapsed]);
 
   /** The table's share of the split, in pixels; null is the table's full width. */
   const [tableWidth, setTableWidth] = useState<number | null>(readSplit);
@@ -763,7 +809,10 @@ function TaskTable({
     return out;
   }, [plan.tasks, outlineRows, today, holidays]);
 
-  const baseline = useMemo(() => new Map(plan.baseline.map((b) => [b.task_id, { start: b.start_date, end: b.end_date }])), [plan.baseline]);
+  const baseline = useMemo(
+    () => rolledBaseline(plan.tasks, new Map(plan.baseline.map((b) => [b.task_id, { start: b.start_date, end: b.end_date }]))),
+    [plan.baseline, plan.tasks],
+  );
 
   const strip = useMemo<StripData | null>(() => {
     if (!board) return null;
@@ -962,8 +1011,25 @@ function TaskTable({
                 <span>{SHOW_LABEL[k]}<small>{SHOW_HINT[k]}</small></span>
               </label>
             ))}
+            <label className="check" title="Each task's place in the outline">
+              <input type="checkbox" checked={prefs.wbs} onChange={(e) => setPrefs((p) => ({ ...p, wbs: e.target.checked }))} />
+              <span>WBS column<small>Each task’s place in the outline, as 1.2.3</small></span>
+            </label>
           </div>
         </details>
+        {deepest > 0 && (
+          <details className="menu">
+            <summary className="btn quiet">Outline</summary>
+            <div className="menu-list" role="menu" aria-label="Outline">
+              <button type="button" role="menuitem" onClick={() => showLevel(null)}>Expand all</button>
+              {Array.from({ length: Math.min(deepest, 3) }, (_, i) => (
+                <button key={i} type="button" role="menuitem" onClick={() => showLevel(i + 1)}>
+                  {i === 0 ? 'Level 1: top-level tasks only' : `Down to level ${i + 1}`}
+                </button>
+              ))}
+            </div>
+          </details>
+        )}
         <input
           className="gantt-search"
           type="search"
@@ -1012,11 +1078,12 @@ function TaskTable({
         className={`task-split-table${tableWidth != null && plan.tasks.length ? ' is-sized' : ''}`}
         style={tableWidth != null && plan.tasks.length ? { width: tableWidth } : undefined}
       >
-      <table className={`task-table${rowDrag ? ' is-reordering' : ''}`} ref={tableRef}>
+      <table className={`task-table${rowDrag ? ' is-reordering' : ''}${prefs.wbs ? ' has-wbs' : ''}`} ref={tableRef}>
         <thead>
           <tr>
             <th scope="col" className="c-row"><span className="visually-hidden">Row</span></th>
             <th scope="col" className="c-code" title="The task's ID, which After refers to. Moving a row never changes it.">ID</th>
+            {prefs.wbs && <th scope="col" className="c-wbs" title="The task's place in the outline">WBS</th>}
             <th scope="col" className="c-name">Task</th>
             <th scope="col" className="c-env">Environment</th>
             <th scope="col" className="c-num">Days</th>
@@ -1036,9 +1103,8 @@ function TaskTable({
             const env = environments.find((e) => e.id === t.environment_id);
             const overdue = !summary && t.status !== 'done' && t.status !== 'in_progress' && s && s.start < today;
             const leaves = summary ? leavesOf(plan.tasks, t.id).map((id) => plan.tasks.find((x) => x.id === id)!) : [];
-            const rolled: TaskStatus = leaves.every((x) => x.status === 'done') ? 'done'
-              : leaves.some((x) => x.status === 'in_progress' || x.status === 'done') ? 'in_progress'
-                : leaves.some((x) => x.status === 'blocked') ? 'blocked' : 'todo';
+            const blocked = leaves.filter((x) => x.status === 'blocked').length;
+            const done = leaves.filter((x) => x.status === 'done').length;
             return (
               <tr
                 key={t.id}
@@ -1074,6 +1140,7 @@ function TaskTable({
                     }}
                   />
                 </td>
+                {prefs.wbs && <td className="c-wbs" data-label="WBS">{o?.wbs}</td>}
                 <td className="c-name">
                   <div className="name-cell">
                   {summary ? (
@@ -1096,7 +1163,22 @@ function TaskTable({
                       if (rowOf.get(t.id) === plan.tasks.length) addRef.current?.focus();
                     }}
                   />
-                  {t.assignee && <span className="task-assignee">{t.assignee}</span>}
+                  {t.assignee && <span className="task-assignee" title={summary ? 'Owner' : 'Assignee'}>{t.assignee}</span>}
+                  {summary && (
+                    <span className="task-count" title={`${done} of ${leaves.length} done`}>
+                      {leaves.length} task{leaves.length === 1 ? '' : 's'}{blocked ? `, ${blocked} blocked` : ''}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="add-sub"
+                    disabled={saving}
+                    onClick={() => void onAddSub(t)}
+                    aria-label={`Add a sub-task under ${t.name}`}
+                    title={summary ? `Add a sub-task under ${t.name}` : `Add a sub-task: ${t.name} becomes a summary of the tasks under it`}
+                  >
+                    <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M5 1.5v7M1.5 5h7" /></svg>
+                  </button>
                   </div>
                 </td>
                 <td className="c-env" data-label="Environment">
@@ -1158,8 +1240,8 @@ function TaskTable({
                 <td className="c-status" data-label="Status">
                   {summary ? (
                     <span className="status-cell cell-quiet" title="Rolled up from its tasks">
-                      <span className="status-glyph" aria-hidden="true">{STATUS_GLYPH[rolled]}</span>
-                      {STATUS_LABEL[rolled]}{progress.get(t.id) ? `, ${progress.get(t.id)}%` : ''}
+                      <span className="status-glyph" aria-hidden="true">{STATUS_GLYPH[t.status]}</span>
+                      {STATUS_LABEL[t.status]}{progress.get(t.id) ? `, ${progress.get(t.id)}%` : ''}
                     </span>
                   ) : (
                     <label className="status-cell">
@@ -1192,7 +1274,7 @@ function TaskTable({
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRef.current?.focus(); } }}
               />
             </td>
-            <td colSpan={8}>
+            <td colSpan={prefs.wbs ? 9 : 8}>
               <input
                 ref={addRef}
                 value={draft}
@@ -1557,7 +1639,7 @@ function DateCell({ field, label, value, onCommit }: {
 // ---------------------------------------------------------------- task editor
 
 function TaskEditor({
-  task, plan, rowOf, codeOf, outlineRows, schedule, environments, envName, saving, today, holidays, onClose, onSave, onDelete,
+  task, plan, rowOf, codeOf, outlineRows, schedule, environments, envName, saving, today, holidays, onClose, onSave, onDelete, onAddSub,
 }: {
   task: Task;
   plan: PlanData;
@@ -1572,7 +1654,8 @@ function TaskEditor({
   saving: boolean;
   onClose: () => void;
   onSave: (fields: TaskInput) => void;
-  onDelete: (bridge: boolean) => void;
+  onDelete: (bridge: boolean, children: 'lift' | 'delete') => void;
+  onAddSub: () => void;
 }) {
   const [name, setName] = useState(task.name);
   const [envId, setEnvId] = useState<number | null>(task.environment_id);
@@ -1592,6 +1675,8 @@ function TaskEditor({
   const progressN = progressText.trim() === '' ? null : Number(progressText);
   const progressOk = progressN == null || (Number.isInteger(progressN) && progressN >= 0 && progressN <= 100);
   const [bridge, setBridge] = useState(true);
+  /** What deleting a summary does with its tasks: the standard takes the branch with it. */
+  const [children, setChildren] = useState<'lift' | 'delete'>('delete');
   const [deleteImpact, setDeleteImpact] = useState<PlanImpact | null>(null);
   const [editImpact, setEditImpact] = useState<PlanImpact | null>(null);
 
@@ -1639,12 +1724,14 @@ function TaskEditor({
 
   // What deleting would do, stated before the button is armed.
   useEffect(() => {
-    api.previewTask(plan.project.id, { op: 'delete', id: task.id, bridge })
+    api.previewTask(plan.project.id, { op: 'delete', id: task.id, bridge, children: summary ? children : undefined })
       .then(setDeleteImpact).catch(() => setDeleteImpact(null));
-  }, [task.id, bridge, plan.project.id]);
+  }, [task.id, bridge, children, summary, plan.project.id]);
 
-  const successors = plan.dependencies.filter((d) => d.predecessor_id === task.id).length;
-  const predecessors = plan.dependencies.filter((d) => d.successor_id === task.id).length;
+  // With its branch, the links that matter are the ones crossing into and out of it.
+  const branch = summary && children === 'delete' ? new Set([task.id, ...under]) : new Set([task.id]);
+  const successors = plan.dependencies.filter((d) => branch.has(d.predecessor_id) && !branch.has(d.successor_id)).length;
+  const predecessors = plan.dependencies.filter((d) => branch.has(d.successor_id) && !branch.has(d.predecessor_id)).length;
 
   return (
     <Modal
@@ -1660,12 +1747,16 @@ function TaskEditor({
       footer={
         <>
           <DangerButton
-            label="Delete task"
-            confirmLabel={deleteImpact && deleteImpact.risk === 'high' ? 'Delete anyway?' : 'Delete it?'}
-            onConfirm={() => onDelete(bridge)}
+            label={summary && children === 'delete' ? `Delete with ${under.size} sub-task${under.size === 1 ? '' : 's'}` : 'Delete task'}
+            confirmLabel={deleteImpact && deleteImpact.risk === 'high' ? 'Delete anyway?' : summary && children === 'delete' ? `Delete all ${under.size + 1}?` : 'Delete it?'}
+            onConfirm={() => onDelete(bridge, children)}
             disabled={saving}
           />
           <span className="spacer" />
+          <button type="button" className="btn quiet" disabled={saving || dirty} onClick={onAddSub}
+            title={dirty ? 'Save or cancel your changes first' : `Add a task under ${task.name}`}>
+            Add sub-task
+          </button>
           <button type="button" className="btn quiet" onClick={onClose}>Cancel</button>
           <button type="button" className="btn" disabled={!dirty || !valid || saving || !!editImpact?.cycle} onClick={() => onSave(fields)}>
             Save changes
@@ -1695,7 +1786,7 @@ function TaskEditor({
           </select>
           <span className="field-hint">
             {summary
-              ? `A summary: its dates roll up from the ${leavesOf(plan.tasks, task.id).length} tasks under it, and it books nothing.`
+              ? `A summary: its dates roll up from the ${leavesOf(plan.tasks, task.id).length} task${leavesOf(plan.tasks, task.id).length === 1 ? '' : 's'} under it, and it books nothing.`
               : 'Putting it under a task makes that task a summary, whose own length and environment then stop counting.'}
           </span>
         </label>
@@ -1732,18 +1823,29 @@ function TaskEditor({
           <label className="stack">
             Start no earlier than
             <input type="date" value={notBefore} onChange={(e) => setNotBefore(e.target.value)} />
+            {summary && <span className="field-hint">Holds every task under it.</span>}
           </label>
         </div>
         <div className="pair">
+          {summary ? (
+            <div className="stack">
+              Status
+              <span className="field-static">
+                {STATUS_LABEL[task.status]}
+                <span className="field-hint">Rolled up from the tasks under it: done when all are, in progress once any has started.</span>
+              </span>
+            </div>
+          ) : (
+            <label className="stack">
+              Status
+              <select value={status} onChange={(e) => setStatus(e.target.value as TaskStatus)}>
+                {STATUSES.map((x) => <option key={x} value={x}>{STATUS_LABEL[x]}</option>)}
+              </select>
+            </label>
+          )}
           <label className="stack">
-            Status
-            <select value={status} onChange={(e) => setStatus(e.target.value as TaskStatus)}>
-              {STATUSES.map((x) => <option key={x} value={x}>{STATUS_LABEL[x]}</option>)}
-            </select>
-          </label>
-          <label className="stack">
-            Assignee
-            <input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder="Who does it" />
+            {summary ? 'Owner' : 'Assignee'}
+            <input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder={summary ? 'Who is accountable for it' : 'Who does it'} />
           </label>
         </div>
         {!summary && (
@@ -1759,7 +1861,7 @@ function TaskEditor({
             <span className="field-hint">Leave blank to work it out from the status. It draws on the chart; it never moves dates.</span>
           </label>
         )}
-        {status !== 'todo' && status !== 'blocked' && (
+        {!summary && status !== 'todo' && status !== 'blocked' && (
           <div className="pair">
             <label className="stack">
               Started
@@ -1781,6 +1883,19 @@ function TaskEditor({
         {editImpact && dirty && <ImpactList title="Saving would" impact={editImpact} />}
 
         <div className="delete-impact">
+          {summary && (
+            <fieldset className="choice">
+              <legend>If deleted, its {under.size} sub-task{under.size === 1 ? '' : 's'}</legend>
+              <label className="check">
+                <input type="radio" name="children" checked={children === 'delete'} onChange={() => setChildren('delete')} />
+                Go with it
+              </label>
+              <label className="check">
+                <input type="radio" name="children" checked={children === 'lift'} onChange={() => setChildren('lift')} />
+                Stay, moved up a level
+              </label>
+            </fieldset>
+          )}
           {predecessors > 0 && successors > 0 && (
             <label className="check">
               <input type="checkbox" checked={bridge} onChange={(e) => setBridge(e.target.checked)} />

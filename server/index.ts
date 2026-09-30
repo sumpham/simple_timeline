@@ -3,10 +3,19 @@ import { existsSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { router } from './routes.ts';
-import { DB_PATH } from './db.ts';
+import { all, DB_PATH, transaction } from './db.ts';
+import { replan } from './plan.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT ?? 5173);
+
+// Summaries store their rolled-up status and actuals (server/plan.ts). Replan the
+// plans that have any, so rows written before that read right. Idempotent.
+transaction(() => {
+  for (const { id } of all<{ id: number }>('SELECT DISTINCT project_id AS id FROM task WHERE parent_id IS NOT NULL')) {
+    try { replan(id); } catch (e) { console.warn(`could not replan project ${id}: ${(e as Error).message}`); }
+  }
+});
 
 const app = express();
 app.use(express.json());

@@ -1,6 +1,6 @@
 import { addDays, addWorkingDays, diffDays, isWorkingDay, snapToWorkingDay, workingDays, type HolidaySet } from './dates.ts';
 import type { ISODate, LinkType, Task, TaskDependency, TaskSchedule } from './types.ts';
-import { leavesOf, summaryIds } from './wbs.ts';
+import { inheritedFloors, leavesOf, summaryIds } from './wbs.ts';
 
 /**
  * Critical-path scheduling over one project's tasks.
@@ -17,8 +17,9 @@ import { leavesOf, summaryIds } from './wbs.ts';
  *
  * Links are finish-to-start unless typed SS (start after start) or FF (finish
  * after finish). A summary task is not scheduled itself: a link to it holds each
- * of its working tasks, a link from it waits for all of them, and its dates,
- * float and criticality roll up from them afterwards.
+ * of its working tasks, a link from it waits for all of them, its "start no
+ * earlier than" holds all of them, and its dates, float and criticality roll up
+ * from them afterwards.
  */
 
 export type ScheduleInput = {
@@ -70,7 +71,9 @@ export function scheduleProject(input: ScheduleInput): ScheduleResult | Schedule
   const cal = calendar(input.projectStart, holidays);
   const outlineTasks = input.tasks.map((t) => ({ ...t, sort_order: t.sort_order ?? 0 }));
   const summaries = summaryIds(outlineTasks);
-  const byId = new Map(input.tasks.filter((t) => !summaries.has(t.id)).map((t) => [t.id, t]));
+  // A summary's "start no earlier than" holds every task under it.
+  const floors = inheritedFloors(outlineTasks);
+  const byId = new Map(input.tasks.filter((t) => !summaries.has(t.id)).map((t) => [t.id, { ...t, not_before: floors.get(t.id) ?? null }]));
   const deps = expandLinks(outlineTasks, input.deps, summaries)
     .filter((d) => byId.has(d.predecessor_id) && byId.has(d.successor_id));
 

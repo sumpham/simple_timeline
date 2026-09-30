@@ -128,6 +128,14 @@ are expanded onto its working tasks (`expandLinks`) and must be FS. The outline 
 depth-first every time (`outline`, `inOutlineOrder`); `sort_order` only orders siblings, so never
 number rows by `sort_order` alone. Row numbers and MSPDI use outline order.
 
+**A summary has nothing of its own** (`reqs/sub_tasks.md`). Its status and actuals are rolled up
+by `rolledUp` in `planProject` and stored by `replan`; never compute them in a component, and
+never let a write set them (`refuseSummaryFields`). Its `not_before` holds every task under it
+(`inheritedFloors` in `scheduleProject`). `applyChange` hands a new summary's environment to
+the sub-tasks it just gained (`passEnvironmentDown`) and gives a former summary back its rolled
+length (`revertFormerSummaries`). Delete takes `children: 'lift' | 'delete'`, and a branch
+delete bridges the links that cross into and out of the branch.
+
 **TaskIDs are typed labels, not row numbers.** `task.code` is unique per project (index in
 `server/db.ts`, checked in `applyChange` so a preview refuses a clash too). A create without one
 gets `nextTaskCode` (count + 1, or the next free). After and CSV are written in codes; links
