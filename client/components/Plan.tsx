@@ -31,6 +31,7 @@ import {
 } from '../gantt.ts';
 import { fromCsv, fromMspdi, toCsv, toMspdi } from '../planIO.ts';
 import { estimateError, rangeOf } from '../../shared/estimates.ts';
+import { clampWidth, columnsFor, fitWidth, parseManualWidths, RESIZABLE, resolveWidths, totalWidth, type ColumnKey } from '../tableColumns.ts';
 
 /**
  * A project's plan: its tasks, what drives their dates, and the bookings they
@@ -977,6 +978,86 @@ function TaskTable({
     } catch { /* a remembered width is a convenience */ }
   }, [tableWidth]);
 
+  // ------------------------------------------------------------ columns
+
+  /** Widths someone dragged by hand; the rest fit what the plan holds. */
+  const [manualCols, setManualCols] = useState<Partial<Record<ColumnKey, number>>>(readColumns);
+  useEffect(() => {
+    try { localStorage.setItem(COLUMNS_KEY, JSON.stringify(manualCols)); } catch { /* a convenience */ }
+  }, [manualCols]);
+  // Text measured before the web font arrives is the fallback's width; measure again once it has.
+  const [fontsReady, setFontsReady] = useState(0);
+  useEffect(() => {
+    let live = true;
+    void document.fonts?.ready.then(() => { if (live) setFontsReady((n) => n + 1); });
+    return () => { live = false; };
+  }, []);
+  const colKeys = useMemo(() => columnsFor(prefs), [prefs.wbs, prefs.estimates, prefs.who]);
+  const fitted = useMemo(() => measureColumns(plan.tasks.map((t) => {
+    const o = outlineRows.get(t.id);
+    const leaves = o?.summary ? leavesOf(plan.tasks, t.id) : [];
+    const blocked = leaves.filter((id) => plan.tasks.find((x) => x.id === id)?.status === 'blocked').length;
+    return {
+      name: t.name,
+      depth: o?.depth ?? 0,
+      summary: !!o?.summary,
+      count: o?.summary ? `${leaves.length} task${leaves.length === 1 ? '' : 's'}${blocked ? `, ${blocked} blocked` : ''}` : '',
+      env: o?.summary ? '' : environments.find((e) => e.id === t.environment_id)?.name ?? 'None',
+      after: formatPredecessors(plan.dependencies, t.id, codeOf),
+      who: formatResources(t.resource_ids, people),
+    };
+  })), [plan.tasks, plan.dependencies, outlineRows, environments, codeOf, people, fontsReady]);
+  const colWidths = resolveWidths(colKeys, fitted, manualCols);
+  const naturalWidth = totalWidth(colKeys, colWidths);
+
+  /** Dragging a header's right edge sets that column by hand; a double-click fits it again. */
+  const startColDrag = (e: React.PointerEvent<HTMLSpanElement>, key: ColumnKey) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const grip = e.currentTarget;
+    grip.setPointerCapture(e.pointerId);
+    const x0 = e.clientX;
+    const w0 = colWidths[key];
+    const move = (ev: PointerEvent) => setManualCols((m) => ({ ...m, [key]: clampWidth(key, w0 + ev.clientX - x0) }));
+    const end = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', end);
+      grip.removeEventListener('pointercancel', end);
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+  };
+  const fitColumn = (key: ColumnKey) => setManualCols((m) => {
+    const { [key]: _, ...rest } = m;
+    return rest;
+  });
+  const colKeysDown = (e: KeyboardEvent<HTMLSpanElement>, key: ColumnKey) => {
+    const step = e.shiftKey ? 40 : 8;
+    if (e.key === 'ArrowLeft') setManualCols((m) => ({ ...m, [key]: clampWidth(key, colWidths[key] - step) }));
+    else if (e.key === 'ArrowRight') setManualCols((m) => ({ ...m, [key]: clampWidth(key, colWidths[key] + step) }));
+    else if (e.key === 'Enter' || e.key === 'Home') fitColumn(key);
+    else return;
+    e.preventDefault();
+  };
+  const colGrip = (key: ColumnKey, name: string) => (
+    <span
+      className="col-grip"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={`Resize the ${name} column`}
+      aria-valuenow={colWidths[key]}
+      aria-valuemin={RESIZABLE[key]?.min}
+      aria-valuemax={RESIZABLE[key]?.max}
+      tabIndex={0}
+      title="Drag to resize. Double-click to fit the longest entry."
+      onPointerDown={(e) => startColDrag(e, key)}
+      onDoubleClick={() => fitColumn(key)}
+      onKeyDown={(e) => colKeysDown(e, key)}
+    />
+  );
+
   // ------------------------------------------------------------ what shows
 
   const q = query.trim().toLowerCase();
@@ -1115,7 +1196,7 @@ function TaskTable({
     const room = splitRef.current?.clientWidth ?? w + SPLIT_MIN_CHART;
     return Math.round(Math.max(SPLIT_MIN_TABLE, Math.min(w, room - SPLIT_MIN_CHART)));
   };
-  const currentSplit = () => tableRef.current?.parentElement?.offsetWidth ?? TABLE_WIDTH;
+  const currentSplit = () => tableRef.current?.parentElement?.offsetWidth ?? naturalWidth;
 
   const startSplitDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -1348,14 +1429,22 @@ function TaskTable({
         ref={tablePaneRef}
         onScroll={(e) => followScroll(e.currentTarget)}
       >
-      <table className={`task-table${rowDrag ? ' is-reordering' : ''}${prefs.wbs ? ' has-wbs' : ''}${prefs.who ? ' has-who' : ''}`} ref={tableRef}>
+      <table
+        className={`task-table${rowDrag ? ' is-reordering' : ''}`}
+        ref={tableRef}
+        style={{ ['--table-w' as string]: `${naturalWidth}px` } as CSSProperties}
+      >
+        {/* The task name takes what the table's width leaves, which is its own width unless the divider widens the table. */}
+        <colgroup>
+          {colKeys.map((k) => <col key={k} style={k === 'name' ? undefined : { width: colWidths[k] }} />)}
+        </colgroup>
         <thead>
           <tr>
             <th scope="col" className="c-row"><span className="visually-hidden">Row</span></th>
             <th scope="col" className="c-code" title="The task's ID, which After refers to. Moving a row never changes it.">ID</th>
             {prefs.wbs && <th scope="col" className="c-wbs" title="The task's place in the outline">WBS</th>}
-            <th scope="col" className="c-name">Task</th>
-            <th scope="col" className="c-env">Environment</th>
+            <th scope="col" className="c-name">Task{colGrip('name', 'Task')}</th>
+            <th scope="col" className="c-env">Environment{colGrip('env', 'Environment')}</th>
             <th scope="col" className="c-num">Days</th>
             {prefs.estimates && (
               <>
@@ -1363,8 +1452,8 @@ function TaskTable({
                 <th scope="col" className="c-num c-est" title="Worst case in working days. Blank uses 30% over the plan; the grey number shows it.">Worst</th>
               </>
             )}
-            <th scope="col" className="c-after" title="IDs of the tasks this one waits for. 2+3 means three working days after task 2 ends; 2SS starts with it, 2FF finishes with it.">After</th>
-            {prefs.who && <th scope="col" className="c-who" title="Who does the task, with commas between names. A new name adds that person; a summary's people are its owners.">Who</th>}
+            <th scope="col" className="c-after" title="IDs of the tasks this one waits for. 2+3 means three working days after task 2 ends; 2SS starts with it, 2FF finishes with it.">After{colGrip('after', 'After')}</th>
+            {prefs.who && <th scope="col" className="c-who" title="Who does the task, with commas between names. A new name adds that person; a summary's people are its owners.">Who{colGrip('who', 'Who')}</th>}
             <th scope="col" className="c-date">Start</th>
             <th scope="col" className="c-date">Finish</th>
             <th scope="col" className="c-num">Float</th>
@@ -1435,6 +1524,7 @@ function TaskTable({
                     field="name"
                     label="Task name"
                     value={t.name}
+                    showTitle
                     onCommit={(v) => (v.trim() && v.trim() !== t.name ? onUpdate(t, { name: v.trim() }) : undefined)}
                     onEnter={() => {
                       if (rowOf.get(t.id) === plan.tasks.length) addRef.current?.focus();
@@ -1462,6 +1552,7 @@ function TaskTable({
                     <select
                       data-field="env"
                       aria-label="Environment"
+                      title={env?.name}
                       value={t.environment_id ?? ''}
                       onChange={(e) => void onUpdate(t, { environment_id: e.target.value ? Number(e.target.value) : null })}
                     >
@@ -1613,7 +1704,7 @@ function TaskTable({
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize table and chart"
-          aria-valuenow={tableWidth ?? TABLE_WIDTH}
+          aria-valuenow={tableWidth ?? naturalWidth}
           aria-valuemin={SPLIT_MIN_TABLE}
           tabIndex={0}
           title="Drag to resize. Double-click to show the whole table."
@@ -1669,15 +1760,48 @@ function TaskTable({
   );
 }
 
-/** The table's natural width in the split; keep in step with `.task-split .task-table`. */
-const TABLE_WIDTH = 932;
 /** How far a row number travels before a press becomes a drag, as for booking bars. */
 const DRAG_SLOP = 4;
 /** Row number and task name: never hide those. */
 const SPLIT_MIN_TABLE = 240;
 const SPLIT_MIN_CHART = 160;
 const SPLIT_KEY = 'plan.tableWidth';
+const COLUMNS_KEY = 'plan.columns';
 const ASSISTANT_KEY = 'plan.assistant';
+
+function readColumns(): Partial<Record<ColumnKey, number>> {
+  try { return parseManualWidths(localStorage.getItem(COLUMNS_KEY)); } catch { return {}; }
+}
+
+/** The cell font, as the stylesheet sets it; keep in step with `.task-table td input`. */
+const CELL_FONT = "'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif";
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+
+/**
+ * Fits Task, Environment, After and Who to the longest entry in the plan, so
+ * nothing is cut off. Each width adds the cell's fixed parts (padding, the
+ * outline toggle, the add button) to the text's measured width.
+ */
+function measureColumns(rows: readonly {
+  name: string; depth: number; summary: boolean; count: string; env: string; after: string; who: string;
+}[]): Partial<Record<ColumnKey, number>> {
+  if (measureCtx === undefined) measureCtx = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d');
+  const ctx = measureCtx;
+  if (!ctx || !rows.length) return {};
+  const text = (s: string, font: string) => { ctx.font = font; return Math.ceil(ctx.measureText(s).width); };
+  // td padding 16, input padding and border 14, a little room so the last letter never touches the edge.
+  const CELL = 16 + 14 + 6;
+  return {
+    // Indent, toggle (18 less its -6 margin), gaps of 8, the add button (20), and a summary's count.
+    name: fitWidth('name', rows.map((r) => CELL + r.depth * 18 + 12 + 8 + 8 + 20
+      + text(r.name, `${r.summary ? 650 : 500} 13.5px ${CELL_FONT}`)
+      + (r.count ? 8 + text(r.count, `12px ${CELL_FONT}`) : 0))),
+    // The colour stripe pads the left to 11, and the select's arrow takes about 20.
+    env: fitWidth('env', rows.filter((r) => r.env).map((r) => CELL + 5 + 20 + text(r.env, `13.5px ${CELL_FONT}`))),
+    after: fitWidth('after', rows.filter((r) => r.after).map((r) => CELL + text(r.after, `13.5px ${CELL_FONT}`))),
+    who: fitWidth('who', rows.filter((r) => r.who).map((r) => CELL + text(r.who, `13px ${CELL_FONT}`))),
+  };
+}
 
 function readAssistantOpen(): boolean {
   try { return localStorage.getItem(ASSISTANT_KEY) === '1'; } catch { return false; }
@@ -1790,12 +1914,14 @@ function EstimateCell({ task: t, end, onError, onUpdate }: {
 }
 
 function CellInput({
-  field, label, value, placeholder, inputMode, onCommit, onEnter,
+  field, label, value, placeholder, inputMode, onCommit, onEnter, showTitle,
 }: {
   field: string;
   label: string;
   value: string;
   placeholder?: string;
+  /** Show the whole text on hover, for a cell that may be too narrow for it. */
+  showTitle?: boolean;
   inputMode?: 'numeric';
   onCommit: (v: string) => Promise<boolean> | boolean | undefined;
   onEnter?: () => void;
@@ -1820,6 +1946,7 @@ function CellInput({
       aria-label={label}
       aria-invalid={invalid || undefined}
       value={text}
+      title={showTitle && text ? text : undefined}
       placeholder={placeholder}
       inputMode={inputMode}
       onChange={(e) => { setText(e.target.value); setInvalid(false); }}
@@ -1892,6 +2019,7 @@ function AfterInput({
         aria-activedescendant={shown ? `${listId}-${active}` : undefined}
         autoComplete="off"
         value={value}
+        title={value || undefined}
         placeholder={placeholder}
         onChange={(e) => { onValue(e.target.value); setCaret(e.target.selectionStart ?? e.target.value.length); setOpen(true); setActive(0); }}
         onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
@@ -2043,6 +2171,7 @@ function ResourceInput({
         aria-activedescendant={shown ? `${listId}-${active}` : undefined}
         autoComplete="off"
         value={value}
+        title={value || undefined}
         placeholder={placeholder}
         onChange={(e) => { onValue(e.target.value); setCaret(e.target.selectionStart ?? e.target.value.length); setOpen(true); setActive(0); }}
         onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}

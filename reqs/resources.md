@@ -233,8 +233,8 @@ Everything in §3 is built. Differences from the plan:
   (R3), so the dialog only tidies: rename, active, merge (a select, then a `DangerButton`),
   remove. It is in the top bar next to Teams and in the phone's board sheet.
 - **Inactive** people keep their tasks but are no longer suggested.
-- **The Who column is on by default** and can be switched off under Show. It widens the fixed
-  table from 932px to 1052px (1108px with WBS).
+- **The Who column is on by default** and can be switched off under Show. It adds its width to
+  the table; column widths fit the plan's text (`client/tableColumns.ts`).
 - **An open plan reloads when people are renamed or merged** (`peopleVersion` from `App.tsx`),
   so the names in the table follow at once.
 - **The migration is lenient.** An old `assignee` value that breaks the new rules is tidied, not
