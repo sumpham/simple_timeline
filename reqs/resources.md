@@ -246,3 +246,25 @@ order, suggestions and the near match, the pick, and CSV and MSPDI round trips (
 sample values: names split, case matched, bad values tidied, and a second start is a no-op. The
 routes were checked end to end: a people-only edit leaves the plan untouched and is audited,
 a rename onto an existing name returns 409, and merge and delete work.
+
+## 10. Overlap warning and the person filter (built 2026-10-01)
+
+The first slice of §7's workload and "my tasks".
+
+- **The rule** is `personOverlaps` in `shared/workload.ts`: two tasks one person is on clash when
+  they share at least one **working day** (weekends and holidays skipped), so Friday then Monday
+  is fine. Only work counts (`countsAsWork`): leaf tasks with dates, not done, not milestones.
+  A summary's people are owners and never clash. It never goes through `detectConflicts`.
+- **Across plans.** The plan payload carries `elsewhere`: the open leaf tasks in other projects of
+  the people on this plan (`workElsewhere` in `server/queries.ts`). The table runs the rule over
+  this plan's scheduled dates plus those, and keeps the pairs that touch this plan.
+- **People** in the task toolbar opens **Resource status**: everyone on this plan, the ones on
+  overlapping tasks first, each overlap naming both tasks, the shared dates and working days,
+  with Show to bring them into view. The button counts the people with an overlap.
+- **The Who cell** carries the warning mark (the same ink mark as "should have started") on a
+  task whose people are on something else at the same time; it names who and what.
+- **The Everyone select** in the toolbar, or **Their tasks** in the panel, shows only the tasks
+  one person is on (summaries above them stay, as with Find).
+- **No colour.** The warning is a mark, a heavy ink left rule and bold words, like the
+  assistant's: red stays spent on double-booked environments.
+- Assigning people still never replans; this is read-only.

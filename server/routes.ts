@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { all, audit, ensureResources, get, run, setTaskResources, transaction } from './db.ts';
-import { listBookings, listEnvironments, listHolidays, listProjects, listResources, listTeams, resolvedKeys } from './queries.ts';
+import { listBookings, listEnvironments, listHolidays, listProjects, listResources, listTeams, resolvedKeys, workElsewhere } from './queries.ts';
 import { applyResolutions, conflictKey, detectConflicts } from '../shared/conflicts.ts';
 import { isValidISODate, isWorkingDay, snapToWorkingDay } from '../shared/dates.ts';
 import { effectiveKind } from '../shared/bookings.ts';
@@ -553,6 +553,8 @@ function planResponse(projectId: number) {
     ),
     // Everyone, not only this plan's people: the Who column suggests from all of them.
     resources: listResources(),
+    // Their work in other plans, so a person on two tasks at once is warned about here.
+    elsewhere: workElsewhere(projectId),
   };
 }
 

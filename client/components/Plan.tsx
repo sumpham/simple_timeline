@@ -13,6 +13,8 @@ import { DangerButton, Modal } from './Dialogs.tsx';
 import { NetworkDiagram } from './NetworkDiagram.tsx';
 import { Gantt, STRIP_HEAD, STRIP_LANE, type GanttCommand, type GanttPreview, type GanttShow, type RowBox, type StripData } from './Gantt.tsx';
 import { Portfolio } from './Portfolio.tsx';
+import { PeoplePanel, type PersonRow } from './People.tsx';
+import { countsAsWork, personOverlaps, type PersonOverlap, type WorkItem } from '../../shared/workload.ts';
 import { AssistantDrawer, openFindings } from './Assistant.tsx';
 import type { AssistantReport, Finding } from '../../shared/assistant/rules.ts';
 import { planVersion, type SuggestionReport } from '../../shared/assistant/optimise.ts';
@@ -56,7 +58,7 @@ type Tab = 'tasks' | 'network' | 'portfolio';
 
 /** Tasks in outline order, so row numbers, the table and the chart all agree. */
 function normalize(p: PlanData): PlanData {
-  return { ...p, tasks: inOutlineOrder(p.tasks), baseline: p.baseline ?? [] };
+  return { ...p, tasks: inOutlineOrder(p.tasks), baseline: p.baseline ?? [], elsewhere: p.elsewhere ?? [] };
 }
 
 export function PlanView({
@@ -929,10 +931,13 @@ function TaskTable({
   const [prefs, setPrefs] = useState<ChartPrefs>(readPrefs);
   const [query, setQuery] = useState('');
   const [criticalOnly, setCriticalOnly] = useState(false);
+  /** Only the tasks this person is on; null shows everyone's. */
+  const [who, setWho] = useState<number | null>(null);
+  const [peopleOpen, setPeopleOpen] = useState(false);
   const [command, setCommand] = useState<GanttCommand | null>(null);
   const [collapsed, setCollapsed] = useState<Set<number>>(() => readCollapsed(plan.project.id));
 
-  useEffect(() => { setCollapsed(readCollapsed(plan.project.id)); }, [plan.project.id]);
+  useEffect(() => { setCollapsed(readCollapsed(plan.project.id)); setWho(null); }, [plan.project.id]);
   useEffect(() => {
     try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* a remembered view is a convenience */ }
   }, [prefs]);
@@ -978,6 +983,58 @@ function TaskTable({
     } catch { /* a remembered width is a convenience */ }
   }, [tableWidth]);
 
+  // ------------------------------------------------------------ people
+
+  /** Pairs of tasks someone is on at once, counting their work in other plans; at least one task is here. */
+  const overlaps = useMemo(() => {
+    const here: WorkItem[] = [];
+    for (const t of plan.tasks) {
+      const s = schedule.get(t.id);
+      if (!t.resource_ids?.length || !countsAsWork({ ...t, start_date: s?.start ?? null, end_date: s?.end ?? null }, !!outlineRows.get(t.id)?.summary)) continue;
+      here.push({ task_id: t.id, project_id: t.project_id, resource_ids: t.resource_ids, start: s!.start, end: s!.end });
+    }
+    const ours = new Set(here.map((w) => w.task_id));
+    const all = personOverlaps([...here, ...plan.elsewhere], holidays);
+    for (const [r, list] of all) {
+      const kept = list.filter((o) => ours.has(o.a) || ours.has(o.b));
+      if (kept.length) all.set(r, kept); else all.delete(r);
+    }
+    return { byPerson: all, here };
+  }, [plan.tasks, plan.elsewhere, schedule, outlineRows, holidays]);
+  /** For each task here, the overlaps of the people on it that involve it. */
+  const overlapsOfTask = useMemo(() => {
+    const out = new Map<number, PersonOverlap[]>();
+    for (const list of overlaps.byPerson.values()) {
+      for (const o of list) {
+        for (const id of [o.a, o.b]) {
+          if (!out.has(id)) out.set(id, []);
+          out.get(id)!.push(o);
+        }
+      }
+    }
+    return out;
+  }, [overlaps]);
+  const taskLabel = useCallback((id: number) => {
+    const t = plan.tasks.find((x) => x.id === id);
+    if (t) return `${codeOf.get(id) ?? ''} ${t.name}`.trim();
+    const e = plan.elsewhere.find((x) => x.task_id === id);
+    return e ? `${e.name} (${e.project_name})` : `Task ${id}`;
+  }, [plan.tasks, plan.elsewhere, codeOf]);
+  /** Everyone on this plan, the ones on two tasks at once first. */
+  const peopleRows = useMemo<PersonRow[]>(() => {
+    const ids = new Set(plan.tasks.flatMap((t) => t.resource_ids ?? []));
+    return [...ids].map((id) => people.get(id)).filter((r): r is Resource => !!r).map((resource) => ({
+      resource,
+      here: overlaps.here.filter((w) => w.resource_ids.includes(resource.id)).length,
+      elsewhere: plan.elsewhere.filter((w) => w.resource_ids.includes(resource.id)).length,
+      overlaps: overlaps.byPerson.get(resource.id) ?? [],
+    })).sort((a, b) => (b.overlaps.length ? 1 : 0) - (a.overlaps.length ? 1 : 0) || a.resource.name.localeCompare(b.resource.name));
+  }, [plan.tasks, plan.elsewhere, people, overlaps]);
+  const clashingPeople = peopleRows.filter((r) => r.overlaps.length).length;
+  /** Overlaps to bring into view: only this plan's tasks have rows. */
+  const showTasks = (ids: number[]) => setLocalSpot({ ids: ids.filter((id) => plan.tasks.some((t) => t.id === id)), at: Date.now() });
+  const [localSpot, setLocalSpot] = useState<{ ids: number[]; at: number } | null>(null);
+
   // ------------------------------------------------------------ columns
 
   /** Widths someone dragged by hand; the rest fit what the plan holds. */
@@ -1005,8 +1062,9 @@ function TaskTable({
       env: o?.summary ? '' : environments.find((e) => e.id === t.environment_id)?.name ?? 'None',
       after: formatPredecessors(plan.dependencies, t.id, codeOf),
       who: formatResources(t.resource_ids, people),
+      whoMark: overlapsOfTask.has(t.id),
     };
-  })), [plan.tasks, plan.dependencies, outlineRows, environments, codeOf, people, fontsReady]);
+  })), [plan.tasks, plan.dependencies, outlineRows, environments, codeOf, people, overlapsOfTask, fontsReady]);
   const colWidths = resolveWidths(colKeys, fitted, manualCols);
   const naturalWidth = totalWidth(colKeys, colWidths);
 
@@ -1066,20 +1124,24 @@ function TaskTable({
     (id) => {
       const t = plan.tasks.find((x) => x.id === id)!;
       if (criticalOnly && !schedule.get(id)?.critical) return false;
+      if (who != null && !t.resource_ids?.includes(who)) return false;
       return !q || t.name.toLowerCase().includes(q) || formatResources(t.resource_ids, people).toLowerCase().includes(q) || String(codeOf.get(id)) === q;
     },
     collapsed,
-  ), [outlineRows, plan.tasks, schedule, criticalOnly, q, collapsed, codeOf, people]);
+  ), [outlineRows, plan.tasks, schedule, criticalOnly, who, q, collapsed, codeOf, people]);
   const hiddenCount = plan.tasks.length - visible.size;
 
   // The assistant asked to see some rows: clear what hides them, open the summaries
   // above them, then bring the first into view and mark them all for a moment.
   const [lit, setLit] = useState<ReadonlySet<number>>(new Set());
   const [pendingSpot, setPendingSpot] = useState<number[] | null>(null);
+  const spot = !localSpot || (spotlight && spotlight.at > localSpot.at) ? spotlight : localSpot;
   useEffect(() => {
-    if (!spotlight?.ids.length) return;
+    if (!spot?.ids.length) return;
     setQuery('');
     setCriticalOnly(false);
+    if (who != null && spot.ids.some((id) => !plan.tasks.find((t) => t.id === id)?.resource_ids?.includes(who))) setWho(null);
+    const spotlight = spot;
     const above = new Set<number>();
     for (const id of spotlight.ids) {
       for (let p = outlineRows.get(id)?.parent_id ?? null, guard = 0; p != null && guard < 64; p = outlineRows.get(p)?.parent_id ?? null, guard++) above.add(p);
@@ -1089,7 +1151,7 @@ function TaskTable({
     setLit(new Set(spotlight.ids));
     const off = window.setTimeout(() => setLit(new Set()), 2600);
     return () => window.clearTimeout(off);
-  }, [spotlight]);
+  }, [spot]);
   useEffect(() => {
     if (!pendingSpot) return;
     const first = pendingSpot.find((id) => visible.has(id));
@@ -1391,6 +1453,29 @@ function TaskTable({
           <input type="checkbox" checked={criticalOnly} onChange={(e) => setCriticalOnly(e.target.checked)} />
           Critical only
         </label>
+        {peopleRows.length > 0 && (
+          <label className="who-filter">
+            <span className="visually-hidden">Show the tasks of</span>
+            <select value={who ?? ''} aria-label="Show the tasks of" onChange={(e) => setWho(e.target.value ? Number(e.target.value) : null)}>
+              <option value="">Everyone</option>
+              {peopleRows.map((r) => (
+                <option key={r.resource.id} value={r.resource.id}>{r.resource.name}{r.overlaps.length ? ' ▲' : ''}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        <button
+          type="button"
+          className="btn quiet assistant-toggle"
+          aria-pressed={peopleOpen}
+          aria-expanded={peopleOpen}
+          onClick={() => setPeopleOpen((o) => !o)}
+          title="Everyone on this plan, and who is on tasks that overlap"
+        >
+          People
+          <span className="assistant-count" data-empty={clashingPeople === 0 || undefined}
+            aria-label={`${clashingPeople} ${clashingPeople === 1 ? 'person' : 'people'} on overlapping tasks`}>{clashingPeople}</span>
+        </button>
         <span className="spacer" />
         {hasBaseline ? (
           <DangerButton label="Clear baseline" confirmLabel="Clear it?" onConfirm={() => void onClearBaseline()} disabled={saving} />
@@ -1421,6 +1506,17 @@ function TaskTable({
           }}
         />
       </div>
+
+      {peopleOpen && (
+        <PeoplePanel
+          rows={peopleRows}
+          taskLabel={taskLabel}
+          filter={who}
+          onFilter={setWho}
+          onShow={showTasks}
+          onClose={() => setPeopleOpen(false)}
+        />
+      )}
 
       <div className={`task-split${plan.tasks.length ? '' : ' is-empty'}`} ref={splitRef}>
       <div
@@ -1609,6 +1705,7 @@ function TaskTable({
                 </td>
                 {prefs.who && (
                   <td className="c-who" data-label={summary ? 'Owner' : 'Who'}>
+                    <div className="status-row">
                     <ResourceCell
                       value={formatResources(t.resource_ids, people)}
                       resources={plan.resources}
@@ -1620,6 +1717,8 @@ function TaskTable({
                         return onUpdate(t, { resources: parsed.names.join(', ') });
                       }}
                     />
+                    {overlapsOfTask.has(t.id) && <OverdueFlag text={overlapText(t.id, overlapsOfTask.get(t.id)!, people, taskLabel)} />}
+                    </div>
                   </td>
                 )}
                 <td className="c-date" data-label="Start">
@@ -1784,6 +1883,8 @@ let measureCtx: CanvasRenderingContext2D | null | undefined;
  */
 function measureColumns(rows: readonly {
   name: string; depth: number; summary: boolean; count: string; env: string; after: string; who: string;
+  /** The Who cell carries the overlap mark (22 wide, a gap of 4). */
+  whoMark?: boolean;
 }[]): Partial<Record<ColumnKey, number>> {
   if (measureCtx === undefined) measureCtx = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d');
   const ctx = measureCtx;
@@ -1799,7 +1900,7 @@ function measureColumns(rows: readonly {
     // The colour stripe pads the left to 11, and the select's arrow takes about 20.
     env: fitWidth('env', rows.filter((r) => r.env).map((r) => CELL + 5 + 20 + text(r.env, `13.5px ${CELL_FONT}`))),
     after: fitWidth('after', rows.filter((r) => r.after).map((r) => CELL + text(r.after, `13.5px ${CELL_FONT}`))),
-    who: fitWidth('who', rows.filter((r) => r.who).map((r) => CELL + text(r.who, `13px ${CELL_FONT}`))),
+    who: fitWidth('who', rows.filter((r) => r.who).map((r) => CELL + text(r.who, `13px ${CELL_FONT}`) + (r.whoMark ? 26 : 0))),
   };
 }
 
@@ -1834,6 +1935,16 @@ function sameRows(a: ReadonlyMap<number, RowBox>, b: ReadonlyMap<number, RowBox>
  * double-bookings) whose words show on hover, on focus, or on a tap or click.
  * The tip is fixed to the viewport, so a clipped table cell cannot cut it off.
  */
+/** What the Who mark says: each person on this task, and what else they are on at the same time. */
+function overlapText(id: number, list: readonly PersonOverlap[], people: ReadonlyMap<number, Resource>, label: (id: number) => string): string {
+  const byPerson = new Map<number, string[]>();
+  for (const o of list) {
+    if (!byPerson.has(o.resource_id)) byPerson.set(o.resource_id, []);
+    byPerson.get(o.resource_id)!.push(label(o.a === id ? o.b : o.a));
+  }
+  return [...byPerson].map(([r, others]) => `${people.get(r)?.name ?? 'Someone'} is also on ${others.join(', ')} at the same time`).join('. ');
+}
+
 function OverdueFlag({ text }: { text: string }) {
   const ref = useRef<HTMLButtonElement>(null);
   const tipId = useId();
@@ -1878,7 +1989,7 @@ function OverdueFlag({ text }: { text: string }) {
         </svg>
       </button>
       {open && at && (
-        <span id={tipId} role="tooltip" className="overdue-tip" style={{ left: at.x, top: at.y }}>{text}</span>
+        <span id={tipId} role="tooltip" className={`overdue-tip${text.length > 60 ? ' is-long' : ''}`} style={{ left: at.x, top: at.y }}>{text}</span>
       )}
     </>
   );

@@ -148,6 +148,18 @@ export type Resource = {
   project_count?: number;
 };
 
+/** A task in another project, sent with a plan because one of its people works on it. */
+export type ElsewhereTask = {
+  task_id: number;
+  project_id: number;
+  project_name: string;
+  code: number | null;
+  name: string;
+  start: ISODate;
+  end: ISODate;
+  resource_ids: number[];
+};
+
 export type TaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
 export const TASK_STATUSES: readonly TaskStatus[] = ['todo', 'in_progress', 'blocked', 'done'];
 

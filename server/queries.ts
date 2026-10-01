@@ -1,7 +1,7 @@
 import { all } from './db.ts';
 import { calendarDays, workingDays } from '../shared/dates.ts';
 import { releaseFrom, taskSpan } from '../shared/taskHolds.ts';
-import type { BookingView, Environment, Holiday, ISODate, Project, Resource, Task, Team } from '../shared/types.ts';
+import type { BookingView, ElsewhereTask, Environment, Holiday, ISODate, Project, Resource, Task, Team } from '../shared/types.ts';
 
 type RawBooking = Omit<BookingView, 'calendar_days' | 'working_days' | 'is_milestone' | 'auto' | 'tasks' | 'release_from'>;
 
@@ -152,6 +152,33 @@ export function listTasks(projectId: number): Task[] {
   }
   return all<Task>('SELECT * FROM task WHERE project_id = ? ORDER BY sort_order, id', projectId)
     .map((t) => ({ ...t, resource_ids: who.get(t.id) ?? [] }));
+}
+
+/**
+ * The work this plan's people have in other projects: leaf tasks with dates that
+ * are not done, so the plan can warn when someone is on two tasks at once
+ * (`personOverlaps` in shared/workload.ts decides what counts as a clash).
+ */
+export function workElsewhere(projectId: number): ElsewhereTask[] {
+  const rows = all<Omit<ElsewhereTask, 'resource_ids'> & { resource_id: number }>(
+    `SELECT t.id AS task_id, t.project_id, p.name AS project_name, t.code, t.name,
+            t.start_date AS start, t.end_date AS end, tr.resource_id
+     FROM task_resource tr
+     JOIN task t ON t.id = tr.task_id
+     JOIN project p ON p.id = t.project_id
+     WHERE t.project_id <> ? AND t.status <> 'done' AND t.duration > 0
+       AND t.start_date IS NOT NULL AND t.end_date IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM task c WHERE c.parent_id = t.id)
+       AND tr.resource_id IN (SELECT tr2.resource_id FROM task_resource tr2 JOIN task t2 ON t2.id = tr2.task_id WHERE t2.project_id = ?)
+     ORDER BY t.start_date, t.id, tr.sort_order`,
+    projectId, projectId,
+  );
+  const byTask = new Map<number, ElsewhereTask>();
+  for (const { resource_id, ...t } of rows) {
+    if (!byTask.has(t.task_id)) byTask.set(t.task_id, { ...t, resource_ids: [] });
+    byTask.get(t.task_id)!.resource_ids.push(resource_id);
+  }
+  return [...byTask.values()];
 }
 
 /** Every person, with how much they are on; for the Resources dialog and the Who suggestions. */

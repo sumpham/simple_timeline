@@ -1,7 +1,7 @@
 import type {
   Booking, Conflict, Environment, Holiday, ISODate, PlanImpact, Project, Resource, Task, TaskDependency, TaskHold, TaskSchedule, Team,
 } from '../shared/types.ts';
-import type { BookingView, LinkType } from '../shared/types.ts';
+import type { BookingView, ElsewhereTask, LinkType } from '../shared/types.ts';
 import type { OutlinePlacement } from '../shared/wbs.ts';
 import type { ImportRow } from './planIO.ts';
 import type { AssistantReport } from '../shared/assistant/rules.ts';
@@ -37,6 +37,8 @@ export type PlanData = {
   baseline: { task_id: number; start_date: ISODate; end_date: ISODate }[];
   /** Every person, for names and the Who suggestions; tasks name them by `resource_ids`. */
   resources: Resource[];
+  /** This plan's people's open work in other plans, for the overlap warning. */
+  elsewhere: ElsewhereTask[];
 };
 
 /** Every plan of a team, for the portfolio chart. Read-only. */

@@ -2275,6 +2275,8 @@ kbd {
   white-space: nowrap;
   pointer-events: none;
 }
+/* A person's overlap can name several tasks; let it wrap. */
+.overdue-tip:where(.is-long) { white-space: normal; max-width: 340px; }
 
 .task-add td { border-bottom: 0; }
 .task-add input {
@@ -2325,6 +2327,47 @@ kbd {
   font-size: 13px;
 }
 .gantt-search:focus { border-color: var(--ink); outline: none; }
+
+.who-filter select {
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--lane);
+  color: var(--ink);
+  padding: 2px 6px;
+  font-size: 13px;
+}
+.who-filter select:focus { border-color: var(--ink); outline: none; }
+
+/* Resource status: who is on this plan, and who is on two tasks at once. The
+   warning is ink (a mark, a heavy left rule, bold words), never red: red is spent. */
+.people-panel {
+  border-bottom: 1px solid var(--rule-soft);
+  background: var(--lane);
+  padding: 8px 20px 10px;
+  font-size: 13px;
+  max-height: 40vh;
+  overflow: auto;
+}
+.people-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 6px; }
+.people-head .spacer, .people-line .spacer { flex: 1 1 auto; }
+.people-head .btn, .people-line .btn { padding-top: 2px; padding-bottom: 2px; }
+.people-title { margin: 0; font-size: 13.5px; font-weight: 600; }
+.people-sub, .people-meta { color: var(--muted); }
+.people-meta { font-size: 12px; }
+.people-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.people-row { border-left: 3px solid var(--rule-soft); padding: 4px 0 4px 10px; border-radius: 0 3px 3px 0; }
+.people-row[data-overlap] { border-left-color: var(--ink); background: var(--paper); }
+.people-row[data-picked] { outline: 1px solid var(--focus); outline-offset: -1px; }
+.people-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+.people-mark { font-size: 10px; line-height: 1; }
+.people-row[data-overlap] .people-state { color: var(--ink); font-weight: 700; }
+.people-overlaps { list-style: none; margin: 4px 0 2px; padding: 0 0 0 18px; display: grid; gap: 3px; font-size: 12.5px; }
+.people-overlaps li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; }
+.people-and { color: var(--muted); }
+.people-overlaps .link-button { margin-left: 6px; }
+
+/* The Who cell with its overlap mark beside the names. */
+.task-table .c-who .status-row input { flex: 1 1 auto; min-width: 0; }
 
 /* A small dropdown made of <details>, so it needs no script and never traps focus. */
 .menu { position: relative; }
