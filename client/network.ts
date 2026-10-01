@@ -447,3 +447,25 @@ export function roundedPath(points: readonly [number, number][], radius = 8): st
   const last = points[points.length - 1];
   return `${d} L${last[0]},${last[1]}`;
 }
+
+/** Zoom runs in fixed steps, like the board's grains, never continuously. */
+export const NET_ZOOMS = [0.25, 0.35, 0.5, 0.65, 0.8, 1, 1.25, 1.5, 2] as const;
+/** The step that shows the diagram at its own size. */
+export const NET_ZOOM_DEFAULT = NET_ZOOMS.indexOf(1);
+
+/** The largest step at which a `width` × `height` diagram fits in the room, or the smallest step. */
+export function fitZoom(width: number, height: number, roomW: number, roomH: number): number {
+  const room = Math.min(roomW / Math.max(width, 1), roomH / Math.max(height, 1));
+  let pick = 0;
+  NET_ZOOMS.forEach((z, i) => { if (z <= room) pick = i; });
+  return pick;
+}
+
+/**
+ * The scroll that keeps one point of the diagram still under the pointer (or the
+ * view's centre) while the scale changes. `at` is that point's offset inside the
+ * viewport; the result is clamped at zero, as the browser would clamp it.
+ */
+export function anchoredScroll(scroll: number, at: number, from: number, to: number): number {
+  return Math.max(0, ((scroll + at) / from) * to - at);
+}

@@ -2858,6 +2858,8 @@ kbd {
   gap: 4px;
 }
 .network-zoom .btn { background: var(--lane); padding: 3px 10px; min-width: 32px; }
+.network-zoom .network-zoom-level { min-width: 52px; font-variant-numeric: tabular-nums; }
+.network-zoom .network-zoom-level:disabled { opacity: 1; cursor: default; }
 
 .network-scroll { flex: 1 1 auto; overflow: auto; min-height: 240px; }
 .network-canvas { position: relative; }

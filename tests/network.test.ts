@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { edgeKey, layoutNetwork, manualPoints, NODE_H, NODE_W, roundedPath, routeOf, STUB, type LayoutTask } from '../client/network.ts';
+import { anchoredScroll, edgeKey, fitZoom, layoutNetwork, manualPoints, NET_ZOOM_DEFAULT, NET_ZOOMS, NODE_H, NODE_W, roundedPath, routeOf, STUB, type LayoutTask } from '../client/network.ts';
 import type { TaskDependency } from '../shared/types.ts';
 import { misleading, overlaps } from './networkCheck.ts';
 
@@ -136,5 +136,30 @@ describe('roundedPath', () => {
   it('rounds elbows and keeps straight runs straight', () => {
     expect(roundedPath([[0, 0], [10, 0]])).toBe('M0,0 L10,0');
     expect(roundedPath([[0, 0], [20, 0], [20, 20], [40, 20]], 4)).toBe('M0,0 L16,0 Q20,0 20,4 L20,16 Q20,20 24,20 L40,20');
+  });
+});
+
+describe('network zoom', () => {
+  it('starts at 100% and runs in ascending steps', () => {
+    expect(NET_ZOOMS[NET_ZOOM_DEFAULT]).toBe(1);
+    for (let i = 1; i < NET_ZOOMS.length; i++) expect(NET_ZOOMS[i]).toBeGreaterThan(NET_ZOOMS[i - 1]);
+  });
+
+  it('fits the larger of the two dimensions', () => {
+    expect(NET_ZOOMS[fitZoom(1000, 400, 1000, 1000)]).toBe(1);
+    expect(NET_ZOOMS[fitZoom(400, 2000, 1000, 1000)]).toBe(0.5);
+    expect(NET_ZOOMS[fitZoom(200, 100, 1000, 1000)]).toBe(2);
+    // Too big for any step: the smallest one, never an out-of-range index.
+    expect(fitZoom(100_000, 100, 1000, 1000)).toBe(0);
+    expect(fitZoom(0, 0, 1000, 1000)).toBe(NET_ZOOMS.length - 1);
+  });
+
+  it('keeps the point under the pointer still', () => {
+    // The point 300px into the view, scrolled 200px, sits at 500 at scale 1.
+    const scroll = anchoredScroll(200, 300, 1, 2);
+    expect((scroll + 300) / 2).toBe(500);
+    expect(anchoredScroll(0, 0, 1, 0.5)).toBe(0);
+    // Zooming out near the left edge clamps at zero, as the browser would.
+    expect(anchoredScroll(10, 300, 1, 0.5)).toBe(0);
   });
 });

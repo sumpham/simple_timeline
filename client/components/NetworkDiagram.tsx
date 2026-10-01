@@ -1,20 +1,24 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type { Environment, Task, TaskDependency, TaskSchedule } from '../../shared/types.ts';
 import { formatDate } from '../layout.ts';
 import {
-  edgeKey, layoutNetwork, NODE_H, NODE_W, roundedPath, routeOf, STUB, type Anchor, type LayoutLane, type Route,
+  anchoredScroll, edgeKey, fitZoom, layoutNetwork, NET_ZOOM_DEFAULT, NET_ZOOMS, NODE_H, NODE_W, roundedPath, routeOf, STUB,
+  type Anchor, type LayoutLane, type Route,
 } from '../network.ts';
 import { smartArrange, type Arrangement } from '../smartLayout.ts';
 import { ENV_COLOR } from './Board.tsx';
 
-/** Zoom runs in fixed steps, like the board's grains, never continuously. */
-const ZOOMS = [0.5, 0.65, 0.8, 1, 1.2];
 /** Dragged boxes land on this grid, so hand arrangements line up without effort. */
 const GRID = 8;
 /** Movement, in screen pixels, before a press on a box becomes a drag rather than a click. */
 const SLOP = 4;
 /** How far Alt+arrow moves a focused box. */
 const KEY_STEP = GRID * 2;
+/**
+ * Wheel travel, in pixels, per zoom step under Ctrl/⌘ or a trackpad pinch. A mouse
+ * notch (~100) is one step; a pinch sends many small deltas that add up to one.
+ */
+const WHEEL_STEP = 40;
 
 const snap = (v: number, to: number) => Math.round(v / to) * to;
 
@@ -64,7 +68,14 @@ export function NetworkDiagram({
   /** Put back what the last Smart Arrange replaced; absent when there is nothing to undo. */
   onUndoArrange?: () => void;
 }) {
-  const [zoom, setZoom] = useState(3);
+  const [zoom, setZoom] = useState(NET_ZOOM_DEFAULT);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  /**
+   * What the next zoom holds still, applied once the canvas has its new size: a point
+   * of the viewport (the pointer, or its centre), or 'origin' for Fit.
+   */
+  const zoomAnchor = useRef<{ x: number; y: number; from: number } | 'origin' | null>(null);
   /** The task under the pointer or the keyboard: its own arrows come forward, the rest recede. */
   const [focused, setFocused] = useState<number | null>(null);
   /** The arrow showing its handles. */
@@ -80,7 +91,7 @@ export function NetworkDiagram({
 
   // Hand arrangement belongs to the plain view; environment lanes lay themselves out.
   const arrangeable = !showEnvironments;
-  const scale = ZOOMS[zoom];
+  const scale = NET_ZOOMS[zoom];
 
   const pad = 24;
   const byId = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
@@ -184,14 +195,70 @@ export function NetworkDiagram({
   const critical = (id: number) => schedule.get(id)?.critical ?? false;
   const envOf = (id: number | null) => environments.find((e) => e.id === id);
 
+  /** Step to zoom `next`, keeping the point under `at` (or the view's centre) where it is. */
+  const zoomTo = (next: number, at?: { clientX: number; clientY: number }) => {
+    const i = Math.max(0, Math.min(NET_ZOOMS.length - 1, next));
+    const current = zoomRef.current;
+    if (i === current) return;
+    const el = scrollRef.current;
+    if (el) {
+      const box = el.getBoundingClientRect();
+      zoomAnchor.current = {
+        x: at ? at.clientX - box.left : el.clientWidth / 2,
+        y: at ? at.clientY - box.top : el.clientHeight / 2,
+        from: NET_ZOOMS[current],
+      };
+    }
+    zoomRef.current = i;
+    setZoom(i);
+  };
+  const zoomToRef = useRef(zoomTo);
+  zoomToRef.current = zoomTo;
+
   const fit = () => {
     const el = scrollRef.current;
     if (!el || !layout.width) return;
-    const room = (el.clientWidth - 48) / layout.width;
-    let pick = 0;
-    ZOOMS.forEach((z, i) => { if (z <= room) pick = i; });
-    setZoom(pick);
+    zoomAnchor.current = 'origin';
+    const i = fitZoom(layout.width + pad * 2, layout.height + pad * 2, el.clientWidth - 16, el.clientHeight - 16);
+    zoomRef.current = i;
+    setZoom(i);
+    if (i === zoom) el.scrollTo(0, 0);
   };
+
+  // Scroll after the canvas has resized, so the browser does not clamp the new offset.
+  useLayoutEffect(() => {
+    const a = zoomAnchor.current;
+    const el = scrollRef.current;
+    zoomAnchor.current = null;
+    if (!a || !el) return;
+    if (a === 'origin') { el.scrollTo(0, 0); return; }
+    el.scrollLeft = anchoredScroll(el.scrollLeft, a.x, a.from, scale);
+    el.scrollTop = anchoredScroll(el.scrollTop, a.y, a.from, scale);
+  }, [scale]);
+
+  // Ctrl/⌘ + wheel and trackpad pinch (which arrives as a wheel with ctrlKey) zoom at
+  // the pointer. React's onWheel is passive, so the browser's own page zoom could not
+  // be stopped from there.
+  const hasTasks = tasks.length > 0;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let travel = 0;
+    let last = 0;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      if (e.timeStamp - last > 300) travel = 0;
+      last = e.timeStamp;
+      // Line-mode wheels report lines, not pixels.
+      travel += e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+      if (Math.abs(travel) < WHEEL_STEP) return;
+      zoomToRef.current(zoomRef.current + (travel < 0 ? 1 : -1), e);
+      travel = 0;
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [hasTasks]);
 
   /**
    * Arrows walk the graph: right to a successor, left to a predecessor, up and down
@@ -290,7 +357,14 @@ export function NetworkDiagram({
   return (
     <div
       className={`network${arrangeable ? ' is-arrangeable' : ''}${drag ? ' is-dragging' : ''}${drag?.kind === 'link' ? ' is-linking' : ''}`}
-      onKeyDown={(e) => { if (e.key === 'Escape') setSelected(null); }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') { setSelected(null); return; }
+        if (e.altKey || (e.target as Element).closest('input, textarea, select')) return;
+        // + and − step the zoom, 0 goes back to 100%; with Ctrl/⌘ too, in place of the page zoom.
+        const step = e.key === '+' || e.key === '=' ? 1 : e.key === '-' || e.key === '_' ? -1 : 0;
+        if (step) { e.preventDefault(); zoomTo(zoom + step); }
+        else if (e.key === '0') { e.preventDefault(); zoomTo(NET_ZOOM_DEFAULT); }
+      }}
     >
       <div className="network-zoom" role="group" aria-label="Layout and zoom">
         {selectedEdge && saved.routes.has(selected!) && (
@@ -318,9 +392,19 @@ export function NetworkDiagram({
             Reset layout
           </button>
         )}
-        <button type="button" className="btn quiet" disabled={zoom === 0} onClick={() => setZoom((z) => z - 1)} aria-label="Zoom out">−</button>
-        <button type="button" className="btn quiet" onClick={fit}>Fit</button>
-        <button type="button" className="btn quiet" disabled={zoom === ZOOMS.length - 1} onClick={() => setZoom((z) => z + 1)} aria-label="Zoom in">+</button>
+        <button type="button" className="btn quiet" disabled={zoom === 0} onClick={() => zoomTo(zoom - 1)} aria-label="Zoom out" title="Zoom out (−, or Ctrl/⌘ + wheel)">−</button>
+        <button
+          type="button"
+          className="btn quiet network-zoom-level"
+          onClick={() => zoomTo(NET_ZOOM_DEFAULT)}
+          disabled={zoom === NET_ZOOM_DEFAULT}
+          aria-label={`Zoom ${Math.round(scale * 100)}%, back to 100%`}
+          title="Back to 100% (0)"
+        >
+          {Math.round(scale * 100)}%
+        </button>
+        <button type="button" className="btn quiet" disabled={zoom === NET_ZOOMS.length - 1} onClick={() => zoomTo(zoom + 1)} aria-label="Zoom in" title="Zoom in (+, or Ctrl/⌘ + wheel)">+</button>
+        <button type="button" className="btn quiet" onClick={fit} title="Pick the zoom that shows the whole diagram">Fit</button>
       </div>
 
       <div className="network-scroll" ref={scrollRef}>
@@ -507,6 +591,7 @@ export function NetworkDiagram({
         {arrangeable
           ? 'Drag a box to move it (Alt+arrows with the keyboard). Click an arrow, then drag its square handles to reshape it.'
           : 'Turn off Show environments to arrange boxes and arrows by hand.'}
+        {' '}Zoom with Ctrl/⌘ + wheel or a pinch at the pointer, or + and − (0 for 100%).
       </p>
     </div>
   );
