@@ -66,6 +66,7 @@ function projectAssessment(projectId: number, statusDate: ISODate) {
     nearCriticalDays: settings.near_critical_days,
     holidays,
     forecastRuns: settings.forecast_runs,
+    elsewhere: elsewhereWork(projectId),
   });
   const dismissed = new Set(all<{ key: string }>(
     'SELECT key FROM assistant_dismissal WHERE project_id = ?', projectId,
@@ -165,6 +166,8 @@ export function searchContext(projectId: number, statusDate: ISODate = today()) 
     nearCriticalDays: settings.near_critical_days,
     longTaskDays: settings.long_task_days,
     forecastRuns: Math.min(settings.forecast_runs, 300),
+    elsewhere: elsewhereWork(projectId),
+    names: new Map(all<{ id: number; name: string }>('SELECT id, name FROM resource').map((r) => [r.id, r.name])),
     apply: (s, op) => {
       const next = applyChange({ ...state, tasks: s.tasks as Task[], deps: s.deps as TaskDependency[] }, changeOf(op, null));
       return { tasks: next.tasks, deps: next.deps };
@@ -173,9 +176,18 @@ export function searchContext(projectId: number, statusDate: ISODate = today()) 
   return { state, ctx, version: planVersion(state, state.project) };
 }
 
-export function suggestionReport(projectId: number, statusDate?: ISODate): SuggestionReport {
+/** This plan's people's open work in other plans, as the overlap rule reads it. */
+function elsewhereWork(projectId: number) {
+  return workElsewhere(projectId).map((t) => ({
+    task_id: t.task_id, project_id: t.project_id, resource_ids: t.resource_ids, start: t.start, end: t.end,
+    name: t.name, code: t.code, project_name: t.project_name,
+  }));
+}
+
+/** Better plans; `only: 'people'` levels people and nothing else (the drawer's Level people). */
+export function suggestionReport(projectId: number, statusDate?: ISODate, only?: 'people'): SuggestionReport {
   const { state, ctx, version } = searchContext(projectId, statusDate);
-  const report = suggest(ctx, state, version);
+  const report = suggest(ctx, state, version, { only });
   if (!report) throw new PlanError('This plan has a dependency loop. Remove one of its links.');
   return report;
 }

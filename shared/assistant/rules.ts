@@ -15,7 +15,7 @@ export type FindingGroup = 'progress' | 'structure' | 'hygiene';
 export type RuleId =
   | 'P1' | 'P2' | 'P3' | 'P4' | 'P5' | 'P6' | 'P7' | 'P8'
   | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6'
-  | 'H1' | 'H2' | 'H3' | 'H4' | 'H5' | 'H6';
+  | 'H1' | 'H2' | 'H3' | 'H4' | 'H5' | 'H6' | 'H7';
 
 export type Finding = {
   rule: RuleId;
@@ -61,7 +61,7 @@ const LAG_SHARE = 0.05;
 export const RULE_GROUP: Record<RuleId, FindingGroup> = {
   P1: 'progress', P2: 'progress', P3: 'progress', P4: 'progress', P5: 'progress', P6: 'progress', P7: 'progress', P8: 'progress',
   S1: 'structure', S2: 'structure', S3: 'structure', S4: 'structure', S5: 'structure', S6: 'structure',
-  H1: 'hygiene', H2: 'hygiene', H3: 'hygiene', H4: 'hygiene', H5: 'hygiene', H6: 'hygiene',
+  H1: 'hygiene', H2: 'hygiene', H3: 'hygiene', H4: 'hygiene', H5: 'hygiene', H6: 'hygiene', H7: 'hygiene',
 };
 
 // ---------------------------------------------------------------- scale
@@ -374,6 +374,36 @@ function overloadedOnCritical(f: PlanFacts, people: ReadonlyMap<number, string>)
   return out;
 }
 
+/**
+ * H7: a person on two tasks at once (reqs/pm_features.md §5): its dates assume
+ * someone does two things in the same days. Counts their work in other plans.
+ * Two critical tasks of this plan are S5's, which says what it does to the finish.
+ */
+function personOnTwoTasks(f: PlanFacts, people: ReadonlyMap<number, string>): Finding[] {
+  return f.overlaps.flatMap((o) => {
+    const a = f.byId.get(o.a);
+    const b = f.byId.get(o.b);
+    const here = [a, b].filter((t): t is TaskFacts => !!t);
+    if (!here.some(open)) return [];
+    if (a && b && a.critical && b.critical) return [];
+    const who = people.get(o.resource_id) ?? 'Someone';
+    const name = (id: number) => {
+      const s = o.spans[id];
+      return s.here ? label({ name: s.name, code: s.code }) : `${s.name} (in ${s.project_name ?? 'another plan'})`;
+    };
+    const critical = here.some((t) => t.critical);
+    return [finding('H7', [o.resource_id, Math.min(o.a, o.b), Math.max(o.a, o.b)], {
+      title: 'Person on two tasks at once',
+      text: `${who} is on ${name(o.a)} and ${name(o.b)} at once for ${wd(o.days)}, ${day(o.start)} – ${day(o.end)}. `
+        + `The dates assume both get done in those days${critical ? ', and one of them is critical' : ''}.`,
+      evidence: [o.a, o.b].map((id) => `${name(id)}: ${day(o.spans[id].start)} – ${day(o.spans[id].end)}`),
+      task_ids: here.map((t) => t.id),
+      likelihood: o.days >= 5 ? 4 : 3,
+      impact: critical ? 3 : 2,
+    })];
+  });
+}
+
 /** S6: critical work nobody is on, in a plan that does name people. */
 function unassignedCritical(f: PlanFacts): Finding[] {
   if (!f.tasks.some((t) => t.people.length)) return [];
@@ -500,7 +530,7 @@ export function assess(f: PlanFacts, settings: RuleSettings, people: ReadonlyMap
     ...targetAtRisk(f), ...deadlineAtRisk(f), ...negativeFloat(f), ...shouldHaveStarted(f), ...slipping(f), ...blockedCritical(f),
     ...floatErosion(f), ...baselineSlip(f),
     ...nearCritical(f), ...mergePoints(f), ...thinMargin(f), ...clashOnPath(f), ...overloadedOnCritical(f, people),
-    ...unassignedCritical(f),
+    ...unassignedCritical(f), ...personOnTwoTasks(f, people),
     ...missingLogic(f), ...leads(f), ...lags(f), ...drivingConstraints(f), ...longTasks(f, settings), ...highFloat(f, settings),
   ];
   const order = new Map(f.tasks.map((t, i) => [t.id, i]));

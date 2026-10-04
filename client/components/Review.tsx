@@ -62,7 +62,8 @@ export function ReviewPage({
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [applying, setApplying] = useState(false);
-  const [view, setView] = useState<View>(readView);
+  // A levelling suggestion is about people, so its review opens on them.
+  const [view, setView] = useState<View>(() => (suggestion.moves.some((m) => m.kind === 'ML' || m.kind === 'MLX') ? 'people' : readView()));
   const [changedOnly, setChangedOnly] = useState<boolean | null>(null);
   const [layout, setLayout] = useState<Layout>('overlay');
   const [zoom, setZoom] = useState<Zoom>('day');

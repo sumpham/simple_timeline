@@ -289,6 +289,13 @@ date passed in, against the compared baseline's `task_baseline.cost`; a baseline
 task's planned cost when saved. Percent complete is `shared/progress.ts`, shared with the chart.
 The currency is display only: never convert.
 
+**Levelling people is a suggestion, never a save rule** (`reqs/pm_features.md` §5). `planFacts`
+builds `overlaps` from shared/workload.ts (`workItems`, `planOverlaps`, counting `elsewhere`, other
+plans' work), and the search ranks fewer `overlapDays` right after "no new double-booking". ML
+(within float, every profile) and MLX (past float, aggressive only, with a `tradeoff`) are moves
+like any other; nothing levels on save. H7 reports an overlap; two critical tasks of this plan
+stay S5's. The People strip counts with `loadByDay`, never its own loop.
+
 **Best/Worst estimates are not plan state**, like people: `duration_low`/`duration_high` are
 not in `TaskFields`; the task routes take them as extras (`estimateFrom`, `setEstimate`), and an
 edit touching only them skips `replan`, so it cannot move a date or un-accept a double-booking.

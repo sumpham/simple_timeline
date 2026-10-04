@@ -3,6 +3,7 @@ import type { PlanOutcome } from '../plan.ts';
 import { earliestStart, expandLinks, forwardPass, indexNetwork, lateBy, scheduleProject } from '../schedule.ts';
 import type { Conflict, ISODate, Priority, TaskDependency, TaskStatus } from '../types.ts';
 import { forecast, type Forecast } from './forecast.ts';
+import { planOverlaps, workItems, type PersonOverlap, type WorkItem } from '../workload.ts';
 
 /**
  * Everything the assistant's rules read, derived once from a plan outcome
@@ -96,7 +97,22 @@ export type PlanFacts = {
   /** The Monte Carlo forecast (forecast.ts), when one was run. */
   forecast: Forecast | null;
   holidays?: HolidaySet;
+  /**
+   * A person on two tasks at once, where at least one is this plan's
+   * (shared/workload.ts, counting their work in other plans). Working days.
+   */
+  overlaps: OverlapFacts[];
+  /** Working days of all those overlaps together: what levelling brings down. */
+  overlap_days: number;
 };
+
+/** One overlap, with both tasks' spans and, for another plan's task, where it lives. */
+export type OverlapFacts = PersonOverlap & {
+  spans: Record<number, { start: ISODate; end: ISODate; here: boolean; name: string; code: number | null; project_name: string | null }>;
+};
+
+/** Another plan's task one of this plan's people is on (server/queries.ts `workElsewhere`). */
+export type ElsewhereWork = WorkItem & { name: string; code: number | null; project_name: string };
 
 export type FactsInput = {
   project: { id: number; name: string; priority: Priority; target_date?: ISODate | null };
@@ -113,6 +129,8 @@ export type FactsInput = {
   holidays?: HolidaySet;
   /** Forecast runs; 0 or absent skips the forecast. */
   forecastRuns?: number;
+  /** This plan's people's open work in other plans, so an overlap with it counts. */
+  elsewhere?: readonly ElsewhereWork[];
 };
 
 /**
@@ -228,7 +246,25 @@ export function planFacts(input: FactsInput): PlanFacts {
       pace: new Map(working.map((t) => [t.id, t.spi])),
     }, new Set(working.filter((t) => t.critical && t.status !== 'done').map((t) => t.id))) : null,
     holidays,
+    ...overlapFacts(input, outcome, tasks),
   };
+}
+
+/** People on two tasks at once (shared/workload.ts's rule), with the spans a levelling move needs. */
+function overlapFacts(input: FactsInput, outcome: PlanOutcome, tasks: readonly TaskFacts[]): Pick<PlanFacts, 'overlaps' | 'overlap_days'> {
+  const here = workItems(outcome.tasks, outcome.schedule.tasks, (id) => input.people.get(id));
+  const elsewhere = input.elsewhere ?? [];
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const other = new Map(elsewhere.map((w) => [w.task_id, w]));
+  const span = (id: number): OverlapFacts['spans'][number] => {
+    const t = byId.get(id);
+    if (t) return { start: t.start, end: t.end, here: true, name: t.name, code: t.code, project_name: null };
+    const w = other.get(id);
+    return { start: w?.start ?? '', end: w?.end ?? '', here: false, name: w?.name ?? `task ${id}`, code: w?.code ?? null, project_name: w?.project_name ?? null };
+  };
+  const overlaps = [...planOverlaps(here, elsewhere, input.holidays).values()].flat()
+    .map((o) => ({ ...o, spans: { [o.a]: span(o.a), [o.b]: span(o.b) } }));
+  return { overlaps, overlap_days: overlaps.reduce((s, o) => s + o.days, 0) };
 }
 
 /** Effort left: none when done; the untyped share when progress is typed; otherwise what the schedule has left. */

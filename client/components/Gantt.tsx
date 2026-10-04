@@ -4,6 +4,7 @@ import type {
 } from '../../shared/types.ts';
 import type { OutlineRow } from '../../shared/wbs.ts';
 import { occupancyByDay } from '../../shared/conflicts.ts';
+import { loadByDay, type WorkItem } from '../../shared/workload.ts';
 import { snapToWorkingDay } from '../../shared/dates.ts';
 import { formatDate, formatRange } from '../layout.ts';
 import {
@@ -36,6 +37,8 @@ export type GanttShow = {
   baseline: boolean;
   bookings: boolean;
   strip: boolean;
+  /** Each person's load per working day, under the environments (reqs/pm_features.md §5.3). */
+  people?: boolean;
 };
 
 export type GanttPreview = {
@@ -52,6 +55,9 @@ export type StripData = {
   bookings: readonly BookingView[];
   conflicts: readonly Conflict[];
 };
+
+/** The people strip: everyone on this plan, and their work here and in other plans. */
+export type PeopleStripData = { people: readonly { id: number; name: string }[]; work: readonly WorkItem[] };
 
 export type GanttCommand = { kind: 'today' | 'start'; n: number };
 
@@ -86,7 +92,7 @@ type Live = { id: number; fields: TaskInput; date: ISODate; mode: BarMode; resul
 
 export function Gantt({
   tasks, outline, deps, schedule, environments, holidays, today, start, target, rows, head, height, zoom, show,
-  baseline, bookings, progress, people, strip, command, preview, onOpen, onSetStart, onSetFinish, onSetStartEdge, onLink, onLinkChange, onRelease,
+  baseline, bookings, progress, people, strip, peopleStrip = null, command, preview, onOpen, onSetStart, onSetFinish, onSetStartEdge, onLink, onLinkChange, onRelease,
 }: {
   tasks: readonly Task[];
   outline: ReadonlyMap<number, OutlineRow>;
@@ -110,6 +116,7 @@ export function Gantt({
   /** Every person by id, for the names after a bar. */
   people: ReadonlyMap<number, Resource>;
   strip: StripData | null;
+  peopleStrip?: PeopleStripData | null;
   command: GanttCommand | null;
   preview: (t: Task, fields: TaskInput) => GanttPreview | null;
   onOpen: (id: number) => void;
@@ -614,6 +621,7 @@ export function Gantt({
       </svg>
 
       {strip && show.strip && <Strip strip={strip} live={live?.result ?? null} days={days} dayW={dayW} scale={scale} />}
+      {peopleStrip && show.people && peopleStrip.people.length > 0 && <PeopleStrip data={peopleStrip} days={days} dayW={dayW} />}
 
       {readout && (
         <div className="gantt-readout" style={{ left: readout.x, top: readout.y }} role="status">
@@ -688,6 +696,44 @@ function Strip({ strip, live, days, dayW, scale }: {
                 </rect>
               );
             })}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/**
+ * Each person's load per working day: a light block on one task, a full-height
+ * ink block with the count on two or more at once. Weight, not a hue: red is
+ * spent on double-bookings. Counted by shared/workload.ts's `loadByDay`.
+ */
+function PeopleStrip({ data, days, dayW }: { data: PeopleStripData; days: readonly ISODate[]; dayW: number }) {
+  const width = days.length * dayW;
+  const height = STRIP_HEAD + data.people.length * STRIP_LANE;
+  return (
+    <svg className="gantt-strip people-strip" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img"
+      aria-label="How many tasks each person is on, day by day">
+      <line className="gantt-week-line" x1={0} x2={width} y1={0.5} y2={0.5} />
+      {data.people.map((p, lane) => {
+        const y = STRIP_HEAD + lane * STRIP_LANE;
+        const load = loadByDay(data.work, p.id, days);
+        const runs: { col: number; span: number; n: number }[] = [];
+        load.forEach((n, i) => {
+          const last = runs[runs.length - 1];
+          if (last && last.n === n && last.col + last.span === i) last.span++;
+          else runs.push({ col: i, span: 1, n });
+        });
+        return (
+          <g key={p.id}>
+            <line className="gantt-row-line" x1={0} x2={width} y1={y + STRIP_LANE - 0.5} y2={y + STRIP_LANE - 0.5} />
+            {runs.filter((r) => r.n > 0).map((r) => (
+              <g key={r.col} className={`people-load${r.n > 1 ? ' is-over' : ''}`}>
+                <title>{`${p.name}: ${r.n === 1 ? 'on one task' : `on ${r.n} tasks at once`}, ${formatRange(days[r.col], days[r.col + r.span - 1])}`}</title>
+                <rect x={r.col * dayW + 0.5} y={r.n > 1 ? y + 3 : y + 9} width={Math.max(1, r.span * dayW - 1)} height={r.n > 1 ? STRIP_LANE - 6 : STRIP_LANE - 18} rx={1.5} />
+                {r.n > 1 && r.span * dayW >= 18 && <text x={r.col * dayW + (r.span * dayW) / 2} y={y + STRIP_LANE / 2 + 4}>{r.n}×</text>}
+              </g>
+            ))}
           </g>
         );
       })}

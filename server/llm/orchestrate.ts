@@ -39,7 +39,7 @@ How the facts are written (the plan's own shorthand, to save space):
 - S code|st|prog|start|end|tf|pace|who|flags: status (t to do, p in progress, b blocked, d done), typed % complete, start and end offsets, total float, pace (SPI(t)), people, flags (C critical, N near-critical, M merge point, then warning rules).
 - X: a double-booking this project is in: environment, span, capacity, peak, the other projects, and this project's tasks there.
 - CI: criticality index. SENS: correlation of a task's length with the finish.
-- F key L I tasks "title": a warning. Rules: P1 target at risk, P2 negative float, P3 should have started, P4 falling behind, P5 blocked on the critical path, P6 margin shrinking, P7 behind baseline, S1 close to critical, S2 many paths meet, S3 thin margin, S4 double-booked where tight, S5 one person on parallel critical work, S6 critical work unassigned, H1 missing links, H2 leads, H3 lags, H4 held by a date, H5 long tasks, H6 very high float.
+- F key L I tasks "title": a warning. Rules: P1 target at risk, P2 negative float, P3 should have started, P4 falling behind, P5 blocked on the critical path, P6 margin shrinking, P7 behind baseline, P8 deadline at risk, S1 close to critical, S2 many paths meet, S3 thin margin, S4 double-booked where tight, S5 one person on parallel critical work, S6 critical work unassigned, H1 missing links, H2 leads, H3 lags, H4 held by a date, H5 long tasks, H6 very high float, H7 person on two tasks at once.
 - N code "note": a task's note, when sharing notes is allowed.
 - Names like R1 (a person) or O2 (another project) are kept private. Use them as given.
 

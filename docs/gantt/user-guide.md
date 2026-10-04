@@ -166,6 +166,19 @@ Show → **Variance columns** adds Start var, Finish var and Days var: working d
 in bold) or sooner (`−`) than the baseline you compare with. A dash means the task was added
 after that baseline was saved. Baselines never move a date.
 
+## People on two tasks at once
+
+Show → **People** adds a strip under the chart: one row per person on the plan, counting their
+work in other plans too. A short pale block is a day on one task; a tall ink block marked `2×`
+is a day on two at once. The row's label says how many such days.
+
+The assistant warns about it (**Person on two tasks at once**, rule H7; two critical tasks of
+this plan are S5). Its filter row (**All · Environments · People · Dates**) narrows the
+warnings and the better plans to one subject. Under **People**, **Level people** looks for
+moves that start one of the tasks after the other ends: inside its float first, so the finish
+holds, and past its float only in the aggressive plan, which says what it costs. Review opens
+such a suggestion on its People view. Nothing moves until you apply it.
+
 ## Budget (earned value)
 
 The **Budget** tab answers two questions at a status date: are we behind, and are we over? It

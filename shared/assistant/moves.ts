@@ -10,8 +10,12 @@ import { day, label } from './rules.ts';
  * rule a save checks is checked.
  */
 
-/** M1–M7 are the engine's own moves (§4.3); MA is one an LLM advisor proposed and the engine kept. */
-export type MoveKind = 'M1' | 'M2' | 'M3' | 'M4' | 'M5' | 'M6' | 'M7' | 'MA';
+/**
+ * M1–M7 are the engine's own moves (§4.3); MA is one an LLM advisor proposed and
+ * the engine kept. ML levels a person within float; MLX does it beyond float, at
+ * a cost to the finish (reqs/pm_features.md §5).
+ */
+export type MoveKind = 'M1' | 'M2' | 'M3' | 'M4' | 'M5' | 'M6' | 'M7' | 'MA' | 'ML' | 'MLX';
 
 export type OpFields = Partial<Pick<Task, 'name' | 'duration' | 'not_before' | 'environment_id'>>
   & { predecessors?: { id: number; lag: number; type: LinkType }[] };
@@ -38,7 +42,7 @@ export type Move = {
 };
 
 /** How much a move disturbs the plan, for the last tie-break: level first, crash last. */
-export const DISRUPTION: Record<MoveKind, number> = { M1: 1, M5: 2, M4: 3, M2: 4, MA: 5, M3: 6, M7: 7, M6: 8 };
+export const DISRUPTION: Record<MoveKind, number> = { M1: 1, ML: 2, M5: 2, M4: 3, M2: 4, MA: 5, M3: 6, MLX: 6, M7: 7, M6: 8 };
 
 export const MOVE_TITLE: Record<MoveKind, string> = {
   M1: 'Level within float',
@@ -49,6 +53,8 @@ export const MOVE_TITLE: Record<MoveKind, string> = {
   M6: 'Crash',
   M7: 'Split a long task',
   MA: 'Advisor’s move',
+  ML: 'Level a person',
+  MLX: 'Level a person, moving the finish',
 };
 
 export type MoveContext = {
@@ -61,6 +67,8 @@ export type MoveContext = {
   bookings: readonly BookingView[];
   longTaskDays: number;
   holidays?: ReadonlySet<ISODate>;
+  /** People's names, for the words of a levelling move. */
+  names?: ReadonlyMap<number, string>;
 };
 
 const unstarted = (t: TaskFacts) => !t.summary && (t.status === 'todo' || t.status === 'blocked');
@@ -272,6 +280,48 @@ export function redundantLinks(c: MoveContext): Move[] {
   return out;
 }
 
+// ---------------------------------------------------------------- ML, MLX: people
+
+/**
+ * Level a person: when someone is on two tasks at once, start one of this plan's
+ * unstarted tasks the working day after the other ends. Within its float it is
+ * ML and the finish holds; beyond it, MLX, and the trade-off says so. The search
+ * judges either like any move, so a levelling that makes a double-booking is
+ * never kept.
+ */
+function levelPeople(c: MoveContext, within: boolean): Move[] {
+  const out: Move[] = [];
+  const seen = new Set<string>();
+  for (const o of c.facts.overlaps) {
+    const who = c.names?.get(o.resource_id) ?? 'Someone';
+    for (const [id, otherId] of [[o.a, o.b], [o.b, o.a]] as const) {
+      const t = c.facts.byId.get(id);
+      const other = o.spans[otherId];
+      if (!t || !unstarted(t) || !other?.end) continue;
+      const freeFrom = snapToWorkingDay(addDays(other.end, 1), c.holidays);
+      if (freeFrom <= t.start) continue;
+      const shift = workingDays(t.start, addDays(freeFrom, -1), c.holidays);
+      const fits = shift <= Math.max(0, t.total_float);
+      if (fits !== within) continue;
+      const key = `${within ? 'ML' : 'MLX'}:${id}:${freeFrom}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const otherName = other.here ? label({ name: other.name, code: other.code }) : `${other.name} in ${other.project_name ?? 'another plan'}`;
+      out.push({
+        kind: within ? 'ML' : 'MLX',
+        key,
+        title: `Start ${label(t)} on ${day(freeFrom)}`,
+        reason: `${who} is on ${label(t)} and ${otherName} at once for ${wd(o.days)}, ${day(o.start)} – ${day(o.end)}. `
+          + `Starting it after ${otherName} ends moves it ${wd(shift)}${fits ? `, inside its ${wd(Math.max(0, t.total_float))} of float, so the finish holds.` : '.'}`,
+        tradeoff: fits ? null : `It has ${wd(Math.max(0, t.total_float))} of float, so the finish can move by up to ${wd(shift - Math.max(0, t.total_float))}.`,
+        ops: [{ op: 'update', id, fields: { not_before: freeFrom } }],
+        task_ids: [id],
+      });
+    }
+  }
+  return out;
+}
+
 export const GENERATORS: Record<Exclude<MoveKind, 'M5' | 'MA'>, (c: MoveContext) => Move[]> = {
   M1: levelWithinFloat,
   M2: switchEnvironment,
@@ -279,4 +329,6 @@ export const GENERATORS: Record<Exclude<MoveKind, 'M5' | 'MA'>, (c: MoveContext)
   M4: removeDrivingDate,
   M6: crash,
   M7: split,
+  ML: (c) => levelPeople(c, true),
+  MLX: (c) => levelPeople(c, false),
 };

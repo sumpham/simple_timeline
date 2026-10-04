@@ -185,7 +185,8 @@ export const api = {
   assistant: (projectId: number) => request<AssistantReport>(`/api/projects/${projectId}/assistant`),
   dismissFinding: (projectId: number, key: string) =>
     request<AssistantReport>(`/api/projects/${projectId}/assistant/dismiss`, { method: 'POST', body: JSON.stringify({ key }) }),
-  suggestions: (projectId: number) => request<SuggestionReport>(`/api/projects/${projectId}/assistant/suggestions`),
+  suggestions: (projectId: number, focus?: 'people') =>
+    request<SuggestionReport>(`/api/projects/${projectId}/assistant/suggestions${focus ? `?focus=${focus}` : ''}`),
   previewOps: (projectId: number, ops: PlanOp[]) =>
     request<PlanImpact>(`/api/projects/${projectId}/assistant/preview`, { method: 'POST', body: JSON.stringify({ ops }) }),
   /** Earned value at a status date (today when omitted), against the compared baseline. */

@@ -66,6 +66,8 @@ const TEAMS = [
           { key: 'load', name: 'Refund load test', env: 'NFT', dur: 5, after: ['api'], not_before: 16 },
           // Promised to partners before the work allows: a missed deadline on load.
           { key: 'docs', name: 'Partner docs', dur: 3, after: ['api'], who: ['Linh'], deadline: 16 },
+          // Tuan on two things at once, with float to spare: Level people has a move within it.
+          { key: 'sandbox', name: 'Partner sandbox', dur: 3, who: ['Tuan'] },
         ],
         bookings: [
           { env: 'SIT', kind: 'SIT', start: 16, end: 23 },

@@ -3614,3 +3614,18 @@ path.gantt-summary.review-was { fill: none; }
 .review-budget-totals dt { font: 500 12px 'Archivo Narrow', 'Archivo', sans-serif; color: var(--muted); }
 .review-budget-totals dd { margin: 0; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .review-budget-totals dd.is-worse { font-weight: 800; }
+
+/* ---------------------------------------------------------------- people strip (reqs/pm_features.md §5.3)
+   Load by weight: one task is a short pale block, two or more at once a tall ink one. */
+.people-load rect { fill: var(--rule); }
+.people-load.is-over rect { fill: var(--ink); }
+.people-load text { font: 700 10px 'Archivo Narrow', 'Archivo', sans-serif; fill: var(--lane); text-anchor: middle; pointer-events: none; }
+.strip-labels-row .people-over { color: var(--ink); font-weight: 700; }
+
+/* The assistant drawer's filter row and Level people. Chips, never colour. */
+.assistant-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--rule-soft); background: var(--lane); }
+.chip[aria-pressed='true'] { background: var(--ink); color: var(--lane); border-color: var(--ink); }
+.chip-count { margin-left: 6px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.assistant-level { padding: 10px 16px 12px; display: grid; gap: 8px; justify-items: start; border-bottom: 1px solid var(--rule-soft); }
+.assistant-level .drawer-empty { padding: 0; margin: 0; }
+.better-filtered { padding: 0 16px 10px; }

@@ -1,6 +1,6 @@
 # Professional project management features
 
-Status: planned 2026-10-04. Phases R (§8), A (§3), B (§4) and C (§6) built 2026-10-04; D and E are not built yet. The build plan is the to-do list in §10;
+Status: planned 2026-10-04. Phases R (§8), A (§3), B (§4), C (§6) and D (§5) built 2026-10-04; E is not built yet. The build plan is the to-do list in §10;
 tick items there as they land, as `reqs/smart_assistant.md` §10 does.
 
 The five features, plus one change to the assistant that all of them rely on:
@@ -797,16 +797,40 @@ Built as:
 - **Checked:** headless Chrome at 1440 and 400 px, light and dark, the empty state, and a
   currency change.
 
-### Phase D: levelling people
+### Phase D: levelling people (built 2026-10-04)
 
-- [ ] `PlanFacts.overlaps` from `shared/workload.ts`, including work elsewhere.
-- [ ] Rule H7, and the person filter's mark reads from it.
-- [ ] Move ML, plus the overlap-days term in the search order.
-- [ ] Extend `tests/assistantOptimise.test.ts`: on random plans with people, a kept plan never
+- [x] `PlanFacts.overlaps` from `shared/workload.ts`, including work elsewhere.
+- [x] Rule H7, and the person filter's mark reads from it.
+- [x] Move ML, plus the overlap-days term in the search order.
+- [x] Extend `tests/assistantOptimise.test.ts`: on random plans with people, a kept plan never
       has a new open double-booking, P80 never gets later in the balanced profile, and ML
       within float never moves the finish.
-- [ ] UI: the People workload strip, the drawer's filter row, and **Level people**. Levelling
+- [x] UI: the People workload strip, the drawer's filter row, and **Level people**. Levelling
       suggestions open the review page on its People view.
+
+Built as:
+- **Facts:** `PlanFacts.overlaps` (each with both tasks' spans, here or in another plan) and
+  `overlap_days`, from `workItems` and `planOverlaps`. The server passes `elsewhere` to the facts
+  and the search.
+- **Search:** `Evaluation.overlapDays`, ranked right after new double-bookings.
+  - **ML** is in every profile, since it is as safe as M1. **MLX** is aggressive only.
+  - The headline says "frees N days of people on two tasks at once".
+  - `suggest(…, { only: 'people' })` is `GET …/assistant/suggestions?focus=people`.
+- **Rule H7**, keyed `H7:<person>:<task>:<task>`, skips pairs S5 already covers. The rubric
+  legend now lists P8 and H7.
+- **As built, the table's overlap mark still uses `planOverlaps` directly**, rather than reading
+  H7 from the report. It's the same rule, and this way the mark doesn't wait on the assistant's
+  report.
+- **UI:**
+  - Show → People: the People strip, with labels.
+  - The drawer's filter row with counts, and **Level people**.
+  - A review of a levelling suggestion opens on People.
+- **Seed:** Refund API v3's Partner sandbox puts Tuan on two tasks at once. Level people
+  finds the safe ML move, and the finish holds.
+- **Tests:** `tests/assistantPeople.test.ts`: facts here and elsewhere, H7 and S5, ML in the
+  safe profile, MLX only in the aggressive one, and a random-plan property (no new
+  double-booking, fewer overlap days, ML never moves the finish).
+- **Checked:** in headless Chrome.
 
 ### Phase E: links between projects
 

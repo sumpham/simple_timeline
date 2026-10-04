@@ -6,6 +6,7 @@ import type { Environment, ISODate, Priority, Task, TaskDependency } from '../ty
 import { planFacts, type PlanFacts } from './facts.ts';
 import { forecast, type Forecast } from './forecast.ts';
 import { DISRUPTION, GENERATORS, redundantLinks, type Move, type MoveKind, type PlanOp } from './moves.ts';
+import type { ElsewhereWork } from './facts.ts';
 import { seedOf } from './random.ts';
 import { day, label } from './rules.ts';
 
@@ -47,6 +48,10 @@ export type SearchContext = {
   apply: (state: PlanState, op: PlanOp) => PlanState;
   /** planProject calls allowed in one search. */
   budget?: number;
+  /** This plan's people's work in other plans, so overlaps with it count (reqs/pm_features.md §5). */
+  elsewhere?: readonly ElsewhereWork[];
+  /** People's names, for a levelling move's words. */
+  names?: ReadonlyMap<number, string>;
 };
 
 export type Evaluation = {
@@ -56,6 +61,8 @@ export type Evaluation = {
   /** Open double-bookings this state makes that the starting plan did not have. */
   newClashes: number;
   clashes: number;
+  /** Working days people spend on two tasks at once (facts.overlap_days). */
+  overlapDays: number;
   late: number;
   finish: ISODate | null;
   forecast?: Forecast | null;
@@ -100,9 +107,16 @@ export type SuggestionReport = {
 };
 
 export const PROFILE_KINDS: Record<Profile, MoveKind[]> = {
-  safe: ['M1', 'M2'],
-  balanced: ['M1', 'M2', 'M4'],
-  aggressive: ['M1', 'M2', 'M4', 'M3', 'M6', 'M7'],
+  safe: ['M1', 'M2', 'ML'],
+  balanced: ['M1', 'M2', 'ML', 'M4'],
+  aggressive: ['M1', 'M2', 'ML', 'M4', 'M3', 'M6', 'M7', 'MLX'],
+};
+
+/** Level people only: within float first, then, in the aggressive profile, beyond it. */
+export const PEOPLE_KINDS: Record<Profile, MoveKind[]> = {
+  safe: ['ML'],
+  balanced: ['ML'],
+  aggressive: ['ML', 'MLX'],
 };
 const PROFILE_TITLE: Record<Profile, string> = { safe: 'Safe', balanced: 'Balanced', aggressive: 'Aggressive' };
 
@@ -140,11 +154,13 @@ export function createSearch(ctx: SearchContext, start: PlanState) {
     const facts = planFacts({
       project: ctx.project, projectStart: ctx.projectStart, outcome, baseline: ctx.baseline, people: ctx.people,
       conflicts, statusDate: ctx.statusDate, nearCriticalDays: ctx.nearCriticalDays, holidays: ctx.holidays,
+      elsewhere: ctx.elsewhere,
     });
     return {
       state, outcome, facts,
       newClashes: outcome === base ? 0 : conflictChanges(base, outcome, ctx.impact).added.length,
       clashes: facts.clashes.length,
+      overlapDays: facts.overlap_days,
       late: facts.late_by,
       finish: facts.finish,
     };
@@ -179,6 +195,8 @@ export function createSearch(ctx: SearchContext, start: PlanState) {
   /** Lexicographic: negative when `a` is the better plan. */
   const compare = (a: Evaluation, b: Evaluation, disruption: (e: Evaluation) => number, useForecast: boolean) => {
     if (a.newClashes !== b.newClashes) return a.newClashes - b.newClashes;
+    // People next: a plan that puts someone on two things at once is not a better plan.
+    if (a.overlapDays !== b.overlapDays) return a.overlapDays - b.overlapDays;
     if (a.clashes !== b.clashes) return a.clashes - b.clashes;
     const la = useForecast ? lateOf(a) : a.late;
     const lb = useForecast ? lateOf(b) : b.late;
@@ -198,6 +216,7 @@ export function createSearch(ctx: SearchContext, start: PlanState) {
   const context = (e: Evaluation) => ({
     facts: e.facts, tasks: e.state.tasks, deps: e.state.deps, environments: ctx.environments,
     bookings: bookingsFor(e.outcome, ctx.impact), longTaskDays: ctx.longTaskDays, holidays: ctx.holidays,
+    names: ctx.names,
   });
 
   const candidates = (n: Node, kinds: readonly MoveKind[]): Move[] => {
@@ -246,7 +265,7 @@ export function createSearch(ctx: SearchContext, start: PlanState) {
 }
 
 /** Everything the assistant proposes for one plan: up to three alternative plans, tidy-ups and advice. */
-export function suggest(ctx: SearchContext, start: PlanState, version: string): SuggestionReport | null {
+export function suggest(ctx: SearchContext, start: PlanState, version: string, opts: { only?: 'people' } = {}): SuggestionReport | null {
   const search = createSearch(ctx, start);
   if (!search) return null;
   const { root } = search;
@@ -258,7 +277,8 @@ export function suggest(ctx: SearchContext, start: PlanState, version: string): 
   const seen = new Set<string>();
 
   for (const profile of profiles) {
-    const found = search.beam(PROFILE_KINDS[profile], Math.floor(search.budget * shares[profile]));
+    const kinds = opts.only === 'people' ? PEOPLE_KINDS : PROFILE_KINDS;
+    const found = search.beam(kinds[profile], Math.floor(search.budget * shares[profile]));
     // The best few by the plan's own dates, then ranked on the forecast.
     const finalists = [...found].sort((a, b) => search.compare(a.e, b.e, search.cost, false)).slice(0, FINALISTS);
     for (const f of finalists) search.withForecast(f.e);
@@ -320,6 +340,8 @@ function headline(before: Evaluation, after: Evaluation): string {
   const cleared = before.clashes - after.clashes;
   if (cleared > 0) parts.push(`clears ${cleared} double-booking${cleared === 1 ? '' : 's'}`);
   const days = (n: number) => `${n} day${n === 1 ? '' : 's'}`;
+  const freed = before.overlapDays - after.overlapDays;
+  if (freed > 0) parts.push(`frees ${freed} day${freed === 1 ? '' : 's'} of people on two tasks at once`);
   if (before.finish && after.finish && after.finish < before.finish) parts.push(`finishes ${days(diffDays(after.finish, before.finish))} sooner`);
   const pb = before.forecast?.p80;
   const pa = after.forecast?.p80;

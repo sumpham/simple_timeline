@@ -1381,7 +1381,7 @@ router.post('/projects/:id/assistant/restore', handle((req, res) => {
 /** Better plans: a bounded search, run when asked rather than on every edit. */
 router.get('/projects/:id/assistant/suggestions', handle((req, res) => {
   const id = assistantProject(req);
-  res.json(suggestionReport(id, req.query.date == null ? undefined : requireDate(req.query.date, 'date')));
+  res.json(suggestionReport(id, req.query.date == null ? undefined : requireDate(req.query.date, 'date'), req.query.focus === 'people' ? 'people' : undefined));
 }));
 
 /** What applying a suggestion (or any of its moves) would do, before it is done. */

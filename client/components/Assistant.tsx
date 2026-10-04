@@ -1,8 +1,8 @@
-import type { AssistantReport, Finding, FindingGroup } from '../../shared/assistant/rules.ts';
+import type { AssistantReport, Finding, FindingGroup, RuleId } from '../../shared/assistant/rules.ts';
 import type { Forecast } from '../../shared/assistant/forecast.ts';
 import type { ISODate, PlanImpact } from '../../shared/types.ts';
 import type { Advice, Suggestion, SuggestionReport } from '../../shared/assistant/optimise.ts';
-import type { PlanOp } from '../../shared/assistant/moves.ts';
+import type { MoveKind, PlanOp } from '../../shared/assistant/moves.ts';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { AdvisorReply } from '../../shared/assistant/validate.ts';
 import { DEFAULT_ASSISTANT_SETTINGS, type AssistantSettings } from '../../shared/assistant/settings.ts';
@@ -21,6 +21,23 @@ const GROUPS: { id: FindingGroup; title: string; hint: string }[] = [
   { id: 'structure', title: 'Structure', hint: 'Will the plan hold up?' },
   { id: 'hygiene', title: 'Schedule checks', hint: 'Can its dates be trusted?' },
 ];
+
+/**
+ * What a warning or a move is about, for the drawer's filter row
+ * (reqs/pm_features.md §5.3). Environments: double-bookings. People: who does
+ * the work. Dates: everything about when it finishes.
+ */
+export type Topic = 'all' | 'environments' | 'people' | 'dates';
+const TOPIC_LABEL: Record<Topic, string> = { all: 'All', environments: 'Environments', people: 'People', dates: 'Dates' };
+const RULE_TOPIC: Record<RuleId, Exclude<Topic, 'all'>> = {
+  P1: 'dates', P2: 'dates', P3: 'dates', P4: 'dates', P5: 'dates', P6: 'dates', P7: 'dates', P8: 'dates',
+  S1: 'dates', S2: 'dates', S3: 'dates', S4: 'environments', S5: 'people', S6: 'people',
+  H1: 'dates', H2: 'dates', H3: 'dates', H4: 'dates', H5: 'dates', H6: 'dates', H7: 'people',
+};
+const MOVE_TOPIC: Record<MoveKind, Exclude<Topic, 'all'>> = {
+  M1: 'environments', M2: 'environments', M3: 'dates', M4: 'dates', M5: 'dates', M6: 'dates', M7: 'dates', MA: 'dates', ML: 'people', MLX: 'people',
+};
+const suggestionIn = (s: Suggestion, topic: Topic) => topic === 'all' || s.moves.some((m) => MOVE_TOPIC[m.kind] === topic);
 
 export type Level = 'high' | 'medium' | 'low';
 
@@ -42,6 +59,8 @@ export type BetterPlansProps = {
   onFind: () => void;
   onPreview: (ops: PlanOp[]) => Promise<PlanImpact | null>;
   onApply: (ops: PlanOp[], version: string, title: string) => void;
+  /** Search for levelling moves only: the People filter's Level people. */
+  onLevelPeople: () => void;
   /** Open the review page: the to-be plan in full, before Apply (reqs/pm_features.md §8). */
   onReview: (s: Suggestion) => void;
   /** The card last reviewed, brought back into view when the review closes. */
@@ -76,6 +95,9 @@ export function AssistantDrawer({
   onRestore: (f: Finding) => void;
 }) {
   const open = openFindings(report);
+  const [topic, setTopic] = useState<Topic>('all');
+  const inTopic = (f: Finding) => topic === 'all' || RULE_TOPIC[f.rule] === topic;
+  const counts = (t: Topic) => open.filter((f) => t === 'all' || RULE_TOPIC[f.rule] === t).length;
   return (
     <aside className="drawer assistant" aria-label="Assistant">
       <div className="drawer-head">
@@ -98,8 +120,32 @@ export function AssistantDrawer({
         <p className="drawer-empty">Every warning has been set aside. They come back if what they concern changes.</p>
       )}
 
+      {report && (
+        <div className="assistant-filters" role="group" aria-label="Show warnings and plans about">
+          {(Object.keys(TOPIC_LABEL) as Topic[]).map((t) => (
+            <button key={t} type="button" className="chip" aria-pressed={topic === t} onClick={() => setTopic(t)}>
+              {TOPIC_LABEL[t]}{counts(t) > 0 && <span className="chip-count">{counts(t)}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+      {report && topic === 'people' && (
+        <div className="assistant-level">
+          {!report.findings.some((f) => RULE_TOPIC[f.rule] === 'people' && !f.dismissed) && (
+            <p className="drawer-empty">Nobody is on two tasks at once, and critical work has people on it.</p>
+          )}
+          <button type="button" className="btn" disabled={better.searching || busy} onClick={better.onLevelPeople}
+            title="Look for moves that take people off two tasks at once: within float first, then, in the aggressive plan, past it">
+            {better.searching ? 'Searching…' : 'Level people'}
+          </button>
+        </div>
+      )}
+      {report && topic !== 'all' && topic !== 'people' && !report.findings.some(inTopic) && (
+        <p className="drawer-empty">{topic === 'environments' ? 'No double-booking on this plan’s tight work.' : 'Nothing about dates to warn about.'}</p>
+      )}
+
       {report && GROUPS.map((g) => {
-        const items = report.findings.filter((f) => f.group === g.id);
+        const items = report.findings.filter((f) => f.group === g.id && inTopic(f));
         if (!items.length) return null;
         // Set-aside warnings sink below the live ones, as resolved clashes stay listed but quiet.
         const sorted = [...items.filter((f) => !f.dismissed), ...items.filter((f) => f.dismissed)];
@@ -112,7 +158,7 @@ export function AssistantDrawer({
           </section>
         );
       })}
-      {report && <BetterPlans {...better} busy={busy} onShowTasks={onShowTasks} />}
+      {report && <BetterPlans {...better} topic={topic} busy={busy} onShowTasks={onShowTasks} />}
       {report && (
         <AdvisorSection
           {...advisor}
@@ -234,8 +280,8 @@ export const PROFILE_WORD: Record<Suggestion['profile'], string> = {
  * with Undo. A single move can be taken on its own.
  */
 function BetterPlans({
-  report, searching, error, busy, onFind, onPreview, onApply, onReview, reviewedId, renderImpact, onShowTasks,
-}: BetterPlansProps & { busy: boolean; onShowTasks: (ids: number[]) => void }) {
+  report, searching, error, busy, onFind, onPreview, onApply, onReview, reviewedId, renderImpact, onShowTasks, topic,
+}: BetterPlansProps & { busy: boolean; topic: Topic; onShowTasks: (ids: number[]) => void }) {
   return (
     <section className="better" aria-label="Better plans">
       <h3 className="assistant-group-title">Better plans <span className="drawer-sub">Less risk of delay</span></h3>
@@ -257,10 +303,13 @@ function BetterPlans({
           </p>
         )}
       </div>
-      {report?.suggestions.map((s) => (
+      {report?.suggestions.filter((s) => suggestionIn(s, topic)).map((s) => (
         <SuggestionCard key={s.id} s={s} busy={busy} onPreview={onPreview} onApply={onApply} onReview={onReview} focused={reviewedId === s.id} renderImpact={renderImpact} onShowTasks={onShowTasks} />
       ))}
-      {report && report.tidy.length > 0 && (
+      {report && report.suggestions.length > 0 && !report.suggestions.some((s) => suggestionIn(s, topic)) && (
+        <p className="better-meta better-filtered">None of the plans found is about {TOPIC_LABEL[topic].toLowerCase()}. Choose All to see them.</p>
+      )}
+      {report && report.tidy.length > 0 && (topic === 'all' || topic === 'dates') && (
         <>
           <h4 className="better-sub">Tidy-ups <span className="drawer-sub">No date moves</span></h4>
           {report.tidy.map((s) => (

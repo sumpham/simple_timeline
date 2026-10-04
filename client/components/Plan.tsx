@@ -11,7 +11,7 @@ import { codesById, nextTaskCode, TASK_CODE_MAX, taskIdsByCode } from '../../sha
 import { ENV_COLOR } from './Board.tsx';
 import { DangerButton, Modal } from './Dialogs.tsx';
 import { NetworkDiagram } from './NetworkDiagram.tsx';
-import { Gantt, STRIP_HEAD, STRIP_LANE, type GanttCommand, type GanttPreview, type GanttShow, type RowBox, type StripData } from './Gantt.tsx';
+import { Gantt, STRIP_HEAD, STRIP_LANE, type GanttCommand, type GanttPreview, type GanttShow, type PeopleStripData, type RowBox, type StripData } from './Gantt.tsx';
 import { Portfolio } from './Portfolio.tsx';
 import { PeoplePanel, type PersonRow } from './People.tsx';
 import { planOverlaps, workItems, type PersonOverlap } from '../../shared/workload.ts';
@@ -170,11 +170,11 @@ export function PlanView({
     if (better && plan && better.version !== planVersion({ tasks: plan.tasks, deps: plan.dependencies }, plan.project)) setBetter(null);
   }, [plan]);
 
-  const findBetter = async () => {
+  const findBetter = async (focus?: 'people') => {
     setSearching(true);
     setBetterError(null);
     try {
-      setBetter(await api.suggestions(projectId));
+      setBetter(await api.suggestions(projectId, focus));
     } catch (err) {
       setBetterError(err instanceof Error ? err.message : 'The search did not finish');
     } finally { setSearching(false); }
@@ -845,6 +845,7 @@ export function PlanView({
             searching,
             error: betterError,
             onFind: () => void findBetter(),
+            onLevelPeople: () => void findBetter('people'),
             onPreview: previewOps,
             onApply: (ops, version, title) => void applyOps(ops, version, title),
             onReview: (s) => { setReviewedId(null); setReviewing(s); },
@@ -931,7 +932,7 @@ type ChartPrefs = {
 const PREFS_KEY = 'plan.chart';
 const DEFAULT_PREFS: ChartPrefs = {
   zoom: 'day',
-  show: { float: true, labels: true, baseline: true, bookings: false, strip: true },
+  show: { float: true, labels: true, baseline: true, bookings: false, strip: true, people: false },
   wbs: false,
   who: true,
   estimates: false,
@@ -960,7 +961,7 @@ function readCollapsed(projectId: number): Set<number> {
 }
 
 const SHOW_LABEL: Record<keyof GanttShow, string> = {
-  labels: 'Labels', float: 'Float', baseline: 'Baseline', bookings: 'Bookings', strip: 'Environments',
+  labels: 'Labels', float: 'Float', baseline: 'Baseline', bookings: 'Bookings', strip: 'Environments', people: 'People',
 };
 const SHOW_HINT: Record<keyof GanttShow, string> = {
   labels: 'Task names beside the bars',
@@ -968,6 +969,7 @@ const SHOW_HINT: Record<keyof GanttShow, string> = {
   baseline: 'The saved plan under each bar, and how far each finish has moved from it',
   bookings: 'The environment bookings behind the bars they come from',
   strip: 'How full each environment is, across the whole team',
+  people: 'How many tasks each person is on, day by day, counting their other plans; a tall block is two at once',
 };
 
 // ---------------------------------------------------------------- task table
@@ -1280,6 +1282,16 @@ function TaskTable({
     return envs.length ? { environments: envs, bookings: board.bookings, conflicts: board.conflicts } : null;
   }, [board, plan.tasks, plan.bookings, environments]);
 
+  /** Everyone on this plan, with their work here and in other plans, for the People strip. */
+  const peopleStrip = useMemo<PeopleStripData>(() => {
+    const ids = new Set(plan.tasks.flatMap((t) => t.resource_ids ?? []));
+    return {
+      people: [...ids].map((id) => people.get(id)).filter((r): r is Resource => !!r)
+        .sort((a, b) => a.name.localeCompare(b.name)).map((r) => ({ id: r.id, name: r.name })),
+      work: [...overlaps.here, ...plan.elsewhere],
+    };
+  }, [plan.tasks, plan.elsewhere, people, overlaps]);
+
   // ------------------------------------------------------------ geometry
 
   /** Where each row sits, so the chart beside the table draws at the table's heights. */
@@ -1341,7 +1353,7 @@ function TaskTable({
     const ro = new ResizeObserver(even);
     for (const el of [a, b, ...a.children, ...b.children]) ro.observe(el);
     return () => ro.disconnect();
-  }, [plan.tasks.length > 0, geometry.height, prefs.show.strip, tableWidth]);
+  }, [plan.tasks.length > 0, geometry.height, prefs.show.strip, prefs.show.people, tableWidth]);
 
   // ------------------------------------------------------------ divider
 
@@ -1941,6 +1953,15 @@ function TaskTable({
           ))}
         </div>
       )}
+      {prefs.show.people && peopleStrip.people.length > 0 && plan.tasks.length > 0 && (
+        <div className="strip-labels people-labels" style={{ ['--strip-head' as string]: `${STRIP_HEAD}px`, ['--strip-lane' as string]: `${STRIP_LANE}px` } as CSSProperties}>
+          <div className="strip-labels-head">People, all their work</div>
+          {peopleStrip.people.map((p) => {
+            const n = overlaps.byPerson.get(p.id)?.reduce((s, o) => s + o.days, 0) ?? 0;
+            return <div key={p.id} className="strip-labels-row">{p.name}{n > 0 && <span className="people-over">{n}d on two at once</span>}</div>;
+          })}
+        </div>
+      )}
       </div>
       {plan.tasks.length > 0 && (
         <div
@@ -1979,6 +2000,7 @@ function TaskTable({
           progress={progress}
           people={people}
           strip={strip}
+          peopleStrip={peopleStrip}
           command={command}
           preview={preview}
           onOpen={onOpen}
