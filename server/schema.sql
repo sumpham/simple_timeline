@@ -34,8 +34,12 @@ CREATE TABLE IF NOT EXISTS project (
   -- Where the task schedule starts, and the date the project has promised.
   start_date    TEXT,
   target_date   TEXT,
-  -- When the task baseline (task_baseline) was last saved; NULL when there is none.
-  baseline_at   TEXT
+  -- When the single baseline was saved, before baselines had names. Read only to
+  -- migrate; the saved baselines are in `baseline` now.
+  baseline_at   TEXT,
+  -- The baseline the plan is compared with (ghost bars, variance, the assistant);
+  -- NULL when it has none. Moves to the newest one when it is deleted.
+  compare_baseline_id INTEGER REFERENCES baseline(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS booking (
@@ -150,13 +154,29 @@ CREATE TABLE IF NOT EXISTS task_dependency (
 
 CREATE INDEX IF NOT EXISTS idx_dep_successor ON task_dependency(successor_id);
 
--- A project's saved baseline: each task's dates when someone last said "this is
--- the plan". A snapshot for comparison only; scheduling never reads it.
-CREATE TABLE IF NOT EXISTS task_baseline (
-  task_id    INTEGER PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
+-- A project's saved baselines (reqs/pm_features.md §4): up to ten named
+-- snapshots of the plan as it stood. For comparison only; scheduling and replan
+-- never read them. `finish` is the plan's finish when saved, for the slip chart.
+CREATE TABLE IF NOT EXISTS baseline (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
-  start_date TEXT    NOT NULL,
-  end_date   TEXT    NOT NULL
+  name       TEXT    NOT NULL,
+  saved_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+  finish     TEXT,
+  UNIQUE (project_id, name)
+);
+
+-- Each task's dates (and length and cost, for earned value) in one baseline.
+-- Databases from before named baselines are rebuilt into this shape in db.ts.
+CREATE TABLE IF NOT EXISTS task_baseline (
+  baseline_id INTEGER NOT NULL REFERENCES baseline(id) ON DELETE CASCADE,
+  task_id     INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  project_id  INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  start_date  TEXT    NOT NULL,
+  end_date    TEXT    NOT NULL,
+  duration    INTEGER,
+  cost        REAL,
+  PRIMARY KEY (baseline_id, task_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_baseline_project ON task_baseline(project_id);

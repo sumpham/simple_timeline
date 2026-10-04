@@ -1,9 +1,38 @@
 import { all } from './db.ts';
 import { calendarDays, workingDays } from '../shared/dates.ts';
 import { releaseFrom, taskSpan } from '../shared/taskHolds.ts';
-import type { BookingView, ElsewhereTask, Environment, Holiday, ISODate, Project, Resource, Task, Team } from '../shared/types.ts';
+import type { Baseline, BaselineTask, BookingView, ElsewhereTask, Environment, Holiday, ISODate, Project, Resource, Task, Team } from '../shared/types.ts';
 
 type RawBooking = Omit<BookingView, 'calendar_days' | 'working_days' | 'is_milestone' | 'auto' | 'tasks' | 'release_from'>;
+
+/** A project's baselines, oldest first, with how many tasks each holds. */
+export function listBaselines(projectId: number): Baseline[] {
+  return all<Baseline>(
+    `SELECT b.id, b.project_id, b.name, b.saved_at, b.finish,
+            (SELECT COUNT(*) FROM task_baseline tb WHERE tb.baseline_id = b.id) AS tasks
+     FROM baseline b WHERE b.project_id = ? ORDER BY b.saved_at, b.id`,
+    projectId,
+  );
+}
+
+/** The tasks of one baseline. */
+export function baselineTasks(baselineId: number): BaselineTask[] {
+  return all<BaselineTask>(
+    'SELECT task_id, start_date, end_date, duration FROM task_baseline WHERE baseline_id = ?', baselineId,
+  );
+}
+
+/**
+ * The baseline a project compares with, by task id: the one thing ghost bars,
+ * variance and the assistant read. Empty when it has none.
+ */
+export function compareBaseline(projectId: number): Map<number, { start: ISODate; end: ISODate; duration: number | null }> {
+  return new Map(all<BaselineTask>(
+    `SELECT tb.task_id, tb.start_date, tb.end_date, tb.duration FROM task_baseline tb
+     JOIN project p ON p.compare_baseline_id = tb.baseline_id WHERE p.id = ?`,
+    projectId,
+  ).map((b) => [b.task_id, { start: b.start_date, end: b.end_date, duration: b.duration }]));
+}
 
 export function holidaySet(): Set<ISODate> {
   return new Set(all<Holiday>('SELECT date, name FROM holiday').map((h) => h.date));

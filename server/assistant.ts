@@ -5,7 +5,7 @@
  * applied through the ordinary task routes, so it goes through replan.
  */
 import { all, run, transaction } from './db.ts';
-import { holidaySet, listBookings, listEnvironments, listTasks, resolvedKeys, workElsewhere } from './queries.ts';
+import { compareBaseline, holidaySet, listBookings, listEnvironments, listTasks, resolvedKeys, workElsewhere } from './queries.ts';
 import { applyChange, loadState, outcomeOf, PlanError, projectStart, replan, writeState, type Change, type PlanState, type TaskFields } from './plan.ts';
 import { conflictChanges, planImpact } from '../shared/plan.ts';
 import { CREATED_ID, predecessorsOf, type OpFields, type PlanOp } from '../shared/assistant/moves.ts';
@@ -44,9 +44,8 @@ function projectAssessment(projectId: number, statusDate: ISODate) {
   const settings = assistantSettings();
   const holidays = holidaySet();
 
-  const baseline = new Map(all<{ task_id: number; start_date: ISODate; end_date: ISODate }>(
-    'SELECT task_id, start_date, end_date FROM task_baseline WHERE project_id = ?', projectId,
-  ).map((b) => [b.task_id, { start: b.start_date, end: b.end_date }]));
+  // The baseline the plan compares with, as the chart and the variance columns read it.
+  const baseline = compareBaseline(projectId);
   const people = new Map(listTasks(projectId).map((t) => [t.id, t.resource_ids ?? []]));
   const names = new Map(all<{ id: number; name: string }>('SELECT id, name FROM resource').map((r) => [r.id, r.name]));
   // Over the team's whole booking set, as the board counts them: another project's
@@ -145,9 +144,8 @@ export function searchContext(projectId: number, statusDate: ISODate = today()) 
   const settings = assistantSettings();
   const holidays = holidaySet();
   const environments = listEnvironments(teamId);
-  const baseline = new Map(all<{ task_id: number; start_date: ISODate; end_date: ISODate }>(
-    'SELECT task_id, start_date, end_date FROM task_baseline WHERE project_id = ?', projectId,
-  ).map((b) => [b.task_id, { start: b.start_date, end: b.end_date }]));
+  // The baseline the plan compares with, as the chart and the variance columns read it.
+  const baseline = compareBaseline(projectId);
   const ctx: SearchContext = {
     project: { id: projectId, name: state.project.name, priority: state.project.priority, target_date: state.project.target_date ?? null },
     projectStart: projectStart(state),

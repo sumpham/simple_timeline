@@ -1,7 +1,7 @@
 import type {
   Booking, Conflict, Environment, Holiday, ISODate, PlanImpact, Project, Resource, Task, TaskDependency, TaskHold, TaskSchedule, Team,
 } from '../shared/types.ts';
-import type { BookingView, ElsewhereTask, LinkType } from '../shared/types.ts';
+import type { Baseline, BaselineTask, BookingView, ElsewhereTask, LinkType } from '../shared/types.ts';
 import type { OutlinePlacement } from '../shared/wbs.ts';
 import type { ImportRow } from './planIO.ts';
 import type { AssistantReport } from '../shared/assistant/rules.ts';
@@ -34,8 +34,10 @@ export type PlanData = {
   holds: TaskHold[];
   /** This project's bookings, with the tasks each one covers. */
   bookings: BookingView[];
-  /** Each task's dates when the baseline was saved; empty without one. */
-  baseline: { task_id: number; start_date: ISODate; end_date: ISODate }[];
+  /** Each task's dates (and length) in the baseline the plan compares with; empty without one. */
+  baseline: { task_id: number; start_date: ISODate; end_date: ISODate; duration: number | null }[];
+  /** Every saved baseline, oldest first (reqs/pm_features.md §4). */
+  baselines: Baseline[];
   /** Every person, for names and the Who suggestions; tasks name them by `resource_ids`. */
   resources: Resource[];
   /** This plan's people's open work in other plans, for the overlap warning. */
@@ -151,8 +153,14 @@ export const api = {
   resetLayout: (projectId: number) => request<void>(`/api/projects/${projectId}/layout/reset`, { method: 'POST' }),
   outlineTasks: (projectId: number, placements: OutlinePlacement[]) =>
     request<{ plan: PlanData }>('/api/tasks/outline', { method: 'POST', body: JSON.stringify({ project_id: projectId, placements }) }),
-  saveBaseline: (projectId: number) => request<{ plan: PlanData }>(`/api/projects/${projectId}/baseline`, { method: 'POST' }),
-  clearBaseline: (projectId: number) => request<{ plan: PlanData }>(`/api/projects/${projectId}/baseline`, { method: 'DELETE' }),
+  saveBaseline: (projectId: number, name: string) =>
+    request<{ plan: PlanData }>(`/api/projects/${projectId}/baselines`, { method: 'POST', body: JSON.stringify({ name }) }),
+  updateBaseline: (id: number, patch: { name?: string; compare?: true }) =>
+    request<{ plan: PlanData }>(`/api/baselines/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteBaseline: (id: number) => request<{ plan: PlanData }>(`/api/baselines/${id}`, { method: 'DELETE' }),
+  /** Every baseline with its tasks, for an MS Project file. */
+  baselinesWithTasks: (projectId: number) =>
+    request<(Baseline & { rows: BaselineTask[] })[]>(`/api/projects/${projectId}/baselines?tasks=1`),
   importTasks: (projectId: number, rows: ImportRow[]) =>
     request<{ plan: PlanData; created: number; warnings: string[] }>(`/api/projects/${projectId}/import`, {
       method: 'POST', body: JSON.stringify({ rows }),

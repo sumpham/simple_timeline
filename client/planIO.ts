@@ -34,7 +34,17 @@ export type ImportRow = {
   /** Best and worst case in working days, for the forecast (shared/estimates.ts). */
   duration_low?: number | null;
   duration_high?: number | null;
+  /** MS Project's saved baselines for this task, by number (0 is "Baseline", n is "Baseline n"). */
+  baselines?: { number: number; start: string; finish: string; duration: number | null }[];
 };
+
+/** A plan's baselines for a file, oldest first: each written as MS Project's Baseline 0, 1, 2… */
+export type FileBaseline = { name: string; rows: ReadonlyMap<number, { start: string; end: string; duration: number | null }> };
+
+/** The name a baseline number reads as, the way MS Project lists them. */
+export function baselineNameOf(number: number): string {
+  return number === 0 ? 'Baseline' : `Baseline ${number}`;
+}
 
 export type ImportResult = { ok: true; rows: ImportRow[]; warnings: string[] } | { ok: false; error: string };
 
@@ -232,7 +242,7 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 const unesc = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 
 /** MSPDI, the XML MS Project opens and saves: tasks, outline, links, progress, and who does what. */
-export function toMspdi(plan: Plan & { projectName: string; projectStart: string | null }): string {
+export function toMspdi(plan: Plan & { projectName: string; projectStart: string | null; baselines?: readonly FileBaseline[] }): string {
   const rowOf = new Map(plan.tasks.map((t, i) => [t.id, i + 1]));
   const byId = new Map(plan.outline.map((r) => [r.id, r]));
   const tag = (name: string, v: string | number) => `<${name}>${typeof v === 'string' ? esc(v) : v}</${name}>`;
@@ -270,7 +280,16 @@ export function toMspdi(plan: Plan & { projectName: string; projectStart: string
       ...(t.note ? [tag('Notes', t.note)] : []),
       ...(!summary ? ([[FIELD_BEST, t.duration_low], [FIELD_WORST, t.duration_high]] as const).flatMap(([field, v]) => (v == null ? [] : [
         '<ExtendedAttribute>', tag('FieldID', field), tag('Value', hoursOf(v)), tag('DurationFormat', 7), '</ExtendedAttribute>',
-      ])) : []));
+      ])) : []),
+      // Up to eleven baselines, numbered as MS Project numbers them; names do not survive the trip.
+      ...(plan.baselines ?? []).slice(0, 11).flatMap((b, n) => {
+        const r = b.rows.get(t.id);
+        return r ? [
+          '<Baseline>', tag('Number', n), tag('Start', `${r.start}T08:00:00`), tag('Finish', `${r.end}T17:00:00`),
+          ...(r.duration != null && !summary ? [tag('Duration', hoursOf(r.duration)), tag('DurationFormat', 7)] : []),
+          '</Baseline>',
+        ] : [];
+      }));
     for (const d of plan.deps.filter((x) => x.successor_id === t.id && rowOf.has(x.predecessor_id))) {
       out.push('<PredecessorLink>',
         tag('PredecessorUID', rowOf.get(d.predecessor_id)!), tag('Type', MSP_TYPE[d.type ?? 'FS'] ?? 1),
@@ -310,14 +329,18 @@ const first = (xml: string, name: string) => {
 export function fromMspdi(xml: string): ImportResult {
   const tasksBlock = /<Tasks>([\s\S]*)<\/Tasks>/.exec(xml)?.[1];
   if (!tasksBlock) return { ok: false, error: 'That is not an MS Project XML file: it has no tasks.' };
-  const blocks = [...tasksBlock.matchAll(/<Task>([\s\S]*?)<\/Task>/g)].map((m) => m[1]);
+  const tasksAll = [...tasksBlock.matchAll(/<Task>([\s\S]*?)<\/Task>/g)].map((m) => m[1]);
+  // A task's baselines carry their own Start, Finish and Duration; read them apart so they never pass for the task's.
+  const savedOf = tasksAll.map((b) => [...b.matchAll(/<Baseline>([\s\S]*?)<\/Baseline>/g)].map((m) => m[1]));
+  const blocks = tasksAll.map((b) => b.replace(/<Baseline>[\s\S]*?<\/Baseline>/g, ''));
   const warnings: string[] = [];
   type Raw = {
     uid: string; name: string; level: number; hours: number; progress: number | null; links: { uid: string; type: number; lag: number }[];
     note: string | null; nb: string | null; deadline: string | null; best: number | null; worst: number | null;
+    baselines: NonNullable<ImportRow['baselines']>;
   };
   const raws: Raw[] = [];
-  for (const b of blocks) {
+  for (const [bi, b] of blocks.entries()) {
     const uid = first(b, 'UID') ?? '';
     const level = Number(first(b, 'OutlineLevel') ?? '1');
     // UID 0 / level 0 is the project's own summary row, not a task.
@@ -348,6 +371,13 @@ export function fromMspdi(xml: string): ImportResult {
       deadline: /^\d{4}-\d{2}-\d{2}/.test(first(b, 'Deadline') ?? '') ? first(b, 'Deadline')!.slice(0, 10) : null,
       best: daysOf(attrs.get(FIELD_BEST)),
       worst: daysOf(attrs.get(FIELD_WORST)),
+      baselines: savedOf[bi].flatMap((s) => {
+        const number = Number(first(s, 'Number') ?? '0');
+        const start = (first(s, 'Start') ?? '').slice(0, 10);
+        const finish = (first(s, 'Finish') ?? '').slice(0, 10);
+        if (!Number.isInteger(number) || number < 0 || number > 10 || !/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(finish)) return [];
+        return [{ number, start, finish, duration: daysOf(first(s, 'Duration') ?? undefined) }];
+      }),
     });
   }
   if (!raws.length) return { ok: false, error: 'That MS Project file has no tasks.' };
@@ -386,6 +416,7 @@ export function fromMspdi(xml: string): ImportResult {
       progress: r.progress ? r.progress : null, status: r.progress === 100 ? 'done' as const : 'todo' as const,
       note: r.note, not_before: r.nb, deadline: r.deadline,
       resources: whoOfTask.get(r.uid)?.join(', ') ?? null,
+      ...(r.baselines.length ? { baselines: r.baselines } : {}),
       ...estimateFor(r, Math.max(0, Math.round(r.hours / 8)), warnings),
     };
   });

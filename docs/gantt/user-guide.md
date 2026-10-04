@@ -33,7 +33,7 @@ The line under the table says how many rows the filter or a closed summary is hi
 | Red outline, red arrow | Critical path: any slip moves the finish |
 | Dark band at the bar's foot | Progress so far |
 | Thin line after a bar, ending in a tick | Float: how late it can finish without moving the project |
-| Grey rule under a bar | Baseline dates; `+3d` after the label means it now finishes 3 working days later |
+| Grey rule under a bar | Dates in the baseline you compare with; `+3d` after the label means it now finishes 3 working days later |
 | Coloured wash behind a row | The environment booking this task belongs to (Show → Bookings); dashed when tasks made it |
 | Pale block with a dashed edge at the end of a booking | Tasks are done but the booking runs on: click to release it |
 | Small black chevron over a row | The task's deadline (its own, or a summary's above it) |
@@ -147,6 +147,25 @@ Drag a row number up or down: a line shows where it will land, and it goes above
 that row's level, taking any tasks under it along. Dropping on a summary's first task puts it
 under that summary. Escape cancels. Alt+↑/↓ does the same from the keyboard.
 
+## Baselines
+
+A baseline is the plan as it stood when you saved it, under a name: "Approved plan",
+"After CR-12". A plan keeps up to 10. **Save baseline…** in the toolbar, or **Compare with** in
+the plan's facts, opens the baselines:
+
+- **How the finish has moved**: each baseline's promised finish, oldest on the left, and the
+  plan's finish now as an open dot. A line that keeps climbing is a plan that keeps slipping.
+- **Compare with**: pick the baseline the plan is measured against. The grey rules under the
+  bars, `+3d` on the labels, the variance columns and the assistant's baseline warnings all
+  follow it. Double-click a name (or **Rename**) to rename it; **Delete** asks once more. Delete
+  the one you compare with and the newest one left takes its place.
+- **Save current plan as**: a name (today's date is filled in) and **Save**. Saving never
+  changes which one you compare with, except the very first.
+
+Show → **Variance columns** adds Start var, Finish var and Days var: working days later (`+`,
+in bold) or sooner (`−`) than the baseline you compare with. A dash means the task was added
+after that baseline was saved. Baselines never move a date.
+
 ## Deadlines
 
 A deadline is the date a task must finish by. Set it in the task editor (**Use current finish**
@@ -169,7 +188,10 @@ weighs its tasks by length. Progress never moves dates.
 
 **Export CSV** writes the table's own columns, including IDs and After, so it
 re-imports as it was. **Export MS Project XML** opens in MS Project with the outline, lengths,
-link types and lags, progress, "start no earlier than" and deadlines.
+link types and lags, progress, "start no earlier than", deadlines and every saved baseline
+(the oldest as MS Project's Baseline, then Baseline 1, 2…; MS Project has no names for them).
+Importing such a file adds its baselines' dates to the plan's baselines of those names, or makes
+them while there is room.
 
 **Import** reads either format and adds the tasks after the plan's last row, all at once. CSV
 headers are matched loosely (`Task` or `Name`, `Days` or `Duration`, `After` or `Predecessors`,

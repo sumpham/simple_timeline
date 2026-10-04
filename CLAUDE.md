@@ -162,8 +162,12 @@ the forecast's zero-width test still pins the CPM finish. A summary's deadline h
 under it (`inheritedDeadlines`, like `inheritedFloors`). Negative float a deadline caused is P8's
 to report, not P2's (`deadline_driven` in `planFacts`). Draw a deadline in ink, never red.
 
-**Baselines are snapshots.** `task_baseline` is written only by the baseline routes and never
-read by scheduling or replan. Progress (`task.progress`) never moves a date either.
+**Baselines are snapshots.** `baseline` and `task_baseline` are written only by the baseline
+routes, the import and the seed, and never read by scheduling or replan. Progress
+(`task.progress`) never moves a date either. A project keeps up to `BASELINES_MAX` named
+baselines; only the one `project.compare_baseline_id` names is read by anything (ghost bars,
+variance, the assistant: `compareBaseline` in server/queries.ts). Variance is `shared/variance.ts`
+only (`workingShift`, `varianceOf`), in working days.
 
 `task.environment_id` is `ON DELETE RESTRICT`, like bookings, and the environment delete route
 refuses while tasks use it, saying how many. The network layout (`client/network.ts`) is bounded like the ruler: a

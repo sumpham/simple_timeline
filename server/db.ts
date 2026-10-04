@@ -80,6 +80,48 @@ const projectColumns = new Set(
 if (!projectColumns.has('start_date')) db.exec('ALTER TABLE project ADD COLUMN start_date TEXT');
 if (!projectColumns.has('target_date')) db.exec('ALTER TABLE project ADD COLUMN target_date TEXT');
 if (!projectColumns.has('baseline_at')) db.exec('ALTER TABLE project ADD COLUMN baseline_at TEXT');
+if (!projectColumns.has('compare_baseline_id')) {
+  db.exec('ALTER TABLE project ADD COLUMN compare_baseline_id INTEGER REFERENCES baseline(id) ON DELETE SET NULL');
+}
+
+// One unnamed baseline per project became named baselines (reqs/pm_features.md §4).
+// task_baseline's key changes, so the table is rebuilt: each project's rows become a
+// baseline called "Baseline", saved when baseline_at says, and the one it compares with.
+const taskBaselineColumns = new Set(
+  db.prepare('PRAGMA table_info(task_baseline)').all().map((c) => (c as { name: string }).name),
+);
+if (!taskBaselineColumns.has('baseline_id')) {
+  db.exec('BEGIN');
+  try {
+    db.exec(`CREATE TABLE task_baseline_named (
+      baseline_id INTEGER NOT NULL REFERENCES baseline(id) ON DELETE CASCADE,
+      task_id     INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+      project_id  INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+      start_date  TEXT    NOT NULL,
+      end_date    TEXT    NOT NULL,
+      duration    INTEGER,
+      cost        REAL,
+      PRIMARY KEY (baseline_id, task_id)
+    )`);
+    const saved = db.prepare(`SELECT tb.project_id AS project_id, MAX(tb.end_date) AS finish, p.baseline_at AS at
+      FROM task_baseline tb JOIN project p ON p.id = tb.project_id GROUP BY tb.project_id`).all() as { project_id: number; finish: string; at: string | null }[];
+    for (const s of saved) {
+      const id = Number(db.prepare(`INSERT INTO baseline (project_id, name, saved_at, finish) VALUES (?, 'Baseline', COALESCE(?, datetime('now')), ?)`)
+        .run(s.project_id, s.at, s.finish).lastInsertRowid);
+      db.prepare(`INSERT INTO task_baseline_named (baseline_id, task_id, project_id, start_date, end_date, duration)
+        SELECT ?, tb.task_id, tb.project_id, tb.start_date, tb.end_date, t.duration
+        FROM task_baseline tb JOIN task t ON t.id = tb.task_id WHERE tb.project_id = ?`).run(id, s.project_id);
+      db.prepare('UPDATE project SET compare_baseline_id = ? WHERE id = ?').run(id, s.project_id);
+    }
+    db.exec('DROP TABLE task_baseline');
+    db.exec('ALTER TABLE task_baseline_named RENAME TO task_baseline');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_baseline_project ON task_baseline(project_id)');
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
 
 // One-day bookings are CUSTOM events (see shared/bookings.ts); bring older
 // rows into line. Idempotent, so it is safe on every start.

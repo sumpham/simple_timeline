@@ -24,6 +24,8 @@ const TEAMS = [
       {
         name: 'Card tokenisation R2', priority: 'critical', owner: 'Mai', status: 'in_progress',
         start: -8, target: 20,
+        // Two saved plans that each promised an earlier finish: the slip chart climbs.
+        baselines: [{ name: 'Approved plan', earlier: 6, saved: -30 }, { name: 'After CR-12', earlier: 3, saved: -14 }],
         // A plan whose UAT work outgrows the UAT booking made by hand, so the booking stretches.
         tasks: [
           { key: 'hsm', name: 'Deploy HSM stub', dur: 2, status: 'done', actual: [-8, -7] },
@@ -157,10 +159,10 @@ const HOLIDAYS = [
 ];
 
 transaction(() => {
-  for (const table of ['audit_log', 'task_resource', 'resource', 'task_dependency', 'task', 'booking', 'project', 'environment', 'holiday', 'team']) {
+  for (const table of ['audit_log', 'task_baseline', 'baseline', 'task_resource', 'resource', 'task_dependency', 'task', 'booking', 'project', 'environment', 'holiday', 'team']) {
     run(`DELETE FROM ${table}`);
   }
-  db.exec("DELETE FROM sqlite_sequence WHERE name IN ('team','environment','project','booking','task','resource')");
+  db.exec("DELETE FROM sqlite_sequence WHERE name IN ('team','environment','project','booking','task','resource','baseline')");
 
   for (const h of HOLIDAYS) run('INSERT OR REPLACE INTO holiday (date, name) VALUES (?, ?)', h.date, h.name);
 
@@ -228,6 +230,21 @@ transaction(() => {
         }
       }
       replan(projectId);
+
+      // Saved baselines: the plan as it now stands, shifted earlier, saved in the past.
+      for (const b of ('baselines' in project ? project.baselines : []) as readonly { name: string; earlier: number; saved: number }[]) {
+        const tasks = db.prepare('SELECT id, start_date, end_date, duration FROM task WHERE project_id = ? AND start_date IS NOT NULL').all(projectId) as
+          { id: number; start_date: ISODate; end_date: ISODate; duration: number }[];
+        const back = (x: ISODate) => addWorkingDays(x, -b.earlier);
+        const finish = tasks.reduce((m, t) => (t.end_date > m ? t.end_date : m), tasks[0].end_date);
+        const id = Number(run('INSERT INTO baseline (project_id, name, saved_at, finish) VALUES (?, ?, ?, ?)',
+          projectId, b.name, `${d(b.saved)} 09:00:00`, back(finish)).lastInsertRowid);
+        for (const t of tasks) {
+          run('INSERT INTO task_baseline (baseline_id, task_id, project_id, start_date, end_date, duration) VALUES (?, ?, ?, ?, ?, ?)',
+            id, t.id, projectId, back(t.start_date), back(t.end_date), t.duration);
+        }
+        run('UPDATE project SET compare_baseline_id = COALESCE(compare_baseline_id, ?) WHERE id = ?', id, projectId);
+      }
     }
   }
 });

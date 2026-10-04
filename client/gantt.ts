@@ -1,3 +1,4 @@
+import { workingShift } from '../shared/variance.ts';
 import { leavesOf, summaryIds } from '../shared/wbs.ts';
 import type { ISODate, Task, TaskDependency } from '../shared/types.ts';
 import type { TaskInput } from './api.ts';
@@ -211,12 +212,9 @@ export function startEdgeFields(
   return { ...fields, duration: Math.max(1, workingDays(date, end, holidays)) };
 }
 
-/** Working days a finish sits past (positive) or before (negative) its baseline. */
+/** Working days a finish sits past (positive) or before (negative) its baseline: shared/variance.ts's rule. */
 export function finishVariance(baselineEnd: ISODate, end: ISODate, holidays?: HolidaySet): number {
-  if (end === baselineEnd) return 0;
-  return end > baselineEnd
-    ? workingDays(addDays(baselineEnd, 1), end, holidays)
-    : -workingDays(addDays(end, 1), baselineEnd, holidays);
+  return workingShift(baselineEnd, end, holidays);
 }
 
 // ---------------------------------------------------------------- progress

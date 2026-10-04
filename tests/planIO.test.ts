@@ -153,3 +153,27 @@ describe('deadlines in files', () => {
     expect(back.rows.map((r) => r.deadline)).toEqual(['2026-03-13', null, '2026-03-06', null]);
   });
 });
+
+describe('baselines in MS Project XML', () => {
+  const approved = { name: 'Approved plan', rows: new Map([[11, { start: '2026-02-23', end: '2026-02-25', duration: 3 }], [13, { start: '2026-02-27', end: '2026-02-27', duration: 0 }]]) };
+  const later = { name: 'After CR-12', rows: new Map([[11, { start: '2026-03-02', end: '2026-03-04', duration: 3 }]]) };
+
+  it('writes each as MS Project numbers them, and reads them back by number', () => {
+    const xml = toMspdi({ ...plan, projectName: 'P', projectStart: '2026-03-02', baselines: [approved, later] });
+    expect(xml).toContain('<Baseline>\n<Number>0</Number>\n<Start>2026-02-23T08:00:00</Start>\n<Finish>2026-02-25T17:00:00</Finish>\n<Duration>PT24H0M0S</Duration>');
+    const back = fromMspdi(xml);
+    if (!back.ok) throw new Error(back.error);
+    expect(back.rows.map((r) => r.baselines ?? [])).toEqual([
+      [],
+      [{ number: 0, start: '2026-02-23', finish: '2026-02-25', duration: 3 }, { number: 1, start: '2026-03-02', finish: '2026-03-04', duration: 3 }],
+      [],
+      [{ number: 0, start: '2026-02-27', finish: '2026-02-27', duration: 0 }],
+    ]);
+  });
+
+  it('never takes a baseline’s dates or length for the task’s own', () => {
+    const back = fromMspdi(toMspdi({ ...plan, projectName: 'P', projectStart: '2026-03-02', baselines: [{ name: 'B', rows: new Map([[11, { start: '2026-01-05', end: '2026-01-30', duration: 20 }]]) }] }));
+    if (!back.ok) throw new Error(back.error);
+    expect(back.rows[1].duration).toBe(3);
+  });
+});

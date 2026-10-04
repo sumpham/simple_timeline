@@ -1,4 +1,4 @@
-import { addDays, workingDays, type HolidaySet } from '../dates.ts';
+import { workingShift } from '../variance.ts';
 import { bookingsFor, conflictsFor, planImpact } from '../plan.ts';
 import { openConflicts } from '../conflicts.ts';
 import { inOutlineOrder } from '../wbs.ts';
@@ -110,11 +110,7 @@ export type PlanReview = {
   impact: PlanImpact;
 };
 
-/** Signed working days from `a` to `b`: positive when `b` is later. */
-export function workingShift(a: ISODate, b: ISODate, holidays?: HolidaySet): number {
-  if (a === b) return 0;
-  return a < b ? workingDays(addDays(a, 1), b, holidays) : -workingDays(addDays(b, 1), a, holidays);
-}
+export { workingShift };
 
 /**
  * The plan before and after `ops`, the difference, and the verdict. Refused,

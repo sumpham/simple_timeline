@@ -51,8 +51,10 @@ export type Project = {
   start_date?: ISODate | null;
   /** The date the project has promised; a schedule that finishes later is late. */
   target_date?: ISODate | null;
-  /** When the plan's baseline was saved, if it has one. */
+  /** When the single baseline was saved, before baselines had names; read only to migrate. */
   baseline_at?: string | null;
+  /** The saved baseline the plan is compared with; null when it has none. */
+  compare_baseline_id?: number | null;
   /** Total bookings, not just those inside the current window. */
   booking_count?: number;
   task_count?: number;
@@ -135,6 +137,26 @@ export type Conflict = {
    */
   resolved?: boolean;
 };
+
+/** A saved, named snapshot of a project's plan (reqs/pm_features.md §4). */
+export type Baseline = {
+  id: number;
+  project_id: number;
+  name: string;
+  /** SQLite's datetime('now'): `YYYY-MM-DD HH:MM:SS`, UTC. */
+  saved_at: string;
+  /** The plan's finish when it was saved, for the slip chart; null for an empty plan. */
+  finish: ISODate | null;
+  /** How many tasks it holds. */
+  tasks: number;
+};
+
+/** One task in a baseline. `duration` is null in baselines saved before it was kept. */
+export type BaselineTask = { task_id: number; start_date: ISODate; end_date: ISODate; duration: number | null };
+
+/** At most this many baselines per project, as MS Project keeps eleven (0–10). */
+export const BASELINES_MAX = 10;
+export const BASELINE_NAME_MAX = 80;
 
 // ---------------------------------------------------------------- tasks
 

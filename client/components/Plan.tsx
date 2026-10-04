@@ -19,7 +19,8 @@ import { AssistantDrawer, openFindings } from './Assistant.tsx';
 import type { AssistantReport, Finding } from '../../shared/assistant/rules.ts';
 import { planVersion, type Suggestion, type SuggestionReport } from '../../shared/assistant/optimise.ts';
 import { ReviewPage } from './Review.tsx';
-import { workingShift } from '../../shared/assistant/review.ts';
+import { BaselinePicker } from './Baselines.tsx';
+import { formatShift, varianceOf, workingShift } from '../../shared/variance.ts';
 import type { PlanOp } from '../../shared/assistant/moves.ts';
 import type { AdvisorReply } from '../../shared/assistant/validate.ts';
 import { edgeKey, type Route } from '../network.ts';
@@ -33,7 +34,7 @@ import { isManaged, type ReconcileBooking } from '../../shared/taskHolds.ts';
 import {
   finishFields, progressOf, rolledBaseline, rolledProgress, startEdgeFields, startFields, visibleRows, zoomToFit, ZOOM_LABEL, ZOOMS, type Zoom,
 } from '../gantt.ts';
-import { fromCsv, fromMspdi, toCsv, toMspdi } from '../planIO.ts';
+import { fromCsv, fromMspdi, toCsv, toMspdi, type FileBaseline } from '../planIO.ts';
 import { estimateError, rangeOf } from '../../shared/estimates.ts';
 import { clampWidth, columnsFor, fitWidth, parseManualWidths, RESIZABLE, resolveWidths, totalWidth, type ColumnKey } from '../tableColumns.ts';
 
@@ -60,7 +61,7 @@ type Tab = 'tasks' | 'network' | 'portfolio';
 
 /** Tasks in outline order, so row numbers, the table and the chart all agree. */
 function normalize(p: PlanData): PlanData {
-  return { ...p, tasks: inOutlineOrder(p.tasks), baseline: p.baseline ?? [], elsewhere: p.elsewhere ?? [] };
+  return { ...p, tasks: inOutlineOrder(p.tasks), baseline: p.baseline ?? [], baselines: p.baselines ?? [], elsewhere: p.elsewhere ?? [] };
 }
 
 export function PlanView({
@@ -110,6 +111,8 @@ export function PlanView({
   const [reviewing, setReviewing] = useState<Suggestion | null>(null);
   /** The card the last review came from, so Back lands on it. */
   const [reviewedId, setReviewedId] = useState<string | null>(null);
+  /** The baselines popover in the facts row; `focusSave` when opened from "Save baseline…". */
+  const [baselinesOpen, setBaselinesOpen] = useState<{ open: boolean; focusSave: boolean }>({ open: false, focusSave: false });
   const [advice, setAdvice] = useState<AdvisorReply | null>(null);
   const [asking, setAsking] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
@@ -448,12 +451,22 @@ export function PlanView({
 
   // ---------------------------------------------------------------- baseline, files
 
-  const saveBaseline = async () => {
-    try { accept((await api.saveBaseline(projectId)).plan); setNotice('Baseline saved: every task’s dates as they stand now.'); } catch (err) { fail(err); }
+  /** Baselines are snapshots: none of these replans, so none can move a date. */
+  const baselineCall = async (call: () => Promise<{ plan: PlanData }>, done?: string): Promise<boolean> => {
+    setSaving(true);
+    try {
+      accept((await call()).plan);
+      if (done) setNotice(done);
+      return true;
+    } catch (err) { fail(err); return false; } finally { setSaving(false); }
   };
-  const clearBaseline = async () => {
-    try { accept((await api.clearBaseline(projectId)).plan); } catch (err) { fail(err); }
+  const baselineActions = {
+    onSave: (name: string) => baselineCall(() => api.saveBaseline(projectId, name), `Saved baseline “${name}”: every task’s dates and length as they stand now.`),
+    onCompare: (id: number) => baselineCall(() => api.updateBaseline(id, { compare: true })),
+    onRename: (id: number, name: string) => baselineCall(() => api.updateBaseline(id, { name })),
+    onDelete: (id: number) => baselineCall(() => api.deleteBaseline(id)),
   };
+  const openBaselines = useCallback((open: boolean, focusSave = false) => setBaselinesOpen({ open, focusSave }), []);
 
   const fileData = () => ({
     tasks: plan!.tasks,
@@ -464,8 +477,17 @@ export function PlanView({
     resources: plan!.resources,
   });
   const exportCsv = () => download(`${slug(plan!.project.name)}-plan.csv`, toCsv(fileData()), 'text/csv');
-  const exportXml = () => download(`${slug(plan!.project.name)}-plan.xml`,
-    toMspdi({ ...fileData(), projectName: plan!.project.name, projectStart: plan!.project.start_date ?? null }), 'application/xml');
+  /** MS Project keeps baselines per task, so every saved one goes in the file, oldest as Baseline 0. */
+  const exportXml = async () => {
+    let baselines: FileBaseline[] = [];
+    try {
+      baselines = (await api.baselinesWithTasks(projectId)).map((b) => ({
+        name: b.name, rows: new Map(b.rows.map((r) => [r.task_id, { start: r.start_date, end: r.end_date, duration: r.duration }])),
+      }));
+    } catch (err) { fail(err); return; }
+    download(`${slug(plan!.project.name)}-plan.xml`,
+      toMspdi({ ...fileData(), projectName: plan!.project.name, projectStart: plan!.project.start_date ?? null, baselines }), 'application/xml');
+  };
   const importFile = async (file: File) => {
     const text = await file.text();
     const parsed = /^\s*</.test(text) ? fromMspdi(text) : fromCsv(text);
@@ -634,10 +656,23 @@ export function PlanView({
               <dt>Critical path</dt>
               <dd>{criticalCount ? `${criticalCount} task${criticalCount === 1 ? '' : 's'}` : '—'}</dd>
             </div>
-            {plan.project.baseline_at && (
+            {(plan.tasks.length > 0 || plan.baselines.length > 0) && (
               <div>
-                <dt>Baseline</dt>
-                <dd>{formatDate(plan.project.baseline_at.slice(0, 10))}</dd>
+                <dt>Compare with</dt>
+                <dd>
+                  <BaselinePicker
+                    baselines={plan.baselines}
+                    compareId={plan.project.compare_baseline_id ?? null}
+                    finish={plan.finish}
+                    today={today}
+                    holidays={holidays}
+                    busy={saving}
+                    open={baselinesOpen.open}
+                    focusSave={baselinesOpen.focusSave}
+                    onOpenChange={openBaselines}
+                    actions={baselineActions}
+                  />
+                </dd>
               </div>
             )}
           </dl>
@@ -721,10 +756,9 @@ export function PlanView({
             onOpen={setEditing}
             onError={setError}
             onRelease={async (b) => { await onRelease(b); await load(); }}
-            onSaveBaseline={saveBaseline}
-            onClearBaseline={clearBaseline}
+            onSaveBaseline={() => { window.scrollTo({ top: 0 }); openBaselines(true, true); }}
             onExportCsv={exportCsv}
-            onExportXml={exportXml}
+            onExportXml={() => void exportXml()}
             onImport={importFile}
             overdue={overdueIds}
             spotlight={spotlight}
@@ -862,6 +896,8 @@ type ChartPrefs = {
   estimates: boolean;
   /** The table's Deadline column. */
   deadline: boolean;
+  /** The table's variance columns: start, finish and length against the compared baseline. */
+  variance: boolean;
 };
 const PREFS_KEY = 'plan.chart';
 const DEFAULT_PREFS: ChartPrefs = {
@@ -871,13 +907,14 @@ const DEFAULT_PREFS: ChartPrefs = {
   who: true,
   estimates: false,
   deadline: false,
+  variance: false,
 };
 
 function readPrefs(): ChartPrefs {
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? 'null');
     if (!raw || !ZOOMS.includes(raw.zoom)) return DEFAULT_PREFS;
-    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true, who: raw.who !== false, estimates: raw.estimates === true, deadline: raw.deadline === true };
+    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true, who: raw.who !== false, estimates: raw.estimates === true, deadline: raw.deadline === true, variance: raw.variance === true };
   } catch {
     return DEFAULT_PREFS;
   }
@@ -908,7 +945,7 @@ const SHOW_HINT: Record<keyof GanttShow, string> = {
 function TaskTable({
   plan, schedule, rowOf, codeOf, outlineRows, environments, holidays, today, saving, addRef, board, preview,
   onUpdate, onSetStart, onSetFinish, onSetStartEdge, onAdd, onMove, onMoveTo, onIndent, onOutdent, onAddSub, focusTask, onFocused,
-  onLink, onLinkChange, onOpen, onError, onRelease, onSaveBaseline, onClearBaseline, onExportCsv, onExportXml, onImport,
+  onLink, onLinkChange, onOpen, onError, onRelease, onSaveBaseline, onExportCsv, onExportXml, onImport,
   overdue, spotlight,
 }: {
   plan: PlanData;
@@ -940,8 +977,8 @@ function TaskTable({
   onOpen: (id: number) => void;
   onError: (msg: string | null) => void;
   onRelease: (b: BookingView) => Promise<void>;
-  onSaveBaseline: () => Promise<void>;
-  onClearBaseline: () => Promise<void>;
+  /** Opens the baselines popover with its name field ready. */
+  onSaveBaseline: () => void;
   onExportCsv: () => void;
   onExportXml: () => void;
   onImport: (file: File) => Promise<void>;
@@ -1074,7 +1111,7 @@ function TaskTable({
     void document.fonts?.ready.then(() => { if (live) setFontsReady((n) => n + 1); });
     return () => { live = false; };
   }, []);
-  const colKeys = useMemo(() => columnsFor(prefs), [prefs.wbs, prefs.estimates, prefs.who, prefs.deadline]);
+  const colKeys = useMemo(() => columnsFor(prefs), [prefs.wbs, prefs.estimates, prefs.who, prefs.deadline, prefs.variance]);
   const fitted = useMemo(() => measureColumns(plan.tasks.map((t) => {
     const o = outlineRows.get(t.id);
     const leaves = o?.summary ? leavesOf(plan.tasks, t.id) : [];
@@ -1417,7 +1454,8 @@ function TaskTable({
   };
 
   const setShow = (k: keyof GanttShow, v: boolean) => setPrefs((p) => ({ ...p, show: { ...p.show, [k]: v } }));
-  const hasBaseline = plan.baseline.length > 0;
+  /** Each task's length in the compared baseline, for the Days var column. */
+  const savedDays = useMemo(() => new Map(plan.baseline.map((b) => [b.task_id, b.duration])), [plan.baseline]);
 
   return (
     <div className="task-table-wrap">
@@ -1454,6 +1492,10 @@ function TaskTable({
             <label className="check" title="The date each task must finish by">
               <input type="checkbox" checked={prefs.deadline} onChange={(e) => setPrefs((p) => ({ ...p, deadline: e.target.checked }))} />
               <span>Deadline column<small>The date a task must finish by; it never moves the task, it uses up its float</small></span>
+            </label>
+            <label className="check" title="How far each task has moved from the baseline the plan compares with">
+              <input type="checkbox" checked={prefs.variance} onChange={(e) => setPrefs((p) => ({ ...p, variance: e.target.checked }))} />
+              <span>Variance columns<small>Start, finish and length against the baseline you compare with, in working days</small></span>
             </label>
           </div>
         </details>
@@ -1506,12 +1548,9 @@ function TaskTable({
             aria-label={`${clashingPeople} ${clashingPeople === 1 ? 'person' : 'people'} on overlapping tasks`}>{clashingPeople}</span>
         </button>
         <span className="spacer" />
-        {hasBaseline ? (
-          <DangerButton label="Clear baseline" confirmLabel="Clear it?" onConfirm={() => void onClearBaseline()} disabled={saving} />
-        ) : null}
-        <button type="button" className="btn quiet" onClick={() => void onSaveBaseline()} disabled={saving || !plan.tasks.length}
-          title="Keep every task’s current dates to compare the plan against later">
-          {hasBaseline ? 'Update baseline' : 'Save baseline'}
+        <button type="button" className="btn quiet" onClick={onSaveBaseline} disabled={saving || !plan.tasks.length}
+          title="Keep every task’s dates and length as they stand, under a name, to compare the plan against later">
+          Save baseline…
         </button>
         <details className="menu">
           <summary className="btn quiet">Export</summary>
@@ -1582,6 +1621,13 @@ function TaskTable({
             <th scope="col" className="c-date">Start</th>
             <th scope="col" className="c-date">Finish</th>
             {prefs.deadline && <th scope="col" className="c-date c-deadline" title="The date it must finish by. It never moves the task; a task past it has negative float. A summary's deadline holds every task under it.">Deadline</th>}
+            {prefs.variance && (
+              <>
+                <th scope="col" className="c-num c-var" title="Working days the start has moved from the baseline you compare with: + later, − sooner">Start var</th>
+                <th scope="col" className="c-num c-var" title="Working days the finish has moved from the baseline you compare with: + later, − sooner">Finish var</th>
+                <th scope="col" className="c-num c-var" title="Working days longer (+) or shorter (−) than in the baseline">Days var</th>
+              </>
+            )}
             <th scope="col" className="c-num">Float</th>
             <th scope="col" className="c-status">Status</th>
           </tr>
@@ -1764,6 +1810,7 @@ function TaskTable({
                     <DeadlineCell task={t} schedule={s} onUpdate={onUpdate} />
                   </td>
                 )}
+                {prefs.variance && <VarianceCells now={s} task={t} summary={summary} saved={baseline.get(t.id)} savedDays={savedDays.get(t.id) ?? null} holidays={holidays} />}
                 <td className="c-num c-float" data-label="Float">
                   {s ? (s.critical ? <strong>critical</strong> : `${s.total_float}d`) : '—'}
                 </td>
@@ -1806,7 +1853,7 @@ function TaskTable({
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRef.current?.focus(); } }}
               />
             </td>
-            <td colSpan={8 + (prefs.wbs ? 1 : 0) + (prefs.estimates ? 2 : 0) + (prefs.deadline ? 1 : 0)}>
+            <td colSpan={8 + (prefs.wbs ? 1 : 0) + (prefs.estimates ? 2 : 0) + (prefs.deadline ? 1 : 0) + (prefs.variance ? 3 : 0)}>
               <input
                 ref={addRef}
                 value={draft}
@@ -2422,6 +2469,28 @@ function ResourceCell({ value, resources, label, onCommit }: {
  * until the date is whole (a four-digit year) and the caret has rested, so a
  * half-typed year never reschedules the plan.
  */
+/** Start, finish and length against the compared baseline (shared/variance.ts); a dash with nothing to compare. */
+function VarianceCells({ now, task, summary, saved, savedDays, holidays }: {
+  now: TaskSchedule | undefined;
+  task: Task;
+  summary: boolean;
+  saved: { start: ISODate; end: ISODate } | undefined;
+  savedDays: number | null;
+  holidays: ReadonlySet<ISODate>;
+}) {
+  if (!now || !saved) {
+    const why = !now ? 'Not scheduled' : 'Not in the baseline you compare with: added since, or no baseline yet';
+    return <>{['Start var', 'Finish var', 'Days var'].map((l) => <td key={l} className="c-num c-var" data-label={l}><span className="cell-quiet" title={why}>—</span></td>)}</>;
+  }
+  const v = varianceOf({ start: now.start, end: now.end, duration: summary ? null : task.duration }, { ...saved, duration: summary ? null : savedDays }, holidays);
+  const cell = (label: string, n: number | null) => (
+    <td className="c-num c-var" data-label={label}>
+      {n == null ? <span className="cell-quiet">—</span> : <span className={n > 0 ? 'var-later' : n < 0 ? 'var-sooner' : 'cell-quiet'}>{formatShift(n)}</span>}
+    </td>
+  );
+  return <>{cell('Start var', v.start)}{cell('Finish var', v.finish)}{cell('Days var', v.duration)}</>;
+}
+
 /** What a deadline in the editor means for this task, in the plan's own working days. */
 function deadlineHint(deadline: string, schedule: TaskSchedule | undefined, summary: boolean, holidays: ReadonlySet<ISODate>): string {
   const base = summary ? 'Holds every task under it. ' : '';

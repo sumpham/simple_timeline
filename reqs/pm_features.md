@@ -1,6 +1,6 @@
 # Professional project management features
 
-Status: planned 2026-10-04. Phase R (§8) and Phase A (§3) built 2026-10-04; the rest is not built yet. The build plan is the to-do list in §10;
+Status: planned 2026-10-04. Phases R (§8), A (§3) and B (§4) built 2026-10-04; the rest is not built yet. The build plan is the to-do list in §10;
 tick items there as they land, as `reqs/smart_assistant.md` §10 does.
 
 The five features, plus one change to the assistant that all of them rely on:
@@ -701,18 +701,50 @@ Built as:
 - Checked in headless Chrome: the column, the chart marks, the editor in light and dark, and P8 in
   the drawer.
 
-### Phase B: named baselines
+### Phase B: named baselines (built 2026-10-04)
 
-- [ ] `baseline` table, `task_baseline.baseline_id`/`duration`/`cost`,
+- [x] `baseline` table, `task_baseline.baseline_id`/`duration`/`cost`,
       `project.compare_baseline_id`, and the migration from the single baseline.
-- [ ] Baseline routes (§4.3), with the 10 cap and the "comparison baseline moves on delete"
+- [x] Baseline routes (§4.3), with the 10 cap and the "comparison baseline moves on delete"
       rule.
-- [ ] `shared/variance.ts`. Move the Gantt label's finish variance onto it.
-- [ ] Assistant facts read the comparison baseline.
-- [ ] UI: the Compare with picker and popover, the slip chart, Save current plan as…, and the
+- [x] `shared/variance.ts`. Move the Gantt label's finish variance onto it.
+- [x] Assistant facts read the comparison baseline.
+- [x] UI: the Compare with picker and popover, the slip chart, Save current plan as…, and the
       variance columns.
-- [ ] MSPDI: write `<Baseline><Number>n</Number>` for each baseline (up to 10), and read them
+- [x] MSPDI: write `<Baseline><Number>n</Number>` for each baseline (up to 10), and read them
       back as named baselines.
+
+Built as:
+- **Storage:** the `baseline` table, `task_baseline` keyed `(baseline_id, task_id)` with
+  `duration` and `cost` (cost stays NULL until Phase C), and `project.compare_baseline_id`.
+- **Migration** (`server/db.ts`): it rebuilds `task_baseline` in one transaction. Each project's
+  old rows become a baseline named "Baseline", saved at `baseline_at`, and the one it compares
+  with. Tested on a copy of a database holding an old baseline, and on a copy of the real one.
+  `baseline_at` is no longer written.
+- **Routes:**
+  - `GET /api/projects/:id/baselines` (`?tasks=1` adds each one's rows, for files) and
+    `POST /api/projects/:id/baselines { name }`.
+  - `PATCH /api/baselines/:id { name?, compare? }` and `DELETE /api/baselines/:id`.
+  - Names are unique per plan, ignoring case, and at most 80 characters. The 11th is refused,
+    naming the oldest.
+  - `planResponse` returns `baseline` (the compared one's rows, with length) and `baselines`.
+- **`shared/variance.ts`:** `workingShift`, `varianceOf` and `formatShift`. The review page and
+  the chart's `finishVariance` read it.
+- **Assistant:** reads `compareBaseline`, so P6 and P7 follow the picker.
+- **UI** (`client/components/Baselines.tsx`):
+  - **Compare with** in the facts row shows the finish shift (bold when later).
+  - Its popover holds the slip chart, the list (radio, Rename, Delete) and the form. On a phone
+    the popover is a bottom sheet.
+  - **Save baseline…** opens it with the name field focused.
+  - Show → **Variance columns** adds Start var, Finish var and Days var.
+- **MSPDI:** every baseline is written as `<Baseline><Number>n…`, and read back by number, never
+  mistaken for the task's own dates. The import route merges them into "Baseline" and
+  "Baseline n" while there is room.
+- **Seed:** Card tokenisation R2 has two baselines that promised 22 and 27 Oct, so its slip
+  chart climbs to the plan's 30 Oct.
+- **Tests:** `tests/variance.test.ts` and the baseline round trips in `planIO.test.ts`.
+- **Checked:** every route by hand on a scratch database (cap, clash, rename, compare,
+  delete-compared, import), and the UI in headless Chrome at 1440 and 400 px, light and dark.
 
 ### Phase C: earned value
 

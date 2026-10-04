@@ -4,7 +4,7 @@ import { listBookings, listEnvironments, listHolidays, listProjects, listResourc
 import { applyResolutions, conflictKey, detectConflicts } from '../shared/conflicts.ts';
 import { isValidISODate, isWorkingDay, snapToWorkingDay } from '../shared/dates.ts';
 import { effectiveKind } from '../shared/bookings.ts';
-import { holidaySet, listTasks } from './queries.ts';
+import { baselineTasks, compareBaseline, holidaySet, listBaselines, listTasks } from './queries.ts';
 import { applyChange, checkOutline, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
 import { lateBy } from '../shared/schedule.ts';
 import { TASK_CODE_MAX } from '../shared/taskCode.ts';
@@ -14,7 +14,7 @@ import { providerStatus } from './llm/index.ts';
 import { advisorReply, applyOps, assistantReport, assistantSettings, opsFrom, previewOps, reviewOps, StaleError, suggestionReport } from './assistant.ts';
 import { cleanResourceName, formatResources, parseResources, RESOURCE_NAME_MAX, resourceKey } from '../shared/resources.ts';
 import {
-  LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
+  BASELINE_NAME_MAX, BASELINES_MAX, LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
   type Task,
 } from '../shared/types.ts';
 
@@ -548,9 +548,9 @@ function planResponse(projectId: number) {
     late_by: lateBy(finish, state.project.target_date, holidays),
     holds: outcome.holds,
     bookings: listBookings({ teamId: state.project.team_id }).filter((b) => b.project_id === projectId),
-    baseline: all<{ task_id: number; start_date: ISODate; end_date: ISODate }>(
-      'SELECT task_id, start_date, end_date FROM task_baseline WHERE project_id = ?', projectId,
-    ),
+    // The baseline it compares with, and every saved one for the picker.
+    baseline: [...compareBaseline(projectId)].map(([task_id, b]) => ({ task_id, start_date: b.start, end_date: b.end, duration: b.duration })),
+    baselines: listBaselines(projectId),
     // Everyone, not only this plan's people: the Who column suggests from all of them.
     resources: listResources(),
     // Their work in other plans, so a person on two tasks at once is warned about here.
@@ -797,32 +797,86 @@ router.post('/tasks/outline', handle((req, res) => {
   res.json({ plan: planResponse(projectId) });
 }));
 
-// ---------------------------------------------------------------- baseline
+// ---------------------------------------------------------------- baselines
 
-/** Save every task's current dates as the plan to compare against. Replaces any earlier baseline. */
-router.post('/projects/:id/baseline', handle((req, res) => {
+/** A project's saved baselines, oldest first; with `?tasks=1`, each one's tasks too (for MS Project files). */
+router.get('/projects/:id/baselines', handle((req, res) => {
   const id = Number(req.params.id);
   if (!get('SELECT id FROM project WHERE id = ?', id)) throw missing('Project');
+  const list = listBaselines(id);
+  res.json(req.query.tasks ? list.map((b) => ({ ...b, rows: baselineTasks(b.id) })) : list);
+}));
+
+function baselineName(raw: unknown): string {
+  const name = typeof raw === 'string' ? raw.trim() : '';
+  if (!name) throw bad('A baseline needs a name');
+  if (name.length > BASELINE_NAME_MAX) throw bad(`A baseline name is at most ${BASELINE_NAME_MAX} characters`);
+  return name;
+}
+
+/**
+ * Save every task's dates and length as a new named baseline. The first one
+ * becomes the one the plan compares with; later ones do not change it.
+ */
+router.post('/projects/:id/baselines', handle((req, res) => {
+  const id = Number(req.params.id);
+  const project = get<Project>('SELECT * FROM project WHERE id = ?', id);
+  if (!project) throw missing('Project');
+  const name = baselineName(req.body?.name);
   transaction(() => {
-    run('DELETE FROM task_baseline WHERE project_id = ?', id);
-    run(`INSERT INTO task_baseline (task_id, project_id, start_date, end_date)
-         SELECT id, project_id, start_date, end_date FROM task
-         WHERE project_id = ? AND start_date IS NOT NULL AND end_date IS NOT NULL`, id);
-    run("UPDATE project SET baseline_at = datetime('now') WHERE id = ?", id);
-    audit('project', id, 'baseline', null, 'saved');
+    const list = listBaselines(id);
+    if (list.length >= BASELINES_MAX) {
+      throw bad(`A plan keeps at most ${BASELINES_MAX} baselines. Delete one first; the oldest is “${list[0].name}”.`);
+    }
+    if (list.some((b) => b.name.toLowerCase() === name.toLowerCase())) throw bad(`There is already a baseline called “${name}”`);
+    const finish = get<{ f: ISODate | null }>('SELECT MAX(end_date) AS f FROM task WHERE project_id = ?', id)!.f;
+    const baselineId = Number(run('INSERT INTO baseline (project_id, name, finish) VALUES (?, ?, ?)', id, name, finish).lastInsertRowid);
+    run(`INSERT INTO task_baseline (baseline_id, task_id, project_id, start_date, end_date, duration)
+         SELECT ?, id, project_id, start_date, end_date, duration FROM task
+         WHERE project_id = ? AND start_date IS NOT NULL AND end_date IS NOT NULL`, baselineId, id);
+    if (project.compare_baseline_id == null) run('UPDATE project SET compare_baseline_id = ? WHERE id = ?', baselineId, id);
+    audit('project', id, 'baseline', null, name);
   });
   res.json({ plan: planResponse(id) });
 }));
 
-router.delete('/projects/:id/baseline', handle((req, res) => {
-  const id = Number(req.params.id);
-  if (!get('SELECT id FROM project WHERE id = ?', id)) throw missing('Project');
+function baselineOf(req: Request) {
+  const b = get<{ id: number; project_id: number; name: string }>('SELECT id, project_id, name FROM baseline WHERE id = ?', Number(req.params.id));
+  if (!b) throw missing('Baseline');
+  return b;
+}
+
+/** Rename a baseline, or make it the one the plan compares with (`compare: true`). */
+router.patch('/baselines/:id', handle((req, res) => {
+  const b = baselineOf(req);
   transaction(() => {
-    run('DELETE FROM task_baseline WHERE project_id = ?', id);
-    run('UPDATE project SET baseline_at = NULL WHERE id = ?', id);
-    audit('project', id, 'baseline', 'saved', null);
+    if (req.body?.name !== undefined) {
+      const name = baselineName(req.body.name);
+      const clash = get('SELECT id FROM baseline WHERE project_id = ? AND lower(name) = lower(?) AND id <> ?', b.project_id, name, b.id);
+      if (clash) throw bad(`There is already a baseline called “${name}”`);
+      if (name !== b.name) {
+        run('UPDATE baseline SET name = ? WHERE id = ?', name, b.id);
+        audit('baseline', b.id, 'name', b.name, name);
+      }
+    }
+    if (req.body?.compare === true) run('UPDATE project SET compare_baseline_id = ? WHERE id = ?', b.id, b.project_id);
   });
-  res.json({ plan: planResponse(id) });
+  res.json({ plan: planResponse(b.project_id) });
+}));
+
+/** Delete a baseline. If the plan compared with it, it compares with the newest one left. */
+router.delete('/baselines/:id', handle((req, res) => {
+  const b = baselineOf(req);
+  transaction(() => {
+    const comparing = get<{ c: number | null }>('SELECT compare_baseline_id AS c FROM project WHERE id = ?', b.project_id)!.c === b.id;
+    run('DELETE FROM baseline WHERE id = ?', b.id);
+    if (comparing) {
+      const newest = get<{ id: number }>('SELECT id FROM baseline WHERE project_id = ? ORDER BY saved_at DESC, id DESC LIMIT 1', b.project_id);
+      run('UPDATE project SET compare_baseline_id = ? WHERE id = ?', newest?.id ?? null, b.project_id);
+    }
+    audit('project', b.project_id, 'baseline', b.name, null);
+  });
+  res.json({ plan: planResponse(b.project_id) });
 }));
 
 // ---------------------------------------------------------------- import
@@ -895,6 +949,7 @@ router.post('/projects/:id/import', handle((req, res) => {
       deadline: optionalDate(r.deadline, 'deadline'),
       resources: resourcesOfRow(r, at),
       note: noteValue(r.note),
+      baselines: baselinesOfRow(r.baselines, at),
     };
   });
 
@@ -929,6 +984,7 @@ router.post('/projects/:id/import', handle((req, res) => {
           ids[p.row - 1], ids[i], p.lag, p.type);
       }
     });
+    importBaselines(projectId, parsed.map((t, i) => ({ id: ids[i], baselines: t.baselines })), warnings);
     // The same rules as a hand edit: summaries book nothing, links stay legal.
     const state = loadState(projectId);
     const checked = checkOutline(state.tasks, state.deps);
@@ -937,6 +993,55 @@ router.post('/projects/:id/import', handle((req, res) => {
   });
   res.status(201).json({ plan: planResponse(projectId), created: parsed.length, warnings });
 }));
+
+/** An import row's MS Project baselines, checked; a bad one is refused like any other field. */
+function baselinesOfRow(raw: unknown, at: string): { number: number; start: ISODate; finish: ISODate; duration: number | null }[] {
+  if (raw == null) return [];
+  if (!Array.isArray(raw) || raw.length > 11) throw bad(`${at}: baselines must be a list of at most 11`);
+  return raw.map((b) => {
+    const o = (b ?? {}) as Record<string, unknown>;
+    const number = intParam(o.number);
+    const start = optionalDate(o.start, 'baseline start');
+    const finish = optionalDate(o.finish, 'baseline finish');
+    const duration = o.duration == null ? null : intParam(o.duration);
+    if (number == null || number < 0 || number > 10 || !start || !finish || finish < start || duration === undefined || (duration != null && duration < 0)) {
+      throw bad(`${at}: a baseline needs a number 0 to 10, a start and a finish`);
+    }
+    return { number, start, finish, duration };
+  });
+}
+
+/**
+ * Baselines from an MS Project file: number n joins the plan's baseline of that
+ * name ("Baseline", "Baseline 1"…), or makes it while there is room. The first
+ * one made becomes the one compared with when the plan had none.
+ */
+function importBaselines(projectId: number, rows: { id: number; baselines: ReturnType<typeof baselinesOfRow> }[], warnings: string[]) {
+  const byNumber = new Map<number, { task: number; start: ISODate; finish: ISODate; duration: number | null }[]>();
+  for (const r of rows) for (const b of r.baselines) {
+    if (!byNumber.has(b.number)) byNumber.set(b.number, []);
+    byNumber.get(b.number)!.push({ task: r.id, ...b });
+  }
+  for (const [number, list] of [...byNumber].sort((a, b) => a[0] - b[0])) {
+    const name = number === 0 ? 'Baseline' : `Baseline ${number}`;
+    const finish = list.reduce((m, x) => (x.finish > m ? x.finish : m), list[0].finish);
+    let found = get<{ id: number; finish: ISODate | null }>('SELECT id, finish FROM baseline WHERE project_id = ? AND lower(name) = lower(?)', projectId, name);
+    if (!found) {
+      if (listBaselines(projectId).length >= BASELINES_MAX) {
+        warnings.push(`${name} from the file was left out: a plan keeps at most ${BASELINES_MAX} baselines`);
+        continue;
+      }
+      found = { id: Number(run('INSERT INTO baseline (project_id, name, finish) VALUES (?, ?, ?)', projectId, name, finish).lastInsertRowid), finish };
+      run('UPDATE project SET compare_baseline_id = ? WHERE id = ? AND compare_baseline_id IS NULL', found.id, projectId);
+    } else if (!found.finish || finish > found.finish) {
+      run('UPDATE baseline SET finish = ? WHERE id = ?', finish, found.id);
+    }
+    for (const x of list) {
+      run(`INSERT OR REPLACE INTO task_baseline (baseline_id, task_id, project_id, start_date, end_date, duration)
+           VALUES (?, ?, ?, ?, ?, ?)`, found.id, x.task, projectId, x.start, x.finish, x.duration);
+    }
+  }
+}
 
 // ---------------------------------------------------------------- portfolio
 
