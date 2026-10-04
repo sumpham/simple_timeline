@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { router } from './routes.ts';
 import { all, DB_PATH, transaction } from './db.ts';
 import { replan } from './plan.ts';
+import { accessEnabled, accessGate } from './access.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT ?? 5173);
@@ -18,6 +19,9 @@ transaction(() => {
 });
 
 const app = express();
+// Behind a proxy (HTTPS tunnel), trust it so the cookie can be marked Secure.
+app.set('trust proxy', 'loopback');
+app.use(accessGate());
 app.use(express.json());
 app.use('/api', router);
 
@@ -37,4 +41,5 @@ if (existsSync(dist)) {
 app.listen(PORT, () => {
   console.log(`simple timeline api  http://localhost:${PORT}`);
   console.log(`database             ${DB_PATH}`);
+  console.log(`access key           ${accessEnabled ? 'required (ACCESS_KEY)' : 'off — set ACCESS_KEY to require one'}`);
 });

@@ -71,6 +71,14 @@ spec:
               value: /app/data/timeline.db
             - name: NODE_ENV
               value: production
+            # The board's access key (server/access.ts). Created by hand, never
+            # committed; see DEPLOYMENT.md. Not optional: with no secret the pod
+            # refuses to start rather than serving the board open.
+            - name: ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: simple-timeline-access
+                  key: ACCESS_KEY
           resources:
             requests:
               cpu: 100m

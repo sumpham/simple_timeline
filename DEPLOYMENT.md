@@ -49,6 +49,7 @@ are also copied into `k8s-patches/` so the restore script can apply them.
 cd ~/Documents/Projects/k8s
 kubectl apply -f simple_timeline/deploy/simple-timeline.yaml
 kubectl label namespace simple-timeline kubernetes.io/metadata.name=simple-timeline --overwrite
+# then create the access-key secret (see Security posture)
 kubectl apply -f k8s-patches/simple-timeline-netpol.yaml
 kubectl apply -f k8s-patches/jenkins-simple-timeline-rbac.yaml
 cd simple_timeline && ./setup-jenkins-job.sh
@@ -101,15 +102,29 @@ Applied per the standards: own namespace, default-deny NetworkPolicy with only
 DNS egress and ingress-nginx ingress, non-root pod (UID 1000, all capabilities
 dropped, `RuntimeDefault` seccomp), resource requests and limits, and a Jenkins
 ServiceAccount that can patch exactly one deployment in one namespace and nothing
-else. No secrets are needed — the app has no credentials of its own.
+else. The one secret is the board's access key.
 
-**The application itself has no authentication.** Anyone who can reach
-`https://timeline.kisimita.xyz` has full create, edit and delete access to every
-team's timeline. That was accepted deliberately when choosing public exposure.
-Two ways to close it without touching the app:
+**The board asks for an access key** (`server/access.ts`). You type it once per
+browser; a cookie then keeps that browser in for 400 days. Everything but
+`/api/healthz` and `/api/readyz` needs it, so the probes and the Jenkins smoke
+test still work. The key lives in a Kubernetes Secret, made by hand and never
+committed; the Deployment refuses to start without it, so the board never comes
+up open by mistake. Jenkins never sees it.
 
-- a Cloudflare Access policy on the hostname (Zero Trust → Access → Applications), or
-- moving the ingress to a LAN-only host, as `secure-media-lan` does with `enclave.lan`.
+```bash
+# create or change the key (changing it signs every browser out)
+KEY=$(openssl rand -base64 24); echo "$KEY"      # save this in your password manager
+kubectl -n simple-timeline create secret generic simple-timeline-access \
+  --from-literal=ACCESS_KEY="$KEY" --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n simple-timeline rollout restart deployment/simple-timeline
+
+# forgot it? read it back
+kubectl -n simple-timeline get secret simple-timeline-access \
+  -o jsonpath='{.data.ACCESS_KEY}' | base64 -d; echo
+```
+
+For more, a Cloudflare Access policy on the hostname (Zero Trust → Access →
+Applications) can sit in front of it.
 
 ## Operations
 
