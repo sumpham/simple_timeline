@@ -71,14 +71,17 @@ spec:
               value: /app/data/timeline.db
             - name: NODE_ENV
               value: production
-            # The board's access key (server/access.ts). Created by hand, never
-            # committed; see DEPLOYMENT.md. Not optional: with no secret the pod
-            # refuses to start rather than serving the board open.
+            # The board's access key (server/access.ts); see DEPLOYMENT.md.
+            # Feature flag: "on" asks for the key, "off" leaves the board open.
+            # With "on" the server refuses to start unless the secret exists.
+            - name: ACCESS_GATE
+              value: "off"
             - name: ACCESS_KEY
               valueFrom:
                 secretKeyRef:
                   name: simple-timeline-access
                   key: ACCESS_KEY
+                  optional: true
           resources:
             requests:
               cpu: 100m

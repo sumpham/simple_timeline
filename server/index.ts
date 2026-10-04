@@ -41,5 +41,5 @@ if (existsSync(dist)) {
 app.listen(PORT, () => {
   console.log(`simple timeline api  http://localhost:${PORT}`);
   console.log(`database             ${DB_PATH}`);
-  console.log(`access key           ${accessEnabled ? 'required (ACCESS_KEY)' : 'off — set ACCESS_KEY to require one'}`);
+  console.log(`access key           ${accessEnabled ? 'required (ACCESS_GATE=on)' : 'off (ACCESS_GATE is not on)'}`);
 });

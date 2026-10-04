@@ -49,7 +49,7 @@ are also copied into `k8s-patches/` so the restore script can apply them.
 cd ~/Documents/Projects/k8s
 kubectl apply -f simple_timeline/deploy/simple-timeline.yaml
 kubectl label namespace simple-timeline kubernetes.io/metadata.name=simple-timeline --overwrite
-# then create the access-key secret (see Security posture)
+# access key: optional, see Security posture
 kubectl apply -f k8s-patches/simple-timeline-netpol.yaml
 kubectl apply -f k8s-patches/jenkins-simple-timeline-rbac.yaml
 cd simple_timeline && ./setup-jenkins-job.sh
@@ -104,12 +104,18 @@ dropped, `RuntimeDefault` seccomp), resource requests and limits, and a Jenkins
 ServiceAccount that can patch exactly one deployment in one namespace and nothing
 else. The one secret is the board's access key.
 
-**The board asks for an access key** (`server/access.ts`). You type it once per
-browser; a cookie then keeps that browser in for 400 days. Everything but
-`/api/healthz` and `/api/readyz` needs it, so the probes and the Jenkins smoke
-test still work. The key lives in a Kubernetes Secret, made by hand and never
-committed; the Deployment refuses to start without it, so the board never comes
-up open by mistake. Jenkins never sees it.
+**The board can ask for an access key** (`server/access.ts`), behind a feature
+flag: `ACCESS_GATE` in `deploy/simple-timeline.yaml`, `"off"` for now. When on,
+you type the key once per browser; a cookie then keeps that browser in for 400
+days. Everything but `/api/healthz` and `/api/readyz` needs it, so the probes and
+the Jenkins smoke test still work. The key lives in a Kubernetes Secret, made by
+hand and never committed; Jenkins never sees it. With the flag on and no secret,
+the server refuses to start rather than come up open.
+
+To switch it on: create the secret below, set `ACCESS_GATE` to `"on"` in the
+manifest, then `kubectl apply -f deploy/simple-timeline.yaml` (the apply restarts
+the pod; Jenkins alone does not, as it never applies the manifest). To switch it
+off again, set `"off"` and apply.
 
 ```bash
 # create or change the key (changing it signs every browser out)

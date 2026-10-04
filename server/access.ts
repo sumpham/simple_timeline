@@ -1,10 +1,16 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import express, { type RequestHandler } from 'express';
 
-// One shared key, for a board only its owner uses. Set ACCESS_KEY and every
-// request needs the key once; after that a cookie remembers this browser for
-// 400 days (the longest a browser keeps one). Unset, the board is open, as before.
+// One shared key, for a board only its owner uses. With ACCESS_GATE=on every
+// request needs ACCESS_KEY once; after that a cookie remembers this browser for
+// 400 days (the longest a browser keeps one). Any other value leaves the board open.
 const KEY = process.env.ACCESS_KEY ?? '';
+const GATE = (process.env.ACCESS_GATE ?? '').toLowerCase() === 'on';
+
+// Switched on with no key would lock everyone out, or worse, be read as off.
+// Refuse to start instead, so the board never comes up open by mistake.
+if (GATE && KEY === '') throw new Error('ACCESS_GATE=on but ACCESS_KEY is empty');
+
 const COOKIE = 'st_access';
 const MAX_AGE_S = 400 * 24 * 60 * 60;
 
@@ -42,7 +48,7 @@ const form = (wrong: boolean) => `<!doctype html>
   <button>Open</button>
 </form>`;
 
-export const accessEnabled = KEY !== '';
+export const accessEnabled = GATE;
 
 export function accessGate(): RequestHandler {
   const router = express.Router();
