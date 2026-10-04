@@ -1,6 +1,6 @@
 # Professional project management features
 
-Status: planned 2026-10-04. Phases R (§8), A (§3) and B (§4) built 2026-10-04; the rest is not built yet. The build plan is the to-do list in §10;
+Status: planned 2026-10-04. Phases R (§8), A (§3), B (§4) and C (§6) built 2026-10-04; D and E are not built yet. The build plan is the to-do list in §10;
 tick items there as they land, as `reqs/smart_assistant.md` §10 does.
 
 The five features, plus one change to the assistant that all of them rely on:
@@ -746,20 +746,56 @@ Built as:
 - **Checked:** every route by hand on a scratch database (cap, clash, rename, compare,
   delete-compared, import), and the UI in headless Chrome at 1440 and 400 px, light and dark.
 
-### Phase C: earned value
+### Phase C: earned value (built 2026-10-04)
 
-- [ ] `resource.rate`, `task.fixed_cost`, `task.actual_cost`, `project.currency`. Cost routes
+- [x] `resource.rate`, `task.fixed_cost`, `task.actual_cost`, `project.currency`. Cost routes
       as extras, the way `estimateFrom` works: they skip `replan`.
-- [ ] `shared/earnedValue.ts`, with tests:
+- [x] `shared/earnedValue.ts`, with tests:
   - a plan exactly on its baseline gives SPI = CPI = 1,
   - no baseline gives `missing`,
   - the weekly series is bounded,
   - summaries sum their leaves.
-- [ ] Budget tab: the verdict lines, the S-curve with end labels, the summary table with bullet
+- [x] Budget tab: the verdict lines, the S-curve with end labels, the summary table with bullet
       bars, and both empty states.
-- [ ] The Cost column, the editor fields, and the Resources dialog's rate.
-- [ ] CSV and MSPDI cost fields.
-- [ ] Review page: the Budget view, with EAC, SPI and CPI before and after.
+- [x] The Cost column, the editor fields, and the Resources dialog's rate.
+- [x] CSV and MSPDI cost fields.
+- [x] Review page: the Budget view, with EAC, SPI and CPI before and after.
+
+Built as:
+- **Storage:** `task.fixed_cost`, `task.actual_cost`, `resource.rate` (per working day) and
+  `project.currency` (default EUR), all migrated.
+  - The task routes take costs as extras (`costFrom`, `setCost`). A cost-only edit skips
+    `replan`, and summaries refuse a cost of their own.
+  - The resource route takes `rate`, and the project route takes `currency`, a three-letter code.
+- **`shared/earnedValue.ts`:** `plannedCost`, `costsOf`, `planCost`, `plannedShare`,
+  `earnedValue`, `formatMoney` and `verdictOf`.
+  - Percent complete moved to `shared/progress.ts` so earned value and the chart agree;
+    `client/gantt.ts` re-exports it.
+  - Tasks added after the baseline are left out and counted (`outside`). A baseline saved
+    before costs existed is budgeted at today's cost (`from_plan`), and the tab says so.
+  - Earned and spent are only known at the status date; there's no history of progress. The
+    chart draws them as points joined to the start by a straight line, and says so in its
+    description.
+- **Server:** `server/money.ts` (`costInput`, `plannedCosts`, `projectEarnedValue`) and
+  `GET /api/projects/:id/earned-value?date=`. Saving a baseline now keeps each task's planned
+  cost.
+- **UI:**
+  - The **Budget** tab (`client/components/Budget.tsx`): status date, currency, verdict
+    sentences, the S-curve with end labels and a forecast line from today's spend, SPI/CPI
+    bullets, figures, the summary table, notes, and both empty states.
+  - Show → **Cost columns** (Fixed cost, Planned, Actual).
+  - Editor fields, and a **Day rate** in the Resources dialog.
+  - The review page has a **Budget** view (plan cost before and after, and the tasks whose cost
+    moves), plus a verdict line, only when something is costed.
+- **Files:** CSV `Fixed cost` and `Actual cost`. MSPDI `<FixedCost>` and `<ActualCost>` in
+  hundredths, both ways, with summaries' rolled-up costs ignored on import. Day rates are
+  written as hourly `<StandardRate>`, export only.
+- **Seed:** day rates for Mai, Tuan, Lan and Linh. The HSM stub has a €4,000 licence and the
+  vault a typed €2,600 actual. On load, Card tokenisation R2 reads 51% behind and 15% over,
+  heading for €23,466 against €19,960.
+- **Tests:** `tests/earnedValue.test.ts` (11), the review's cost line, and money in CSV and MSPDI.
+- **Checked:** headless Chrome at 1440 and 400 px, light and dark, the empty state, and a
+  currency change.
 
 ### Phase D: levelling people
 

@@ -205,7 +205,8 @@ export function reviewOps(projectId: number, ops: PlanOp[], version: string | nu
   const elsewhere = workElsewhere(projectId).map((t) => ({
     task_id: t.task_id, project_id: t.project_id, resource_ids: t.resource_ids, start: t.start, end: t.end,
   }));
-  const review = buildReview(ctx, state, ops, { version: now, elsewhere, names });
+  const rates = new Map(all<{ id: number; rate: number | null }>('SELECT id, rate FROM resource').map((r) => [r.id, r.rate]));
+  const review = buildReview(ctx, state, ops, { version: now, elsewhere, names, rates, currency: state.project.currency ?? 'EUR' });
   if ('refused' in review) throw new PlanError(review.refused);
   return review;
 }

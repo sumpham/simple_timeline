@@ -5,6 +5,7 @@ import { applyResolutions, conflictKey, detectConflicts } from '../shared/confli
 import { isValidISODate, isWorkingDay, snapToWorkingDay } from '../shared/dates.ts';
 import { effectiveKind } from '../shared/bookings.ts';
 import { baselineTasks, compareBaseline, holidaySet, listBaselines, listTasks } from './queries.ts';
+import { plannedCosts, projectEarnedValue } from './money.ts';
 import { applyChange, checkOutline, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
 import { lateBy } from '../shared/schedule.ts';
 import { TASK_CODE_MAX } from '../shared/taskCode.ts';
@@ -321,14 +322,15 @@ router.patch('/projects/:id', handle((req, res) => {
     external_link: req.body?.external_link !== undefined ? req.body.external_link : existing.external_link,
     start_date: req.body?.start_date !== undefined ? optionalDate(req.body.start_date, 'start_date') : existing.start_date ?? null,
     target_date: req.body?.target_date !== undefined ? optionalDate(req.body.target_date, 'target_date') : existing.target_date ?? null,
+    currency: req.body?.currency !== undefined ? currencyParam(req.body.currency) : existing.currency ?? 'EUR',
   };
 
   transaction(() => {
     run(
       `UPDATE project SET name = ?, status = ?, priority = ?, owner = ?, description = ?, external_link = ?,
-                          start_date = ?, target_date = ? WHERE id = ?`,
+                          start_date = ?, target_date = ?, currency = ? WHERE id = ?`,
       next.name, next.status, next.priority, next.owner, next.description, next.external_link,
-      next.start_date, next.target_date, id,
+      next.start_date, next.target_date, next.currency, id,
     );
     // Moving the start moves every task that is not pinned by a predecessor or its actual dates.
     if (next.start_date !== (existing.start_date ?? null)) {
@@ -338,6 +340,13 @@ router.patch('/projects/:id', handle((req, res) => {
   });
   res.json(get('SELECT * FROM project WHERE id = ?', id));
 }));
+
+/** An ISO 4217 code, three capital letters. Display only: amounts are never converted. */
+function currencyParam(raw: unknown): string {
+  const c = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
+  if (!/^[A-Z]{3}$/.test(c)) throw bad('A currency is a three-letter code, like EUR or USD');
+  return c;
+}
 
 router.delete('/projects/:id', handle((req, res) => {
   const id = Number(req.params.id);
@@ -695,11 +704,43 @@ function setEstimate(taskId: number, est: Estimate) {
   run('UPDATE task SET duration_low = ?, duration_high = ? WHERE id = ?', low, high, taskId);
 }
 
-/** What a task request carries besides plan fields: people and estimates, neither of which is plan state. */
-type Extras = { who?: string[]; estimate?: Estimate };
+/** A task's fixed and actual cost from a request; undefined when it leaves them alone. */
+type Cost = { fixed_cost?: number | null; actual_cost?: number | null };
+export const MONEY_MAX = 1e12;
+
+function moneyParam(raw: unknown, what: string): number | null {
+  if (raw == null || raw === '') return null;
+  const n = typeof raw === 'number' ? raw : Number(String(raw).replace(/[,\s]/g, ''));
+  if (!Number.isFinite(n) || n < 0 || n > MONEY_MAX) throw bad(`${what} is an amount of 0 or more`);
+  return Math.round(n * 100) / 100;
+}
+
+function costFrom(body: Record<string, unknown> | undefined): Cost | undefined {
+  if (!body || (body.fixed_cost === undefined && body.actual_cost === undefined)) return undefined;
+  const out: Cost = {};
+  if (body.fixed_cost !== undefined) out.fixed_cost = moneyParam(body.fixed_cost, 'Fixed cost');
+  if (body.actual_cost !== undefined) out.actual_cost = moneyParam(body.actual_cost, 'Actual cost');
+  return out;
+}
+
+/** Set a task's fixed and actual cost. A summary has none: its cost is its tasks'. Call inside a transaction. */
+function setCost(taskId: number, c: Cost) {
+  const t = get<Task>('SELECT * FROM task WHERE id = ?', taskId)!;
+  if (get('SELECT id FROM task WHERE parent_id = ? LIMIT 1', taskId) && (c.fixed_cost != null || c.actual_cost != null)) {
+    throw bad(`${t.name} is a summary: its cost comes from the tasks under it`);
+  }
+  for (const k of ['fixed_cost', 'actual_cost'] as const) {
+    if (c[k] === undefined || c[k] === (t[k] ?? null)) continue;
+    audit('task', taskId, k, t[k] ?? null, c[k]);
+    run(`UPDATE task SET ${k} = ? WHERE id = ?`, c[k], taskId);
+  }
+}
+
+/** What a task request carries besides plan fields: people, estimates and cost, none of which is plan state. */
+type Extras = { who?: string[]; estimate?: Estimate; cost?: Cost };
 
 function extrasFrom(body: Record<string, unknown> | undefined): Extras {
-  return { who: resourcesFrom(body), estimate: estimateFrom(body) };
+  return { who: resourcesFrom(body), estimate: estimateFrom(body), cost: costFrom(body) };
 }
 
 /**
@@ -709,11 +750,12 @@ function extrasFrom(body: Record<string, unknown> | undefined): Extras {
  * the replan and cannot move a date.
  */
 function commit(projectId: number, change: Change, extras: Extras = {}): number | null {
-  const { who, estimate } = extras;
+  const { who, estimate, cost } = extras;
   return transaction(() => {
-    if (change.op === 'update' && (who || estimate) && !Object.keys(change.fields).length) {
+    if (change.op === 'update' && (who || estimate || cost) && !Object.keys(change.fields).length) {
       if (who) assign(change.id, who);
       if (estimate) setEstimate(change.id, estimate);
+      if (cost) setCost(change.id, cost);
       return null;
     }
     const before = loadState(projectId);
@@ -722,6 +764,7 @@ function commit(projectId: number, change: Change, extras: Extras = {}): number 
     const taskId = change.op === 'create' ? created : change.op === 'update' ? change.id : null;
     if (who && taskId != null) assign(taskId, who);
     if (estimate && taskId != null) setEstimate(taskId, estimate);
+    if (cost && taskId != null) setCost(taskId, cost);
     return created;
   });
 }
@@ -834,6 +877,10 @@ router.post('/projects/:id/baselines', handle((req, res) => {
     run(`INSERT INTO task_baseline (baseline_id, task_id, project_id, start_date, end_date, duration)
          SELECT ?, id, project_id, start_date, end_date, duration FROM task
          WHERE project_id = ? AND start_date IS NOT NULL AND end_date IS NOT NULL`, baselineId, id);
+    // Each task's planned cost as it stands: the budget earned value measures against.
+    for (const [taskId, cost] of plannedCosts(id)) {
+      if (cost != null) run('UPDATE task_baseline SET cost = ? WHERE baseline_id = ? AND task_id = ?', cost, baselineId, taskId);
+    }
     if (project.compare_baseline_id == null) run('UPDATE project SET compare_baseline_id = ? WHERE id = ?', baselineId, id);
     audit('project', id, 'baseline', null, name);
   });
@@ -877,6 +924,15 @@ router.delete('/baselines/:id', handle((req, res) => {
     audit('project', b.project_id, 'baseline', b.name, null);
   });
   res.json({ plan: planResponse(b.project_id) });
+}));
+
+// ---------------------------------------------------------------- earned value
+
+/** Earned value at a status date (today by default), against the baseline the plan compares with. */
+router.get('/projects/:id/earned-value', handle((req, res) => {
+  const id = Number(req.params.id);
+  if (!get('SELECT id FROM project WHERE id = ?', id)) throw missing('Project');
+  res.json(projectEarnedValue(id, req.query.date == null ? undefined : requireDate(req.query.date, 'date')));
 }));
 
 // ---------------------------------------------------------------- import
@@ -947,6 +1003,8 @@ router.post('/projects/:id/import', handle((req, res) => {
       status: r.status ? oneOf(r.status, TASK_STATUSES, 'status') : 'todo' as const,
       not_before: optionalDate(r.not_before, 'not_before'),
       deadline: optionalDate(r.deadline, 'deadline'),
+      fixed_cost: moneyParam(r.fixed_cost, `${at}: fixed cost`),
+      actual_cost: moneyParam(r.actual_cost, `${at}: actual cost`),
       resources: resourcesOfRow(r, at),
       note: noteValue(r.note),
       baselines: baselinesOfRow(r.baselines, at),
@@ -971,10 +1029,11 @@ router.post('/projects/:id/import', handle((req, res) => {
       }
       ids.push(Number(run(
         `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, note, sort_order, parent_id, progress, code,
-                           duration_low, duration_high, deadline)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                           duration_low, duration_high, deadline, fixed_cost, actual_cost)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         projectId, t.environment_id, t.name, t.duration, t.status, t.not_before, t.note, base + i,
         t.parent != null ? ids[t.parent - 1] : null, t.progress, code, t.duration_low, t.duration_high, t.deadline,
+        t.fixed_cost, t.actual_cost,
       ).lastInsertRowid));
     });
     parsed.forEach((t, i) => { if (t.resources.length) assign(ids[i], t.resources); });
@@ -1200,9 +1259,12 @@ router.patch('/resources/:id', handle((req, res) => {
     if (other) throw new HttpError(409, `${other.name} already exists. Merge into them instead.`);
   }
   const active = req.body?.active != null ? (req.body.active ? 1 : 0) : existing.active;
+  const was = get<{ rate: number | null }>('SELECT rate FROM resource WHERE id = ?', id)!.rate;
+  const rate = req.body?.rate !== undefined ? moneyParam(req.body.rate, 'A day rate') : was;
   transaction(() => {
     if (name !== existing.name) audit('resource', id, 'name', existing.name, name);
-    run('UPDATE resource SET name = ?, name_key = ?, active = ? WHERE id = ?', name, resourceKey(name), active, id);
+    if (rate !== was) audit('resource', id, 'rate', was, rate);
+    run('UPDATE resource SET name = ?, name_key = ?, active = ?, rate = ? WHERE id = ?', name, resourceKey(name), active, rate, id);
   });
   res.json(listResources().find((r) => r.id === id));
 }));

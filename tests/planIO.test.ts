@@ -177,3 +177,33 @@ describe('baselines in MS Project XML', () => {
     expect(back.rows[1].duration).toBe(3);
   });
 });
+
+describe('money in files', () => {
+  const costed = tasks.map((t) => (t.id === 11 ? { ...t, fixed_cost: 1250.5, actual_cost: 900, resource_ids: [1] } : t.id === 10 ? { ...t, fixed_cost: 99 } : t));
+  const resources = [{ id: 1, name: 'Mai', active: 1, rate: 520 }];
+
+  it('round-trip through CSV, and a summary writes none', () => {
+    const csv = toCsv({ ...plan, tasks: costed, resources });
+    expect(csv.split('\r\n')[0]).toContain('Resources,Fixed cost,Actual cost,Note');
+    const back = fromCsv(csv);
+    if (!back.ok) throw new Error(back.error);
+    expect(back.rows.map((r) => [r.fixed_cost ?? null, r.actual_cost ?? null])).toEqual([[null, null], [1250.5, 900], [null, null], [null, null]]);
+  });
+
+  it('read amounts with a currency sign and thousands, and refuse what is not an amount', () => {
+    const r = fromCsv('Task,Days,Fixed cost\nA,2,"€1,200"\n');
+    if (!r.ok) throw new Error(r.error);
+    expect(r.rows[0].fixed_cost).toBe(1200);
+    expect(fromCsv('Task,Days,Actual cost\nA,2,lots\n')).toEqual({ ok: false, error: 'Row 1: “lots” is not an amount.' });
+  });
+
+  it('round-trip through MS Project XML in hundredths, with day rates as hourly standard rates', () => {
+    const xml = toMspdi({ ...plan, tasks: costed, resources, projectName: 'P', projectStart: '2026-03-02' });
+    expect(xml).toContain('<FixedCost>125050</FixedCost>');
+    expect(xml).toContain('<ActualCost>90000</ActualCost>');
+    expect(xml).toContain('<StandardRate>65</StandardRate>');
+    const back = fromMspdi(xml);
+    if (!back.ok) throw new Error(back.error);
+    expect(back.rows.map((r) => [r.fixed_cost ?? null, r.actual_cost ?? null])).toEqual([[null, null], [1250.5, 900], [null, null], [null, null]]);
+  });
+});

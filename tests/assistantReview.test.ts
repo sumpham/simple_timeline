@@ -159,6 +159,17 @@ describe('reviewing a suggestion', () => {
     expect(back.verdict.better).toContain('T1 (T1) now meets its deadline of 5 Mar.');
   });
 
+  it('says what a change does to the plan’s cost, when anything is costed', () => {
+    const ctx = context({ people: new Map([[1, [9]], [2, [9]]]) });
+    const s: PlanState = { tasks: [task(1, 5), task(2, 2, { fixed_cost: 50 })], deps: [] };
+    const costed = buildReview(ctx, s, [{ op: 'update', id: 1, fields: { duration: 3 } }], { ...opts, rates: new Map([[9, 100]]), currency: 'EUR' });
+    if ('refused' in costed) throw new Error(costed.refused);
+    expect(costed.diff.cost).toEqual({ before: 750, after: 550, currency: 'EUR', tasks: [{ id: 1, label: 'T1 (T1)', before: 500, after: 300 }] });
+    expect(costed.verdict.better).toContain('Costs €200 less to deliver: €750 → €550.');
+    // Nothing costed: no Budget view at all.
+    expect(review(context(), { tasks: [task(1, 5)], deps: [] }, [{ op: 'update', id: 1, fields: { duration: 3 } }]).diff.cost).toBeNull();
+  });
+
   it('refuses, with the save’s reason, an op a save would refuse', () => {
     const r = buildReview(context(), { tasks: [task(1, 1)], deps: [] }, [{ op: 'update', id: CREATED_ID, fields: { duration: 2 } }], opts);
     expect(r).toEqual({ refused: 'Task not found' });

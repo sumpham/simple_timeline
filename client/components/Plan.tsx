@@ -20,6 +20,8 @@ import type { AssistantReport, Finding } from '../../shared/assistant/rules.ts';
 import { planVersion, type Suggestion, type SuggestionReport } from '../../shared/assistant/optimise.ts';
 import { ReviewPage } from './Review.tsx';
 import { BaselinePicker } from './Baselines.tsx';
+import { BudgetView } from './Budget.tsx';
+import { costsOf, formatMoney } from '../../shared/earnedValue.ts';
 import { formatShift, varianceOf, workingShift } from '../../shared/variance.ts';
 import type { PlanOp } from '../../shared/assistant/moves.ts';
 import type { AdvisorReply } from '../../shared/assistant/validate.ts';
@@ -57,7 +59,7 @@ const SCHEDULE_FIELDS: (keyof TaskInput)[] = [
   'duration', 'environment_id', 'predecessors', 'status', 'not_before', 'actual_start', 'actual_end', 'parent_id', 'deadline',
 ];
 
-type Tab = 'tasks' | 'network' | 'portfolio';
+type Tab = 'tasks' | 'network' | 'budget' | 'portfolio';
 
 /** Tasks in outline order, so row numbers, the table and the chart all agree. */
 function normalize(p: PlanData): PlanData {
@@ -594,6 +596,19 @@ export function PlanView({
     setArrangeUndo(null);
   };
 
+  /** Money's currency is display only: changing it converts nothing and replans nothing. */
+  const setCurrency = async (currency: string) => {
+    try { await api.updateProject(projectId, { currency }); await load(); } catch (err) { fail(err); }
+  };
+  /** From the Budget tab's empty state: the Tasks tab with the cost columns on. */
+  const showCostColumns = () => {
+    try {
+      const prefs = JSON.parse(localStorage.getItem(PREFS_KEY) ?? 'null') ?? DEFAULT_PREFS;
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ ...prefs, cost: true }));
+    } catch { /* the columns are one Show menu away anyway */ }
+    setTab('tasks');
+  };
+
   const setProjectDate = async (field: 'start_date' | 'target_date', value: string) => {
     try {
       await api.updateProject(projectId, { [field]: value || null });
@@ -619,9 +634,10 @@ export function PlanView({
           <div className="segmented" role="group" aria-label="View">
             <button type="button" aria-pressed={tab === 'tasks'} onClick={() => setTab('tasks')}>Tasks</button>
             <button type="button" aria-pressed={tab === 'network'} onClick={() => setTab('network')}>Network</button>
+            <button type="button" aria-pressed={tab === 'budget'} onClick={() => setTab('budget')}>Budget</button>
             <button type="button" aria-pressed={tab === 'portfolio'} onClick={() => setTab('portfolio')}>Portfolio</button>
           </div>
-          {tab !== 'portfolio' && (
+          {tab !== 'portfolio' && tab !== 'budget' && (
             <button
               type="button"
               className="btn quiet assistant-toggle"
@@ -725,6 +741,17 @@ export function PlanView({
           ) : null
         ) : !plan ? (
           <div className="empty"><p>Loading the plan…</p></div>
+        ) : tab === 'budget' ? (
+          <BudgetView
+            projectId={projectId}
+            version={plan}
+            today={today}
+            currency={plan.project.currency ?? 'EUR'}
+            compareName={plan.baselines.find((b) => b.id === plan.project.compare_baseline_id)?.name ?? null}
+            onSaveBaseline={() => openBaselines(true, true)}
+            onShowCosts={showCostColumns}
+            onCurrency={(c) => void setCurrency(c)}
+          />
         ) : tab === 'tasks' ? (
           <TaskTable
             plan={plan}
@@ -800,7 +827,7 @@ export function PlanView({
           </div>
         )}
       </div>
-      {assistantOpen && tab !== 'portfolio' && (
+      {assistantOpen && tab !== 'portfolio' && tab !== 'budget' && (
         <AssistantDrawer
           report={report}
           error={reportError}
@@ -898,6 +925,8 @@ type ChartPrefs = {
   deadline: boolean;
   /** The table's variance columns: start, finish and length against the compared baseline. */
   variance: boolean;
+  /** The table's cost columns: fixed, planned and actual cost. */
+  cost: boolean;
 };
 const PREFS_KEY = 'plan.chart';
 const DEFAULT_PREFS: ChartPrefs = {
@@ -908,13 +937,14 @@ const DEFAULT_PREFS: ChartPrefs = {
   estimates: false,
   deadline: false,
   variance: false,
+  cost: false,
 };
 
 function readPrefs(): ChartPrefs {
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? 'null');
     if (!raw || !ZOOMS.includes(raw.zoom)) return DEFAULT_PREFS;
-    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true, who: raw.who !== false, estimates: raw.estimates === true, deadline: raw.deadline === true, variance: raw.variance === true };
+    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true, who: raw.who !== false, estimates: raw.estimates === true, deadline: raw.deadline === true, variance: raw.variance === true, cost: raw.cost === true };
   } catch {
     return DEFAULT_PREFS;
   }
@@ -1111,7 +1141,7 @@ function TaskTable({
     void document.fonts?.ready.then(() => { if (live) setFontsReady((n) => n + 1); });
     return () => { live = false; };
   }, []);
-  const colKeys = useMemo(() => columnsFor(prefs), [prefs.wbs, prefs.estimates, prefs.who, prefs.deadline, prefs.variance]);
+  const colKeys = useMemo(() => columnsFor(prefs), [prefs.wbs, prefs.estimates, prefs.who, prefs.deadline, prefs.variance, prefs.cost]);
   const fitted = useMemo(() => measureColumns(plan.tasks.map((t) => {
     const o = outlineRows.get(t.id);
     const leaves = o?.summary ? leavesOf(plan.tasks, t.id) : [];
@@ -1454,6 +1484,14 @@ function TaskTable({
   };
 
   const setShow = (k: keyof GanttShow, v: boolean) => setPrefs((p) => ({ ...p, show: { ...p.show, [k]: v } }));
+  /** Each task's planned cost (shared/earnedValue.ts), and the currency it reads in. */
+  const currency = plan.project.currency ?? 'EUR';
+  const costs = useMemo(() => costsOf({
+    tasks: plan.tasks,
+    schedule,
+    people: new Map(plan.tasks.map((t) => [t.id, t.resource_ids ?? []])),
+    rates: new Map(plan.resources.map((r) => [r.id, r.rate ?? null])),
+  }), [plan.tasks, plan.resources, schedule]);
   /** Each task's length in the compared baseline, for the Days var column. */
   const savedDays = useMemo(() => new Map(plan.baseline.map((b) => [b.task_id, b.duration])), [plan.baseline]);
 
@@ -1496,6 +1534,10 @@ function TaskTable({
             <label className="check" title="How far each task has moved from the baseline the plan compares with">
               <input type="checkbox" checked={prefs.variance} onChange={(e) => setPrefs((p) => ({ ...p, variance: e.target.checked }))} />
               <span>Variance columns<small>Start, finish and length against the baseline you compare with, in working days</small></span>
+            </label>
+            <label className="check" title="What each task costs, for the Budget tab">
+              <input type="checkbox" checked={prefs.cost} onChange={(e) => setPrefs((p) => ({ ...p, cost: e.target.checked }))} />
+              <span>Cost columns<small>Fixed cost, planned cost (days × day rates + fixed) and what was really spent</small></span>
             </label>
           </div>
         </details>
@@ -1626,6 +1668,13 @@ function TaskTable({
                 <th scope="col" className="c-num c-var" title="Working days the start has moved from the baseline you compare with: + later, − sooner">Start var</th>
                 <th scope="col" className="c-num c-var" title="Working days the finish has moved from the baseline you compare with: + later, − sooner">Finish var</th>
                 <th scope="col" className="c-num c-var" title="Working days longer (+) or shorter (−) than in the baseline">Days var</th>
+              </>
+            )}
+            {prefs.cost && (
+              <>
+                <th scope="col" className="c-num c-money" title="Cost that is not people's time: a licence, an invoice">Fixed cost</th>
+                <th scope="col" className="c-num c-money" title="Working days × the day rates of the people on it, plus its fixed cost">Planned</th>
+                <th scope="col" className="c-num c-money" title="What it really cost so far. Blank: estimated from time worked × day rates on the Budget tab">Actual</th>
               </>
             )}
             <th scope="col" className="c-num">Float</th>
@@ -1810,6 +1859,20 @@ function TaskTable({
                     <DeadlineCell task={t} schedule={s} onUpdate={onUpdate} />
                   </td>
                 )}
+                {prefs.cost && (
+                  <>
+                    <td className="c-num c-money" data-label="Fixed cost">
+                      {summary ? <span className="cell-quiet">—</span> : <MoneyCell task={t} field="fixed_cost" onError={onError} onUpdate={onUpdate} />}
+                    </td>
+                    <td className="c-num c-money" data-label="Planned">
+                      {costs.get(t.id) == null ? <span className="cell-quiet" title="No day rate on its people and no fixed cost">—</span>
+                        : <span className={summary ? 'cell-quiet' : undefined}>{formatMoney(costs.get(t.id)!, currency)}</span>}
+                    </td>
+                    <td className="c-num c-money" data-label="Actual">
+                      {summary ? <span className="cell-quiet">—</span> : <MoneyCell task={t} field="actual_cost" onError={onError} onUpdate={onUpdate} />}
+                    </td>
+                  </>
+                )}
                 {prefs.variance && <VarianceCells now={s} task={t} summary={summary} saved={baseline.get(t.id)} savedDays={savedDays.get(t.id) ?? null} holidays={holidays} />}
                 <td className="c-num c-float" data-label="Float">
                   {s ? (s.critical ? <strong>critical</strong> : `${s.total_float}d`) : '—'}
@@ -1853,7 +1916,7 @@ function TaskTable({
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRef.current?.focus(); } }}
               />
             </td>
-            <td colSpan={8 + (prefs.wbs ? 1 : 0) + (prefs.estimates ? 2 : 0) + (prefs.deadline ? 1 : 0) + (prefs.variance ? 3 : 0)}>
+            <td colSpan={8 + (prefs.wbs ? 1 : 0) + (prefs.estimates ? 2 : 0) + (prefs.deadline ? 1 : 0) + (prefs.variance ? 3 : 0) + (prefs.cost ? 3 : 0)}>
               <input
                 ref={addRef}
                 value={draft}
@@ -2078,6 +2141,31 @@ function OverdueFlag({ text }: { text: string }) {
 }
 
 /** A best or worst case, blank for the default range, which shows grey as the placeholder. */
+/** A task's fixed or actual cost, typed; blank clears it. Not plan state, so it never replans. */
+function MoneyCell({ task: t, field, onError, onUpdate }: {
+  task: Task;
+  field: 'fixed_cost' | 'actual_cost';
+  onError: (msg: string | null) => void;
+  onUpdate: (t: Task, fields: TaskInput) => Promise<boolean>;
+}) {
+  const stored = t[field] ?? null;
+  return (
+    <CellInput
+      field={field}
+      label={`${field === 'fixed_cost' ? 'Fixed cost' : 'Actual cost'} of ${t.name}`}
+      inputMode="numeric"
+      value={stored == null ? '' : String(stored)}
+      placeholder={field === 'actual_cost' ? 'est.' : '—'}
+      onCommit={(v) => {
+        const text = v.trim().replace(/[,\s]/g, '');
+        const n = text === '' ? null : Number(text);
+        if (n != null && (!Number.isFinite(n) || n < 0)) { onError('A cost is an amount of 0 or more, without the currency sign'); return false; }
+        return n !== stored ? onUpdate(t, { [field]: n }) : undefined;
+      }}
+    />
+  );
+}
+
 function EstimateCell({ task: t, end, onError, onUpdate }: {
   task: Task;
   end: 'duration_low' | 'duration_high';
@@ -2626,6 +2714,8 @@ function TaskEditor({
   const [progressText, setProgressText] = useState(task.progress == null ? '' : String(task.progress));
   const [bestText, setBestText] = useState(task.duration_low == null ? '' : String(task.duration_low));
   const [worstText, setWorstText] = useState(task.duration_high == null ? '' : String(task.duration_high));
+  const [fixedText, setFixedText] = useState(task.fixed_cost == null ? '' : String(task.fixed_cost));
+  const [actualCostText, setActualCostText] = useState(task.actual_cost == null ? '' : String(task.actual_cost));
   const summary = !!outlineRows.get(task.id)?.summary;
   const under = useMemo(() => descendants(plan.tasks, task.id), [plan.tasks, task.id]);
   const progressN = progressText.trim() === '' ? null : Number(progressText);
@@ -2648,7 +2738,12 @@ function TaskEditor({
   const best = bestText.trim() === '' ? null : Number(bestText);
   const worst = worstText.trim() === '' ? null : Number(worstText);
   const estimateProblem = summary || !Number.isInteger(days) ? null : estimateError(days, best, worst);
-  const valid = name.trim() && Number.isInteger(days) && days >= 0 && parsed.ok && progressOk && !codeError && whoParsed.ok && !estimateProblem;
+  const money = (text: string) => { const v = text.trim().replace(/[,\s]/g, ''); return v === '' ? null : Number(v); };
+  const fixedCost = money(fixedText);
+  const actualCost = money(actualCostText);
+  const moneyOk = (n: number | null) => n == null || (Number.isFinite(n) && n >= 0);
+  const valid = name.trim() && Number.isInteger(days) && days >= 0 && parsed.ok && progressOk && !codeError && whoParsed.ok && !estimateProblem
+    && moneyOk(fixedCost) && moneyOk(actualCost);
 
   /** Only what changed goes to the server, so undo and the audit log stay precise. */
   const fields = useMemo<TaskInput>(() => {
@@ -2671,8 +2766,10 @@ function TaskEditor({
       if (best !== (task.duration_low ?? null)) f.duration_low = best;
       if (worst !== (task.duration_high ?? null)) f.duration_high = worst;
     }
+    if (!summary && moneyOk(fixedCost) && fixedCost !== (task.fixed_cost ?? null)) f.fixed_cost = fixedCost;
+    if (!summary && moneyOk(actualCost) && actualCost !== (task.actual_cost ?? null)) f.actual_cost = actualCost;
     return f;
-  }, [name, envId, days, after, code, codeError, notBefore, deadline, status, actualStart, actualEnd, who, note, parentId, progressN, progressOk, task, plan, codeOf, people, best, worst, estimateProblem, summary]);
+  }, [name, envId, days, after, code, codeError, notBefore, deadline, status, actualStart, actualEnd, who, note, parentId, progressN, progressOk, task, plan, codeOf, people, best, worst, estimateProblem, summary, fixedCost, actualCost]);
 
   const dirty = Object.keys(fields).length > 0;
   const key = JSON.stringify(fields);
@@ -2786,6 +2883,22 @@ function TaskEditor({
               placeholder={Number.isInteger(days) ? String(Math.round(rangeOf({ duration: days }).high)) : ''}
               aria-invalid={(estimateProblem?.startsWith('Worst') ?? false) || undefined} />
             <span className="field-hint">{estimateProblem?.startsWith('Worst') ? estimateProblem : 'Working days if it goes badly. Blank uses the grey default.'}</span>
+          </label>
+        </div>
+        )}
+        {!summary && (
+        <div className="pair">
+          <label className="stack">
+            Fixed cost, {plan.project.currency ?? 'EUR'}
+            <input inputMode="decimal" value={fixedText} onChange={(e) => setFixedText(e.target.value)} placeholder="—"
+              aria-invalid={!moneyOk(fixedCost) || undefined} />
+            <span className="field-hint">{moneyOk(fixedCost) ? 'Money that is not people’s time: a licence, an invoice. Added to days × day rates.' : 'An amount of 0 or more, without the currency sign.'}</span>
+          </label>
+          <label className="stack">
+            Actual cost, {plan.project.currency ?? 'EUR'}
+            <input inputMode="decimal" value={actualCostText} onChange={(e) => setActualCostText(e.target.value)} placeholder="est."
+              aria-invalid={!moneyOk(actualCost) || undefined} />
+            <span className="field-hint">{moneyOk(actualCost) ? 'What it really cost so far. Blank: the Budget tab estimates it from time worked × day rates.' : 'An amount of 0 or more, without the currency sign.'}</span>
           </label>
         </div>
         )}

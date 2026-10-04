@@ -166,6 +166,34 @@ Show → **Variance columns** adds Start var, Finish var and Days var: working d
 in bold) or sooner (`−`) than the baseline you compare with. A dash means the task was added
 after that baseline was saved. Baselines never move a date.
 
+## Budget (earned value)
+
+The **Budget** tab answers two questions at a status date: are we behind, and are we over? It
+answers in sentences first ("6% behind schedule. Work worth €8,400 that was planned by now hasn't
+been done."), with the numbers under them.
+
+What it needs:
+- **Costs.** A **day rate** for people (Resources, in the top bar) and/or a **fixed cost** on
+  tasks: a licence, an invoice. A task's planned cost is its working days × its people's day
+  rates, plus its fixed cost. Show → **Cost columns** adds Fixed cost, Planned and Actual to the
+  table; the task editor has the same fields.
+- **A baseline**, saved after the costs are in, so it keeps the budget. Earned value measures
+  against the baseline you compare with.
+
+How it is worked out:
+- **Planned** spreads each task's budget evenly over its baseline working days.
+- **Earned** is each task's budget × its progress, the same progress the chart shows.
+- **Spent** is the actual cost where you typed one, else working days worked so far × day
+  rates (marked "est.").
+- **Schedule** (SPI) and **Cost** (CPI) are 1.0 on plan; under 0.9 they show in bold.
+- **Forecast** is the budget at today's cost efficiency.
+- Tasks added after the baseline have no budget in it, so they are left out, and a note says
+  how many.
+
+The currency is per plan and only changes how money is written; nothing is converted. Money
+never moves a date. A suggestion's review page shows what it does to the plan's cost (a shorter
+task with the same people costs less).
+
 ## Deadlines
 
 A deadline is the date a task must finish by. Set it in the task editor (**Use current finish**
@@ -191,7 +219,10 @@ re-imports as it was. **Export MS Project XML** opens in MS Project with the out
 link types and lags, progress, "start no earlier than", deadlines and every saved baseline
 (the oldest as MS Project's Baseline, then Baseline 1, 2…; MS Project has no names for them).
 Importing such a file adds its baselines' dates to the plan's baselines of those names, or makes
-them while there is room.
+them while there is room. Fixed and actual costs go both ways (MS Project keeps money in
+hundredths), and day rates are written as each person's hourly standard rate, at eight hours a
+day. Rates in an imported file are not read; set them in Resources. CSV has `Fixed cost` and
+`Actual cost` columns, and reads `€1,200` as 1200.
 
 **Import** reads either format and adds the tasks after the plan's last row, all at once. CSV
 headers are matched loosely (`Task` or `Name`, `Days` or `Duration`, `After` or `Predecessors`,

@@ -1,4 +1,5 @@
 import { workingShift } from '../variance.ts';
+import { formatMoney, plannedCost } from '../earnedValue.ts';
 import { bookingsFor, conflictsFor, planImpact } from '../plan.ts';
 import { openConflicts } from '../conflicts.ts';
 import { inOutlineOrder } from '../wbs.ts';
@@ -39,6 +40,8 @@ export type ReviewTask = {
   /** The deadline that counts and working days to spare (negative when late); null with none. */
   deadline: ISODate | null;
   deadline_slack: number | null;
+  /** Its planned cost (shared/earnedValue.ts); null with no rate or fixed cost. Working tasks only. */
+  cost: number | null;
 };
 
 /** One side of a review: the plan as it is, or as the suggestion would leave it. */
@@ -95,6 +98,8 @@ export type ReviewDiff = {
   environment_ids: number[];
   /** People whose overlaps differ, or who are on a task that moves, for the People view. */
   resource_ids: number[];
+  /** What the plan costs bottom-up, before and after, and the tasks whose cost changes; null when nothing is costed. */
+  cost: { before: number; after: number; currency: string; tasks: { id: number; label: string; before: number | null; after: number | null }[] } | null;
 };
 
 /** What the review says first: worse things before better ones, never hidden. */
@@ -120,7 +125,11 @@ export function buildReview(
   ctx: SearchContext,
   state: PlanState,
   ops: readonly PlanOp[],
-  o: { version: string; elsewhere: readonly WorkItem[]; names: ReadonlyMap<number, string> },
+  o: {
+    version: string; elsewhere: readonly WorkItem[]; names: ReadonlyMap<number, string>;
+    /** Day rates by person, and the plan's currency, for the Budget view; absent leaves cost out. */
+    rates?: ReadonlyMap<number, number | null>; currency?: string;
+  },
 ): PlanReview | { refused: string } {
   const search = createSearch(ctx, state);
   if (!search) return { refused: 'This plan has a dependency loop. Remove one of its links.' };
@@ -137,8 +146,9 @@ export function buildReview(
   search.withForecast(after);
 
   const impact = planImpact(before.outcome, after.outcome, ctx.impact);
-  const raw = { before: rawSide(before, ctx, o.elsewhere), after: rawSide(after, ctx, o.elsewhere) };
-  const diff = diffPlans(raw.before, raw.after, impact, { ctx, names: o.names });
+  const rates = o.rates ?? new Map();
+  const raw = { before: rawSide(before, ctx, o.elsewhere, rates), after: rawSide(after, ctx, o.elsewhere, rates) };
+  const diff = diffPlans(raw.before, raw.after, impact, { ctx, names: o.names, currency: o.currency ?? 'EUR' });
   const keep = (s: RawSide): ReviewSide => ({
     tasks: s.tasks,
     deps: s.deps,
@@ -163,7 +173,7 @@ export function buildReview(
 
 type RawSide = ReviewSide & { open: Conflict[] };
 
-function rawSide(e: Evaluation, ctx: SearchContext, elsewhere: readonly WorkItem[]): RawSide {
+function rawSide(e: Evaluation, ctx: SearchContext, elsewhere: readonly WorkItem[], rates: ReadonlyMap<number, number | null>): RawSide {
   const sched = e.outcome.schedule.tasks;
   const byId = new Map(e.state.tasks.map((t) => [t.id, t]));
   const tasks = inOutlineOrder(e.outcome.tasks).map((t): ReviewTask => {
@@ -176,6 +186,7 @@ function rawSide(e: Evaluation, ctx: SearchContext, elsewhere: readonly WorkItem
       resource_ids: [...(ctx.people.get(t.id) ?? [])],
       deadline: s.deadline ?? null,
       deadline_slack: s.deadline_slack ?? null,
+      cost: s.summary ? null : plannedCost(t, ctx.people.get(t.id) ?? [], rates),
     };
   });
   const here = workItems(e.outcome.tasks, sched, (id) => ctx.people.get(id));
@@ -200,7 +211,7 @@ export function diffPlans(
   before: RawSide,
   after: RawSide,
   impact: PlanImpact,
-  o: { ctx: Pick<SearchContext, 'holidays' | 'project'>; names: ReadonlyMap<number, string> },
+  o: { ctx: Pick<SearchContext, 'holidays' | 'project'>; names: ReadonlyMap<number, string>; currency?: string },
 ): ReviewDiff {
   const h = o.ctx.holidays;
   const was = new Map(before.tasks.map((t) => [t.id, t]));
@@ -282,9 +293,20 @@ export function diffPlans(
   for (const x of [...overlaps_opened, ...overlaps_cleared]) people.add(x.resource_id);
   for (const t of [...after.tasks, ...before.tasks]) if (changedIds.has(t.id)) for (const r of t.resource_ids) people.add(r);
 
+  // Cost bottom-up: only when something on either side is costed.
+  const total = (s: RawSide) => s.tasks.reduce((sum, t) => sum + (t.cost ?? 0), 0);
+  const costed = [...before.tasks, ...after.tasks].some((t) => t.cost != null);
+  const costTasks = costed ? [...new Set([...before.tasks, ...after.tasks].map((t) => t.id))].flatMap((id) => {
+    const b = was.get(id)?.cost ?? null;
+    const a = now.get(id)?.cost ?? null;
+    const t = now.get(id) ?? was.get(id)!;
+    return b !== a && !t.summary ? [{ id, label: label(t), before: b, after: a }] : [];
+  }) : [];
+
   const fb = before.forecast;
   const fa = after.forecast;
   return {
+    cost: costed ? { before: total(before), after: total(after), currency: o.currency ?? 'EUR', tasks: costTasks } : null,
     tasks,
     unchanged,
     bookings: impact.bookings,
@@ -341,6 +363,9 @@ export function verdictOf(d: ReviewDiff, ctx: Pick<SearchContext, 'project'>): V
   for (const x of d.overlaps_opened) worse.push(`${x.name} is on ${x.a_label} and ${x.b_label} at once for ${wd(x.days)}.`);
   const gained = d.tasks.filter((t) => t.critical === 'gained').map((t) => t.label);
   if (gained.length) worse.push(`${list(gained)} ${gained.length === 1 ? 'becomes' : 'become'} critical.`);
+  if (d.cost && d.cost.after > d.cost.before) {
+    worse.push(`Costs ${formatMoney(d.cost.after - d.cost.before, d.cost.currency)} more to deliver: ${formatMoney(d.cost.before, d.cost.currency)} → ${formatMoney(d.cost.after, d.cost.currency)}.`);
+  }
   if (d.on_time && d.on_time.after < d.on_time.before) worse.push(`On-time chance ${pct(d.on_time.before)} → ${pct(d.on_time.after)}.`);
 
   if (d.finish.after && d.finish.days < 0) better.push(`Finishes ${day(d.finish.after)}, ${wd(-d.finish.days)} sooner.`);
@@ -354,6 +379,9 @@ export function verdictOf(d: ReviewDiff, ctx: Pick<SearchContext, 'project'>): V
     if (t.deadline?.change === 'met') better.push(`${t.label} now meets its deadline of ${day(t.deadline.date)}.`);
   }
   for (const x of d.overlaps_cleared) better.push(`${x.name} is no longer on ${x.a_label} and ${x.b_label} at once.`);
+  if (d.cost && d.cost.after < d.cost.before) {
+    better.push(`Costs ${formatMoney(d.cost.before - d.cost.after, d.cost.currency)} less to deliver: ${formatMoney(d.cost.before, d.cost.currency)} → ${formatMoney(d.cost.after, d.cost.currency)}.`);
+  }
   const lost = d.tasks.filter((t) => t.critical === 'lost').map((t) => t.label);
   if (lost.length) better.push(`${list(lost)} ${lost.length === 1 ? 'is' : 'are'} no longer critical.`);
 

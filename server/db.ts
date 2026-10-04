@@ -57,6 +57,14 @@ if (!taskColumns.has('duration_low')) {
 if (!taskColumns.has('deadline')) {
   db.exec('ALTER TABLE task ADD COLUMN deadline TEXT');
 }
+if (!taskColumns.has('fixed_cost')) {
+  db.exec('ALTER TABLE task ADD COLUMN fixed_cost REAL CHECK (fixed_cost IS NULL OR fixed_cost >= 0)');
+  db.exec('ALTER TABLE task ADD COLUMN actual_cost REAL CHECK (actual_cost IS NULL OR actual_cost >= 0)');
+}
+const resourceColumns = new Set(
+  db.prepare('PRAGMA table_info(resource)').all().map((c) => (c as { name: string }).name),
+);
+if (!resourceColumns.has('rate')) db.exec('ALTER TABLE resource ADD COLUMN rate REAL CHECK (rate IS NULL OR rate >= 0)');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS task_code ON task (project_id, code)');
 const depColumns = new Set(
   db.prepare('PRAGMA table_info(task_dependency)').all().map((c) => (c as { name: string }).name),
@@ -80,6 +88,7 @@ const projectColumns = new Set(
 if (!projectColumns.has('start_date')) db.exec('ALTER TABLE project ADD COLUMN start_date TEXT');
 if (!projectColumns.has('target_date')) db.exec('ALTER TABLE project ADD COLUMN target_date TEXT');
 if (!projectColumns.has('baseline_at')) db.exec('ALTER TABLE project ADD COLUMN baseline_at TEXT');
+if (!projectColumns.has('currency')) db.exec("ALTER TABLE project ADD COLUMN currency TEXT NOT NULL DEFAULT 'EUR'");
 if (!projectColumns.has('compare_baseline_id')) {
   db.exec('ALTER TABLE project ADD COLUMN compare_baseline_id INTEGER REFERENCES baseline(id) ON DELETE SET NULL');
 }

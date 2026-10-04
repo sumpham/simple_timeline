@@ -764,7 +764,7 @@ export function ResourcesDialog({
 }: {
   /** Null while the list loads. */
   resources: Resource[] | null;
-  onUpdate: (id: number, r: { name?: string; active?: boolean }) => void;
+  onUpdate: (id: number, r: { name?: string; active?: boolean; rate?: number | null }) => void;
   onMerge: (id: number, into: number) => void;
   onDelete: (id: number) => void;
   onClose: () => void;
@@ -809,6 +809,22 @@ export function ResourcesDialog({
                       const v = e.target.value.trim();
                       if (v && v !== r.name) onUpdate(r.id, { name: v });
                       else e.target.value = r.name;
+                    }}
+                  />
+                </label>
+                <label className="stack rate-field" title="Cost per working day, for the Budget tab's earned value. Blank: not costed.">
+                  Day rate
+                  <input
+                    key={`rate-${r.rate ?? ''}`}
+                    inputMode="decimal"
+                    defaultValue={r.rate == null ? '' : String(r.rate)}
+                    placeholder="—"
+                    aria-label={`Day rate of ${r.name}`}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim().replace(/[,\s]/g, '');
+                      const n = v === '' ? null : Number(v);
+                      if (n != null && (!Number.isFinite(n) || n < 0)) { e.target.value = r.rate == null ? '' : String(r.rate); return; }
+                      if (n !== (r.rate ?? null)) onUpdate(r.id, { rate: n });
                     }}
                   />
                 </label>

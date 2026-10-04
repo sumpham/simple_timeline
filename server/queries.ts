@@ -213,7 +213,7 @@ export function workElsewhere(projectId: number): ElsewhereTask[] {
 /** Every person, with how much they are on; for the Resources dialog and the Who suggestions. */
 export function listResources(): Resource[] {
   return all<Resource>(
-    `SELECT r.id, r.name, r.active,
+    `SELECT r.id, r.name, r.active, r.rate,
             COUNT(tr.task_id) AS task_count, COUNT(DISTINCT t.project_id) AS project_count
      FROM resource r
      LEFT JOIN task_resource tr ON tr.resource_id = r.id

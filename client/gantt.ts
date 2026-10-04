@@ -219,19 +219,8 @@ export function finishVariance(baselineEnd: ISODate, end: ISODate, holidays?: Ho
 
 // ---------------------------------------------------------------- progress
 
-type ProgressTask = Pick<Task, 'status' | 'duration' | 'actual_start'> & { progress?: number | null };
-
-/**
- * Percent complete: what someone typed, else what the status says. Work in
- * progress with no figure is estimated from working days elapsed, capped short
- * of done, because only "Done" means done.
- */
-export function progressOf(t: ProgressTask, today: ISODate, holidays?: HolidaySet): number {
-  if (t.progress != null) return Math.max(0, Math.min(100, t.progress));
-  if (t.status === 'done') return 100;
-  if (t.status !== 'in_progress' || !t.actual_start || t.duration <= 0 || today < t.actual_start) return 0;
-  return Math.min(95, Math.round((workingDays(t.actual_start, today, holidays) / t.duration) * 100));
-}
+// Percent complete is shared/progress.ts's rule: earned value reads it too.
+export { progressOf } from '../shared/progress.ts';
 
 /**
  * Baselines with each summary's rolled up from its tasks' (earliest start, latest
@@ -253,12 +242,7 @@ export function rolledBaseline(
   return out;
 }
 
-/** A summary's progress: its tasks' progress weighted by their length. */
-export function rolledProgress(parts: readonly { progress: number; duration: number }[]): number {
-  if (!parts.length) return 0;
-  const weight = parts.reduce((s, p) => s + Math.max(1, p.duration), 0);
-  return Math.round(parts.reduce((s, p) => s + p.progress * Math.max(1, p.duration), 0) / weight);
-}
+export { rolledProgress } from '../shared/progress.ts';
 
 // ---------------------------------------------------------------- tracing and visibility
 

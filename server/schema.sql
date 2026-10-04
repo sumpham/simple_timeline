@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS project (
   baseline_at   TEXT,
   -- The baseline the plan is compared with (ghost bars, variance, the assistant);
   -- NULL when it has none. Moves to the newest one when it is deleted.
-  compare_baseline_id INTEGER REFERENCES baseline(id) ON DELETE SET NULL
+  compare_baseline_id INTEGER REFERENCES baseline(id) ON DELETE SET NULL,
+  -- ISO 4217 code money is shown in. Display only: amounts are never converted.
+  currency      TEXT    NOT NULL DEFAULT 'EUR'
 );
 
 CREATE TABLE IF NOT EXISTS booking (
@@ -125,7 +127,12 @@ CREATE TABLE IF NOT EXISTS task (
   -- Best and worst case in working days (shared/estimates.ts): read only by the
   -- assistant's forecast, never by scheduling, so an edit to them never replans.
   duration_low   INTEGER CHECK (duration_low IS NULL OR duration_low >= 0),
-  duration_high  INTEGER CHECK (duration_high IS NULL OR duration_high >= 0)
+  duration_high  INTEGER CHECK (duration_high IS NULL OR duration_high >= 0),
+  -- Money (reqs/pm_features.md §6), never plan state: an edit to these skips replan.
+  -- Cost that is not people's time (a licence, an invoice), and what was really
+  -- spent when someone knows it; NULL actual is estimated from time worked × rates.
+  fixed_cost     REAL CHECK (fixed_cost IS NULL OR fixed_cost >= 0),
+  actual_cost    REAL CHECK (actual_cost IS NULL OR actual_cost >= 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_project ON task(project_id, sort_order);
@@ -191,7 +198,9 @@ CREATE TABLE IF NOT EXISTS resource (
   -- resourceKey(name): case-insensitive, accents kept. The match rule.
   name_key   TEXT    NOT NULL UNIQUE,
   active     INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+  -- Cost per working day, for earned value; NULL when nobody set one.
+  rate       REAL CHECK (rate IS NULL OR rate >= 0)
 );
 
 -- Who does a task, in the order typed. Written by the task routes, never by

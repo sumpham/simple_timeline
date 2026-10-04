@@ -34,6 +34,9 @@ export type ImportRow = {
   /** Best and worst case in working days, for the forecast (shared/estimates.ts). */
   duration_low?: number | null;
   duration_high?: number | null;
+  /** Money that is not people's time, and what was really spent (reqs/pm_features.md §6). */
+  fixed_cost?: number | null;
+  actual_cost?: number | null;
   /** MS Project's saved baselines for this task, by number (0 is "Baseline", n is "Baseline n"). */
   baselines?: { number: number; start: string; finish: string; duration: number | null }[];
 };
@@ -62,7 +65,7 @@ const STATUS_WORDS: Record<TaskStatus, string> = { todo: 'To do', in_progress: '
 
 // ---------------------------------------------------------------- CSV
 
-const CSV_HEAD = ['ID', 'WBS', 'Task', 'Summary', 'Environment', 'Days', 'Best', 'Worst', 'After', 'Start', 'Finish', 'Deadline', 'Float', 'Status', 'Progress', 'Resources', 'Note'];
+const CSV_HEAD = ['ID', 'WBS', 'Task', 'Summary', 'Environment', 'Days', 'Best', 'Worst', 'After', 'Start', 'Finish', 'Deadline', 'Float', 'Status', 'Progress', 'Resources', 'Fixed cost', 'Actual cost', 'Note'];
 
 function csvCell(v: string | number | null | undefined): string {
   const s = v == null ? '' : String(v);
@@ -83,7 +86,8 @@ export function toCsv(plan: Plan): string {
       plan.environments.find((e) => e.id === t.environment_id)?.name ?? '',
       o?.summary ? '' : t.duration, o?.summary ? '' : t.duration_low, o?.summary ? '' : t.duration_high,
       formatPredecessors(plan.deps, t.id, rowOf),
-      s?.start, s?.end, t.deadline ?? '', s ? s.total_float : '', STATUS_WORDS[t.status], t.progress ?? '', formatResources(t.resource_ids, people), t.note,
+      s?.start, s?.end, t.deadline ?? '', s ? s.total_float : '', STATUS_WORDS[t.status], t.progress ?? '', formatResources(t.resource_ids, people),
+      o?.summary ? '' : t.fixed_cost ?? '', o?.summary ? '' : t.actual_cost ?? '', t.note,
     ].map(csvCell).join(','));
   }
   return `${lines.join('\r\n')}\r\n`;
@@ -130,6 +134,8 @@ const ALIASES: Record<string, string[]> = {
   progress: ['progress', '% complete', 'percent complete', '%'],
   not_before: ['start no earlier than', 'not before', 'snet'],
   deadline: ['deadline', 'due', 'due date', 'finish by'],
+  fixed_cost: ['fixed cost', 'fixed'],
+  actual_cost: ['actual cost', 'actual', 'spent'],
   resources: ['resources', 'who', 'assignee', 'assigned to', 'owner', 'resource', 'resource names'],
   note: ['note', 'notes'],
 };
@@ -206,6 +212,14 @@ export function fromCsv(text: string): ImportResult {
     if (cell(r, 'status') && !status) warnings.push(`Row ${n}: status “${cell(r, 'status')}” was not understood, so it is To do`);
     const nb = cell(r, 'not_before');
     const dl = cell(r, 'deadline');
+    const costs: Pick<ImportRow, 'fixed_cost' | 'actual_cost'> = {};
+    for (const k of ['fixed_cost', 'actual_cost'] as const) {
+      const v = cell(r, k).replace(/[^\d.-]/g, '');
+      if (!cell(r, k)) continue;
+      const x = Number(v);
+      if (!v || !Number.isFinite(x) || x < 0) return { ok: false, error: `Row ${n}: “${cell(r, k)}” is not an amount.` };
+      costs[k] = x;
+    }
     const code = Number(cell(r, 'row'));
     rows.push({
       code: Number.isInteger(code) && code > 0 ? code : null,
@@ -216,6 +230,7 @@ export function fromCsv(text: string): ImportResult {
       progress,
       not_before: /^\d{4}-\d{2}-\d{2}$/.test(nb) ? nb : null,
       deadline: /^\d{4}-\d{2}-\d{2}$/.test(dl) ? dl : null,
+      ...costs,
       note: cell(r, 'note') || null,
       ...range,
     });
@@ -277,6 +292,9 @@ export function toMspdi(plan: Plan & { projectName: string; projectStart: string
       tag('PercentComplete', t.progress ?? (t.status === 'done' ? 100 : 0)),
       ...(t.not_before ? [tag('ConstraintType', 4), tag('ConstraintDate', `${t.not_before}T08:00:00`)] : []),
       ...(t.deadline ? [tag('Deadline', `${t.deadline}T17:00:00`)] : []),
+      // MS Project keeps money in hundredths of the currency unit.
+      ...(!summary && t.fixed_cost != null ? [tag('FixedCost', Math.round(t.fixed_cost * 100))] : []),
+      ...(!summary && t.actual_cost != null ? [tag('ActualCost', Math.round(t.actual_cost * 100))] : []),
       ...(t.note ? [tag('Notes', t.note)] : []),
       ...(!summary ? ([[FIELD_BEST, t.duration_low], [FIELD_WORST, t.duration_high]] as const).flatMap(([field, v]) => (v == null ? [] : [
         '<ExtendedAttribute>', tag('FieldID', field), tag('Value', hoursOf(v)), tag('DurationFormat', 7), '</ExtendedAttribute>',
@@ -305,7 +323,12 @@ export function toMspdi(plan: Plan & { projectName: string; projectStart: string
   if (used.length) {
     const uidOf = new Map(used.map((id, i) => [id, i + 1]));
     out.push('<Resources>');
-    for (const id of used) out.push('<Resource>', tag('UID', uidOf.get(id)!), tag('ID', uidOf.get(id)!), tag('Name', people.get(id)!.name), tag('Type', 1), '</Resource>');
+    for (const id of used) {
+      const rate = people.get(id)!.rate;
+      // A day rate is MS Project's standard rate per hour, at eight hours a day.
+      out.push('<Resource>', tag('UID', uidOf.get(id)!), tag('ID', uidOf.get(id)!), tag('Name', people.get(id)!.name), tag('Type', 1),
+        ...(rate != null ? [tag('StandardRate', Math.round((rate / 8) * 100) / 100), tag('StandardRateFormat', 2)] : []), '</Resource>');
+    }
     out.push('</Resources>', '<Assignments>');
     let uid = 1;
     for (const t of plan.tasks) {
@@ -337,6 +360,7 @@ export function fromMspdi(xml: string): ImportResult {
   type Raw = {
     uid: string; name: string; level: number; hours: number; progress: number | null; links: { uid: string; type: number; lag: number }[];
     note: string | null; nb: string | null; deadline: string | null; best: number | null; worst: number | null;
+    fixed: number | null; spent: number | null;
     baselines: NonNullable<ImportRow['baselines']>;
   };
   const raws: Raw[] = [];
@@ -369,6 +393,9 @@ export function fromMspdi(xml: string): ImportResult {
       links, note: first(b, 'Notes'),
       nb: (ct === '4' || ct === '2') && cd ? cd.slice(0, 10) : null,
       deadline: /^\d{4}-\d{2}-\d{2}/.test(first(b, 'Deadline') ?? '') ? first(b, 'Deadline')!.slice(0, 10) : null,
+      // A summary's costs are its tasks' rolled up in MS Project, never its own.
+      fixed: first(b, 'Summary') === '1' ? null : hundredths(first(b, 'FixedCost')),
+      spent: first(b, 'Summary') === '1' ? null : hundredths(first(b, 'ActualCost')),
       best: daysOf(attrs.get(FIELD_BEST)),
       worst: daysOf(attrs.get(FIELD_WORST)),
       baselines: savedOf[bi].flatMap((s) => {
@@ -415,12 +442,21 @@ export function fromMspdi(xml: string): ImportResult {
       name: r.name.slice(0, 200), duration: Math.max(0, Math.round(r.hours / 8)), parent, predecessors,
       progress: r.progress ? r.progress : null, status: r.progress === 100 ? 'done' as const : 'todo' as const,
       note: r.note, not_before: r.nb, deadline: r.deadline,
+      ...(r.fixed ? { fixed_cost: r.fixed } : {}),
+      ...(r.spent ? { actual_cost: r.spent } : {}),
       resources: whoOfTask.get(r.uid)?.join(', ') ?? null,
       ...(r.baselines.length ? { baselines: r.baselines } : {}),
       ...estimateFor(r, Math.max(0, Math.round(r.hours / 8)), warnings),
     };
   });
   return { ok: true, rows, warnings };
+}
+
+/** MS Project money, kept in hundredths, as an amount; null when absent or not a number. */
+function hundredths(v: string | null): number | null {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n / 100 : null;
 }
 
 /** A file's best and worst case, kept only when they fit around the duration; otherwise dropped with a warning. */

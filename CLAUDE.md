@@ -281,6 +281,14 @@ Settings are not plan state and never replan. The LLM endpoint and key are never
 come from the environment (`ASSISTANT_LLM_URL`, `ASSISTANT_LLM_KEY`), and the default provider
 `none` sends nothing anywhere.
 
+**Money is not plan state** (`reqs/pm_features.md` §6). `task.fixed_cost`, `task.actual_cost`,
+`resource.rate` and `project.currency` are not in `TaskFields`; the task routes take costs as
+extras (`costFrom`, `setCost`, like estimates), so a cost-only edit skips `replan`. Earned value
+is `shared/earnedValue.ts` only (`plannedCost`, `costsOf`, `earnedValue`, `formatMoney`), at a status
+date passed in, against the compared baseline's `task_baseline.cost`; a baseline keeps each
+task's planned cost when saved. Percent complete is `shared/progress.ts`, shared with the chart.
+The currency is display only: never convert.
+
 **Best/Worst estimates are not plan state**, like people: `duration_low`/`duration_high` are
 not in `TaskFields`; the task routes take them as extras (`estimateFrom`, `setEstimate`), and an
 edit touching only them skips `replan`, so it cannot move a date or un-accept a double-booking.

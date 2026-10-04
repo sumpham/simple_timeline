@@ -55,6 +55,8 @@ export type Project = {
   baseline_at?: string | null;
   /** The saved baseline the plan is compared with; null when it has none. */
   compare_baseline_id?: number | null;
+  /** ISO 4217 code money is shown in; display only, never converted. */
+  currency?: string;
   /** Total bookings, not just those inside the current window. */
   booking_count?: number;
   task_count?: number;
@@ -165,6 +167,8 @@ export type Resource = {
   id: number;
   name: string;
   active: number;
+  /** Cost per working day, for earned value; null when nobody set one. */
+  rate?: number | null;
   /** How many tasks and projects they are on; sent by the resource list. */
   task_count?: number;
   project_count?: number;
@@ -216,6 +220,10 @@ export type Task = {
   end_date: ISODate | null;
   total_float: number | null;
   critical: number;
+  /** Cost that is not people's time; not plan state, so an edit to it never replans. */
+  fixed_cost?: number | null;
+  /** What was really spent, when someone knows; null is estimated from time worked × rates. */
+  actual_cost?: number | null;
   /** Where the box was dragged in the network diagram; null is the automatic place. */
   net_x?: number | null;
   net_y?: number | null;

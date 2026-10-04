@@ -6,6 +6,7 @@ import type { Suggestion } from '../../shared/assistant/optimise.ts';
 import type { PlanReview, ReviewSide, ReviewTask, TaskChange } from '../../shared/assistant/review.ts';
 import { loadByDay } from '../../shared/workload.ts';
 import { snapToWorkingDay } from '../../shared/dates.ts';
+import { formatMoney } from '../../shared/earnedValue.ts';
 import { formatDate, formatRange } from '../layout.ts';
 import {
   dayColumn, DAY_WIDTH, ganttDays, ganttScale, gridLines, headerBands, minWeeksFor, spanX, ZOOM_LABEL, ZOOMS, type GanttScale, type Zoom,
@@ -23,10 +24,10 @@ import { PROFILE_WORD } from './Assistant.tsx';
  * the drawer's Apply: the same route, the same replan, the same Undo.
  */
 
-type View = 'timeline' | 'environments' | 'people';
+type View = 'timeline' | 'environments' | 'people' | 'budget';
 type Layout = 'overlay' | 'separate';
 
-const VIEW_LABEL: Record<View, string> = { timeline: 'Timeline', environments: 'Environments', people: 'People' };
+const VIEW_LABEL: Record<View, string> = { timeline: 'Timeline', environments: 'Environments', people: 'People', budget: 'Budget' };
 const VIEW_KEY = 'review.view';
 const ROW = 30;
 const HEAD = 48;
@@ -37,7 +38,7 @@ const CHANGED_ONLY_FROM = 15;
 function readView(): View {
   try {
     const v = localStorage.getItem(VIEW_KEY);
-    return v === 'environments' || v === 'people' ? v : 'timeline';
+    return v === 'environments' || v === 'people' || v === 'budget' ? v : 'timeline';
   } catch { return 'timeline'; }
 }
 
@@ -122,6 +123,8 @@ export function ReviewPage({
   const rowCount = review ? review.after.tasks.length : 0;
   const onlyChanged = changedOnly ?? rowCount > CHANGED_ONLY_FROM;
   const subsetWorse = !all && review && review.diff.clashes_opened.length > 0;
+  /** Budget only when something is costed; a remembered Budget view falls back to the timeline. */
+  const shown: View = view === 'budget' && review && !review.diff.cost ? 'timeline' : view;
 
   return (
     <section className="review" aria-labelledby="review-title" aria-busy={loading}>
@@ -221,14 +224,14 @@ export function ReviewPage({
         <div className="review-view">
           <div className="review-tools" role="toolbar" aria-label="Review view">
             <div className="segmented" role="group" aria-label="Look at">
-              {(Object.keys(VIEW_LABEL) as View[]).map((v) => (
-                <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)}>{VIEW_LABEL[v]}</button>
+              {(Object.keys(VIEW_LABEL) as View[]).filter((v) => v !== 'budget' || review?.diff.cost).map((v) => (
+                <button key={v} type="button" aria-pressed={shown === v} onClick={() => setView(v)}>{VIEW_LABEL[v]}</button>
               ))}
             </div>
             <div className="segmented" role="group" aria-label="Zoom">
               {ZOOMS.map((z) => <button key={z} type="button" aria-pressed={zoom === z} onClick={() => setZoom(z)}>{ZOOM_LABEL[z]}</button>)}
             </div>
-            {view === 'timeline' && (
+            {shown === 'timeline' && (
               <>
                 <label className="check">
                   <input type="checkbox" checked={onlyChanged} onChange={(e) => setChangedOnly(e.target.checked)} />
@@ -243,10 +246,12 @@ export function ReviewPage({
           </div>
           <div className="review-scroll">
           {review && (
-            view === 'timeline' ? (
+            shown === 'timeline' ? (
               <ReviewTimeline review={review} envById={envById} holidays={holidays} today={today} zoom={zoom}
                 layout={layout} changedOnly={onlyChanged} focus={focus} onFocus={setFocus} />
-            ) : view === 'environments' ? (
+            ) : shown === 'budget' && review.diff.cost ? (
+              <ReviewBudget cost={review.diff.cost} />
+            ) : shown === 'environments' ? (
               <ReviewEnvironments review={review} envById={envById} projectId={projectId} holidays={holidays} today={today} zoom={zoom} />
             ) : (
               <ReviewPeople review={review} people={people} holidays={holidays} today={today} zoom={zoom} />
@@ -600,6 +605,38 @@ function ReviewEnvironments({ review, envById, projectId, holidays, today, zoom 
         )}
       />
       <p className="review-legend">Each environment shows now, then after. Hatched red is a double-booking; your project’s bookings are in the environment’s colour.</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- budget
+
+/** What the plan costs bottom-up before and after, and the tasks whose cost moves. */
+function ReviewBudget({ cost }: { cost: NonNullable<PlanReview['diff']['cost']> }) {
+  const m = (n: number) => formatMoney(n, cost.currency);
+  const change = cost.after - cost.before;
+  return (
+    <div className="review-budget">
+      <dl className="review-budget-totals">
+        <div><dt>Planned cost now</dt><dd>{m(cost.before)}</dd></div>
+        <div><dt>After this change</dt><dd>{m(cost.after)}</dd></div>
+        <div><dt>Difference</dt><dd className={change > 0 ? 'is-worse' : undefined}>{change === 0 ? 'none' : `${change > 0 ? '+' : '−'}${m(Math.abs(change))}`}</dd></div>
+      </dl>
+      {cost.tasks.length > 0 ? (
+        <table className="budget-table">
+          <thead><tr><th scope="col">Task</th><th scope="col" className="n">Now</th><th scope="col" className="n">After</th></tr></thead>
+          <tbody>
+            {cost.tasks.map((t) => (
+              <tr key={t.id}>
+                <th scope="row">{t.label}</th>
+                <td className="n">{t.before == null ? '—' : m(t.before)}</td>
+                <td className="n">{t.after == null ? '—' : m(t.after)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : <p className="review-legend">No task’s cost changes: the same days, people and fixed costs.</p>}
+      <p className="review-legend">Planned cost is each task’s working days × its people’s day rates, plus its fixed cost. A shorter task with the same people costs less; crashing it with more people can cost more.</p>
     </div>
   );
 }

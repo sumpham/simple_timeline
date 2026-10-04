@@ -8,6 +8,7 @@ import type { AssistantReport } from '../shared/assistant/rules.ts';
 import type { SuggestionReport } from '../shared/assistant/optimise.ts';
 import type { PlanOp } from '../shared/assistant/moves.ts';
 import type { PlanReview } from '../shared/assistant/review.ts';
+import type { EarnedValue, Missing } from '../shared/earnedValue.ts';
 import type { AdvisorReply } from '../shared/assistant/validate.ts';
 import type { AssistantSettings } from '../shared/assistant/settings.ts';
 
@@ -71,7 +72,7 @@ export type SavedLayout = {
  */
 export type TaskInput = Partial<Pick<Task,
   'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'note' | 'actual_start' | 'actual_end'
-  | 'parent_id' | 'progress' | 'code' | 'duration_low' | 'duration_high' | 'deadline'>>
+  | 'parent_id' | 'progress' | 'code' | 'duration_low' | 'duration_high' | 'deadline' | 'fixed_cost' | 'actual_cost'>>
   & { predecessors?: { id: number; lag: number; type?: LinkType }[]; resources?: string };
 
 export type TaskChange =
@@ -170,7 +171,7 @@ export const api = {
     request<Booking & { previous_end: ISODate }>(`/api/bookings/${id}/release`, { method: 'POST' }),
 
   resources: () => request<Resource[]>('/api/resources'),
-  updateResource: (id: number, body: { name?: string; active?: boolean }) =>
+  updateResource: (id: number, body: { name?: string; active?: boolean; rate?: number | null }) =>
     request<Resource>(`/api/resources/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   mergeResource: (id: number, into: number) =>
     request<Resource>(`/api/resources/${id}/merge`, { method: 'POST', body: JSON.stringify({ into }) }),
@@ -187,6 +188,9 @@ export const api = {
   suggestions: (projectId: number) => request<SuggestionReport>(`/api/projects/${projectId}/assistant/suggestions`),
   previewOps: (projectId: number, ops: PlanOp[]) =>
     request<PlanImpact>(`/api/projects/${projectId}/assistant/preview`, { method: 'POST', body: JSON.stringify({ ops }) }),
+  /** Earned value at a status date (today when omitted), against the compared baseline. */
+  earnedValue: (projectId: number, date?: ISODate) =>
+    request<EarnedValue | Missing>(`/api/projects/${projectId}/earned-value${date ? `?date=${date}` : ''}`),
   reviewOps: (projectId: number, ops: PlanOp[], version: string | null) =>
     request<PlanReview>(`/api/projects/${projectId}/assistant/review`, { method: 'POST', body: JSON.stringify({ ops, version }) }),
   applyOps: (projectId: number, ops: PlanOp[], version: string | null) =>
