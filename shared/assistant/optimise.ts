@@ -52,6 +52,8 @@ export type SearchContext = {
   elsewhere?: readonly ElsewhereWork[];
   /** People's names, for a levelling move's words. */
   names?: ReadonlyMap<number, string>;
+  /** Floors from links to other projects' tasks (shared/projectLinks.ts), held fixed during a search. */
+  external?: ReadonlyMap<number, ISODate>;
 };
 
 export type Evaluation = {
@@ -142,7 +144,7 @@ export function createSearch(ctx: SearchContext, start: PlanState) {
 
   const outcomeOf = (s: PlanState) => {
     calls++;
-    return planProject({ projectStart: ctx.projectStart, tasks: s.tasks, deps: s.deps, bookings: ctx.bookings, holidays: ctx.holidays });
+    return planProject({ projectStart: ctx.projectStart, tasks: s.tasks, deps: s.deps, bookings: ctx.bookings, holidays: ctx.holidays, external: ctx.external });
   };
 
   const first = outcomeOf(start);
@@ -185,6 +187,7 @@ export function createSearch(ctx: SearchContext, start: PlanState) {
       tasks: e.outcome.tasks, deps: e.outcome.deps, projectStart: ctx.projectStart, statusDate: ctx.statusDate,
       target: ctx.project.target_date, runs: ctx.forecastRuns, holidays: ctx.holidays,
       pace: new Map(e.facts.tasks.map((t) => [t.id, t.spi])),
+      external: ctx.external,
     });
     return e;
   };

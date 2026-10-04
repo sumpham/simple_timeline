@@ -1,6 +1,6 @@
 # Professional project management features
 
-Status: planned 2026-10-04. Phases R (§8), A (§3), B (§4), C (§6) and D (§5) built 2026-10-04; E is not built yet. The build plan is the to-do list in §10;
+Status: planned 2026-10-04. Every phase built 2026-10-04: R (§8), A (§3), B (§4), C (§6), D (§5) and E (§7). The build plan is the to-do list in §10;
 tick items there as they land, as `reqs/smart_assistant.md` §10 does.
 
 The five features, plus one change to the assistant that all of them rely on:
@@ -832,28 +832,64 @@ Built as:
   double-booking, fewer overlap days, ML never moves the finish).
 - **Checked:** in headless Chrome.
 
-### Phase E: links between projects
+### Phase E: links between projects (built 2026-10-04)
 
-- [ ] `project_link` table, and routes to create, change and delete links, with the
+- [x] `project_link` table, and routes to create, change and delete links, with the
       project-cycle refusal naming the path.
-- [ ] External floors in `inheritedFloors`, and `replanDownstream` in the same transaction.
+- [x] External floors in `inheritedFloors`, and `replanDownstream` in the same transaction.
       Every replanning route moves to `replanWithDownstream`.
-- [ ] `planImpact.downstream`, and the preview runs the cascade on a copy.
-- [ ] Tests:
+- [x] `planImpact.downstream`, and the preview runs the cascade on a copy.
+- [x] Tests:
   - an upstream slip moves the downstream plan,
   - downstream auto bookings keep their ids, and an accepted double-booking stays accepted,
   - a project cycle is refused,
   - the cascade is bounded,
   - editing either project leaves its `project_link` rows untouched.
-- [ ] `portfolioSchedule`, the Portfolio arrows, and the critical-path toggle.
-- [ ] UI: `Project:code` in After with autocomplete, external chips, Gantt stubs, downstream
+- [x] `portfolioSchedule`, the Portfolio arrows, and the critical-path toggle.
+- [x] UI: `Project:code` in After with autocomplete, external chips, Gantt stubs, downstream
       lines in the impact banner, and the cascade text on delete.
-- [ ] Review page: the Other projects view, fed by the cascade run on a copy.
+- [x] Review page: the Other projects view, fed by the cascade run on a copy.
+
+Built as:
+- **`shared/projectLinks.ts`:** `linkFloor` (FS, SS and FF with lags, read exactly as
+  `scheduleProject` reads a link inside a plan, milestones included), `externalFloors`,
+  `projectOrder` (Kahn's algorithm, naming a loop), `downstreamOf`, `projectTags`,
+  `parseExternal`, `formatExternal`, and `portfolioCritical`.
+- **Floors as an input:** `ScheduleInput.external`, threaded through `planProject`
+  (`PlanOutcome.external`), the forecast, the facts and the search. `not_before` is never
+  written.
+- **Server:**
+  - `project_link`.
+  - `externalFor`, `projectEdges`, `downstreamProjects`, `replanWithDownstream` (every route
+    and Apply), `downstreamImpact`, `withDownstream` (previews), and `replanAll` in project
+    order.
+  - `PUT /api/tasks/:id/external-links` takes a task id, or a plan and TaskID. It refuses a
+    summary, the same plan, another team, and a loop.
+  - The plan response carries `external`, `external_floors` and `link_projects`. The portfolio
+    response carries `links`.
+- **As built:**
+  - The table's After cell is a text input, so a cross-plan link shows there as text
+    (`Card:3`), not an outlined chip. The chip is in the editor's list.
+  - Autocomplete for plan tags isn't built. The editor's **Waits on other plans** (plan, task,
+    type, lag) is the guided way in.
+- **UI:**
+  - After parses `Tag:ID`.
+  - The editor's section; the delete confirm names tasks in other plans that wait on it.
+  - Chart stubs and `→ Tag:ID` notes; downstream lines in the impact banner; the review's
+    Other projects view and verdict lines.
+  - Portfolio arrows, and **Critical path across projects**.
+- **Seed:** Refund endpoints waits on Vault regression in SIT (no move today).
+- **Tests:** `tests/projectLinks.test.ts`.
+- **Checked:**
+  - The cascade over the API: link, slip upstream (the preview predicted +3 days and the save
+    moved exactly that), the loop refused, another team and the same plan refused, and an
+    upstream delete returning the plan to its own dates.
+  - The UI in headless Chrome.
 
 ### After each phase
 
-- [ ] Add that phase's rules to CLAUDE.md (§11).
-- [ ] Update `docs/gantt/user-guide.md` and the DESIGN.md §12 list.
+- [x] Add that phase's rules to CLAUDE.md (§11).
+- [x] Update `docs/gantt/user-guide.md` and the DESIGN.md §12 list.
 
 ---
 

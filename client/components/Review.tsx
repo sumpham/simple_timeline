@@ -24,10 +24,10 @@ import { PROFILE_WORD } from './Assistant.tsx';
  * the drawer's Apply: the same route, the same replan, the same Undo.
  */
 
-type View = 'timeline' | 'environments' | 'people' | 'budget';
+type View = 'timeline' | 'environments' | 'people' | 'budget' | 'projects';
 type Layout = 'overlay' | 'separate';
 
-const VIEW_LABEL: Record<View, string> = { timeline: 'Timeline', environments: 'Environments', people: 'People', budget: 'Budget' };
+const VIEW_LABEL: Record<View, string> = { timeline: 'Timeline', environments: 'Environments', people: 'People', budget: 'Budget', projects: 'Other projects' };
 const VIEW_KEY = 'review.view';
 const ROW = 30;
 const HEAD = 48;
@@ -38,7 +38,7 @@ const CHANGED_ONLY_FROM = 15;
 function readView(): View {
   try {
     const v = localStorage.getItem(VIEW_KEY);
-    return v === 'environments' || v === 'people' || v === 'budget' ? v : 'timeline';
+    return v === 'environments' || v === 'people' || v === 'budget' || v === 'projects' ? v : 'timeline';
   } catch { return 'timeline'; }
 }
 
@@ -125,7 +125,7 @@ export function ReviewPage({
   const onlyChanged = changedOnly ?? rowCount > CHANGED_ONLY_FROM;
   const subsetWorse = !all && review && review.diff.clashes_opened.length > 0;
   /** Budget only when something is costed; a remembered Budget view falls back to the timeline. */
-  const shown: View = view === 'budget' && review && !review.diff.cost ? 'timeline' : view;
+  const shown: View = (view === 'budget' && review && !review.diff.cost) || (view === 'projects' && review && !review.diff.downstream?.length) ? 'timeline' : view;
 
   return (
     <section className="review" aria-labelledby="review-title" aria-busy={loading}>
@@ -225,7 +225,7 @@ export function ReviewPage({
         <div className="review-view">
           <div className="review-tools" role="toolbar" aria-label="Review view">
             <div className="segmented" role="group" aria-label="Look at">
-              {(Object.keys(VIEW_LABEL) as View[]).filter((v) => v !== 'budget' || review?.diff.cost).map((v) => (
+              {(Object.keys(VIEW_LABEL) as View[]).filter((v) => (v !== 'budget' || review?.diff.cost) && (v !== 'projects' || review?.diff.downstream?.length)).map((v) => (
                 <button key={v} type="button" aria-pressed={shown === v} onClick={() => setView(v)}>{VIEW_LABEL[v]}</button>
               ))}
             </div>
@@ -250,6 +250,8 @@ export function ReviewPage({
             shown === 'timeline' ? (
               <ReviewTimeline review={review} envById={envById} holidays={holidays} today={today} zoom={zoom}
                 layout={layout} changedOnly={onlyChanged} focus={focus} onFocus={setFocus} />
+            ) : shown === 'projects' && review.diff.downstream?.length ? (
+              <ReviewProjects downstream={review.diff.downstream} />
             ) : shown === 'budget' && review.diff.cost ? (
               <ReviewBudget cost={review.diff.cost} />
             ) : shown === 'environments' ? (
@@ -606,6 +608,31 @@ function ReviewEnvironments({ review, envById, projectId, holidays, today, zoom 
         )}
       />
       <p className="review-legend">Each environment shows now, then after. Hatched red is a double-booking; your project’s bookings are in the environment’s colour.</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- other projects
+
+/** Plans linked after this one that the change moves: finish before and after, and any double-booking it opens there. */
+function ReviewProjects({ downstream }: { downstream: NonNullable<PlanReview['diff']['downstream']> }) {
+  return (
+    <div className="review-budget">
+      <table className="budget-table">
+        <thead><tr><th scope="col">Plan</th><th scope="col" className="n">Finishes now</th><th scope="col" className="n">After</th><th scope="col" className="n">Moves</th><th scope="col">Double-bookings it opens</th></tr></thead>
+        <tbody>
+          {downstream.map((d) => (
+            <tr key={d.project_id}>
+              <th scope="row"><a href={`#plan/${d.project_id}`}>{d.name}</a></th>
+              <td className="n">{d.finish_before ? formatDate(d.finish_before) : '—'}</td>
+              <td className="n">{d.finish_after ? formatDate(d.finish_after) : '—'}</td>
+              <td className={`n${d.days > 0 ? ' is-worse' : ''}`}>{d.days === 0 ? 'no' : `${d.days > 0 ? '+' : '−'}${Math.abs(d.days)}d`}</td>
+              <td>{d.clashes_added.length ? d.clashes_added.map((c) => `${c.env_name} ${formatRange(c.start_date, c.end_date)}`).join('; ') : <span className="cell-quiet">none</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="review-legend">These plans wait on tasks in this one. Applying moves them too, in the same save; each keeps its own bookings and accepted double-bookings.</p>
     </div>
   );
 }

@@ -34,6 +34,8 @@ export type ForecastInput = {
   holidays?: HolidaySet;
   /** Pace per in-progress task (earned schedule), for a pessimistic tail when it is slow. */
   pace?: ReadonlyMap<number, number | null>;
+  /** Floors from links to other projects, as the plan was scheduled with. */
+  external?: ReadonlyMap<number, ISODate>;
 };
 
 export type Forecast = {
@@ -78,7 +80,7 @@ type Sampler = { low: number; mode: number; high: number; typed: boolean; fixed:
 
 export function forecast(input: ForecastInput, critical: ReadonlySet<number> = new Set()): Forecast | null {
   const holidays = input.holidays;
-  const base = indexNetwork({ tasks: input.tasks, deps: input.deps, projectStart: input.projectStart, holidays });
+  const base = indexNetwork({ tasks: input.tasks, deps: input.deps, projectStart: input.projectStart, holidays, external: input.external });
   if ('cycle' in base || !base.ids.length) return null;
   const runs = Math.max(1, Math.min(FORECAST_RUNS_MAX, Math.floor(input.runs)));
   const byId = new Map(input.tasks.map((t) => [t.id, t]));

@@ -166,6 +166,27 @@ Show → **Variance columns** adds Start var, Finish var and Days var: working d
 in bold) or sooner (`−`) than the baseline you compare with. A dash means the task was added
 after that baseline was saved. Baselines never move a date.
 
+## Links between plans
+
+A task can wait on a task in another plan of the same team: "Refund endpoints after Vault
+regression in Card tokenisation". Write it in **After** as the plan's tag, a colon and the
+task's ID, `Card:3` (with `SS`, `FF` or a lag like any link: `Card:3SS+2`). The tag is the plan's
+first word, or its whole name without spaces when two plans start alike; the start of it is
+enough when it is unique. Or use **Waits on other plans** in the task editor: pick the plan, the
+task and how it waits.
+
+- A link holds the task from starting before the other one allows, like a link inside a plan.
+  It never moves the other plan.
+- When the other plan slips, this one moves with it, in the same save, and so does every plan
+  after it. Before you save, the impact banner and a suggestion's review (Other projects) say
+  which plans move and any double-booking that opens there.
+- On the chart, a short arrow into a bar shows what it waits on (`Card:3`); `→ Refund:1` after
+  a bar names the task in another plan that waits on it.
+- The Portfolio draws the arrows between plans. **Critical path across projects** plans them as
+  one and outlines the work that drives the latest finish of all.
+- Plans can't wait on each other in a loop: that is refused, naming the plans. A summary waits
+  on nothing itself. Deleting a task another plan waits on says so first.
+
 ## People on two tasks at once
 
 Show → **People** adds a strip under the chart: one row per person on the plan, counting their

@@ -19,11 +19,15 @@ export type PlanInput = {
   deps: readonly TaskDependency[];
   bookings: readonly ReconcileBooking[];
   holidays?: HolidaySet;
+  /** Floors from links to other projects' tasks (shared/projectLinks.ts); see ScheduleInput. */
+  external?: ReadonlyMap<number, ISODate>;
 };
 
 export type PlanOutcome = {
   schedule: ScheduleResult;
   deps: readonly TaskDependency[];
+  /** The external floors it was planned with, so a forecast of it plans the same way. */
+  external?: ReadonlyMap<number, ISODate>;
   /** The tasks with their scheduled fields filled in. */
   tasks: Task[];
   holds: TaskHold[];
@@ -32,7 +36,7 @@ export type PlanOutcome = {
 
 export function planProject(input: PlanInput): PlanOutcome | { cycle: number[] } {
   const schedule = scheduleProject({
-    tasks: input.tasks, deps: input.deps, projectStart: input.projectStart, holidays: input.holidays,
+    tasks: input.tasks, deps: input.deps, projectStart: input.projectStart, holidays: input.holidays, external: input.external,
   });
   if ('cycle' in schedule) return schedule;
 
@@ -45,7 +49,7 @@ export function planProject(input: PlanInput): PlanOutcome | { cycle: number[] }
   });
   // A summary is a roll-up, not work: it never books an environment itself.
   const holds = taskHolds(tasks.filter((t) => !schedule.tasks.get(t.id)!.summary), input.holidays);
-  return { schedule, deps: input.deps, tasks, holds, reconciliation: reconcileBookings(input.bookings, holds) };
+  return { schedule, deps: input.deps, external: input.external, tasks, holds, reconciliation: reconcileBookings(input.bookings, holds) };
 }
 
 export type ImpactContext = {

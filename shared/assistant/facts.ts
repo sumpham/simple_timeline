@@ -143,7 +143,7 @@ function negativeFromDeadlines(input: FactsInput): Set<number> {
   if (!negative.length || !outcome.tasks.some((t) => t.deadline)) return new Set();
   const without = scheduleProject({
     tasks: outcome.tasks.map((t) => ({ ...t, deadline: null })), deps: outcome.deps,
-    projectStart: input.projectStart, holidays: input.holidays,
+    projectStart: input.projectStart, holidays: input.holidays, external: outcome.external,
   });
   if ('cycle' in without) return new Set();
   return new Set(negative.filter((s) => (without.tasks.get(s.id)?.total_float ?? 0) >= 0).map((s) => s.id));
@@ -244,6 +244,7 @@ export function planFacts(input: FactsInput): PlanFacts {
       runs: input.forecastRuns,
       holidays,
       pace: new Map(working.map((t) => [t.id, t.spi])),
+      external: outcome.external,
     }, new Set(working.filter((t) => t.critical && t.status !== 'done').map((t) => t.id))) : null,
     holidays,
     ...overlapFacts(input, outcome, tasks),

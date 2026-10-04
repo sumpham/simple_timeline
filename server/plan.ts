@@ -9,7 +9,9 @@
  */
 import { all, audit, get, run } from './db.ts';
 import { holidaySet, listBookings, listEnvironments } from './queries.ts';
-import { planImpact, planProject, type PlanOutcome } from '../shared/plan.ts';
+import { conflictChanges, planImpact, planProject, type ImpactContext, type PlanOutcome } from '../shared/plan.ts';
+import { downstreamOf, externalFloors, projectOrder } from '../shared/projectLinks.ts';
+import { workingShift } from '../shared/variance.ts';
 import { autoBookingKind, isManaged, type ReconcileBooking } from '../shared/taskHolds.ts';
 import { defaultProjectStart } from '../shared/schedule.ts';
 import { descendants, inOutlineOrder, MAX_DEPTH, outline, parentOf, summaryIds, type OutlinePlacement } from '../shared/wbs.ts';
@@ -17,7 +19,7 @@ import { effectiveKind } from '../shared/bookings.ts';
 import { nextTaskCode } from '../shared/taskCode.ts';
 import { today, workingDays } from '../shared/dates.ts';
 import type {
-  Booking, Environment, ISODate, LinkType, PlanImpact, Project, Task, TaskDependency, TaskStatus,
+  Booking, DownstreamEffect, Environment, ISODate, LinkType, PlanImpact, Project, Task, TaskDependency, TaskStatus,
 } from '../shared/types.ts';
 
 export class PlanError extends Error {}
@@ -27,7 +29,72 @@ export type PlanState = {
   tasks: Task[];
   deps: TaskDependency[];
   bookings: ReconcileBooking[];
+  /** Floors from links to other projects' tasks (shared/projectLinks.ts); never stored in not_before. */
+  external?: Map<number, ISODate>;
 };
+
+type IncomingLink = { id: number; predecessor_id: number; successor_id: number; type: LinkType; lag: number; start_date: ISODate | null; end_date: ISODate | null };
+
+/**
+ * The floors this project's tasks get from links to other projects, from each
+ * predecessor's stored dates, or `override` when a preview has moved it.
+ */
+export function externalFor(
+  projectId: number, tasks: readonly Task[], override?: (taskId: number) => { start: ISODate; end: ISODate } | undefined,
+): Map<number, ISODate> {
+  const links = all<IncomingLink>(
+    `SELECT l.id, l.predecessor_id, l.successor_id, l.type, l.lag, p.start_date, p.end_date
+     FROM project_link l JOIN task s ON s.id = l.successor_id JOIN task p ON p.id = l.predecessor_id
+     WHERE s.project_id = ?`, projectId,
+  );
+  if (!links.length) return new Map();
+  const duration = new Map(tasks.map((t) => [t.id, t.duration]));
+  return externalFloors(links.map((l) => {
+    const moved = override?.(l.predecessor_id);
+    const pred = moved ?? (l.start_date && l.end_date ? { start: l.start_date, end: l.end_date } : null);
+    return { ...l, pred };
+  }), (id) => duration.get(id) ?? 1, holidaySet());
+}
+
+/** Which projects wait on which, over links between their tasks: [from, to]. */
+export function projectEdges(teamId?: number): [number, number][] {
+  return all<{ a: number; b: number }>(
+    `SELECT DISTINCT pt.project_id AS a, st.project_id AS b FROM project_link l
+     JOIN task pt ON pt.id = l.predecessor_id JOIN task st ON st.id = l.successor_id
+     JOIN project p ON p.id = pt.project_id
+     WHERE ? IS NULL OR p.team_id = ?`, teamId ?? null, teamId ?? null,
+  ).map((r) => [r.a, r.b]);
+}
+
+/** The projects downstream of one, in the order to replan them. Bounded by the team's projects. */
+export function downstreamProjects(projectId: number): number[] {
+  const team = get<{ team_id: number }>('SELECT team_id FROM project WHERE id = ?', projectId)?.team_id;
+  const edges = projectEdges(team);
+  if (!edges.length) return [];
+  const projects = all<{ id: number }>('SELECT id FROM project WHERE team_id = ?', team).map((p) => p.id);
+  const order = projectOrder(projects, edges);
+  if ('cycle' in order) throw new PlanError(`Plans would wait on each other in a loop: ${projectNames(order.cycle)}.`);
+  return downstreamOf(projectId, order.order, edges);
+}
+
+export function projectNames(ids: readonly number[]): string {
+  const names = new Map(all<{ id: number; name: string }>('SELECT id, name FROM project').map((p) => [p.id, p.name]));
+  return ids.map((id) => names.get(id) ?? `#${id}`).join(' → ');
+}
+
+/**
+ * Replan a project and every project linked after it, upstream first, in the
+ * caller's transaction (reqs/pm_features.md §7.3). Every write that can move a
+ * plan ends here, so a slip reaches the plans that wait on it.
+ */
+export function replanWithDownstream(projectId: number, alsoBefore: readonly number[] = []): PlanOutcome {
+  const outcome = replan(projectId);
+  const now = downstreamProjects(projectId);
+  for (const q of now) replan(q);
+  // Plans that waited on this one before the change (a deleted task took its link with it).
+  for (const q of alsoBefore) if (!now.includes(q) && q !== projectId) replan(q);
+  return outcome;
+}
 
 
 export function loadState(projectId: number): PlanState {
@@ -41,7 +108,7 @@ export function loadState(projectId: number): PlanState {
   );
   const bookings = all<Booking>('SELECT * FROM booking WHERE project_id = ? ORDER BY id', projectId)
     .filter((b) => isManaged(b)) as ReconcileBooking[];
-  return { project, tasks, deps, bookings };
+  return { project, tasks, deps, bookings, external: externalFor(projectId, tasks) };
 }
 
 export function projectStart(state: PlanState): ISODate {
@@ -55,6 +122,7 @@ export function outcomeOf(state: PlanState): PlanOutcome | { cycle: number[] } {
     deps: state.deps,
     bookings: state.bookings,
     holidays: holidaySet(),
+    external: state.external,
   });
 }
 
@@ -127,9 +195,56 @@ export function replan(projectId: number): PlanOutcome {
   return outcome;
 }
 
-/** Replan every project that has tasks, after something global (the holiday table) moved. */
+/** Replan every project that has tasks, after something global (the holiday table) moved: upstream plans first. */
 export function replanAll() {
-  for (const { id } of all<{ id: number }>('SELECT DISTINCT project_id AS id FROM task')) replan(id);
+  const ids = all<{ id: number }>('SELECT DISTINCT project_id AS id FROM task').map((r) => r.id);
+  const order = projectOrder(ids, projectEdges());
+  for (const id of 'cycle' in order ? ids : order.order.filter((id) => ids.includes(id))) replan(id);
+}
+
+/**
+ * What a change to one plan does to the plans linked after it, worked out on
+ * copies: each downstream plan is planned with its floors from the moved
+ * predecessors, upstream first. Writes nothing.
+ */
+export function downstreamImpact(projectId: number, after: PlanOutcome): DownstreamEffect[] {
+  const list = downstreamProjects(projectId);
+  if (!list.length) return [];
+  const spans = new Map<number, { start: ISODate; end: ISODate }>();
+  for (const t of after.tasks) if (t.start_date && t.end_date) spans.set(t.id, { start: t.start_date, end: t.end_date });
+  const holidays = holidaySet();
+  const out: DownstreamEffect[] = [];
+  for (const q of list) {
+    const state = loadState(q);
+    const before = outcomeOf(state);
+    if ('cycle' in before) continue;
+    const moved = planProject({
+      projectStart: projectStart(state), tasks: state.tasks, deps: state.deps, bookings: state.bookings, holidays,
+      external: externalFor(q, state.tasks, (id) => spans.get(id)),
+    });
+    if ('cycle' in moved) continue;
+    for (const t of moved.tasks) if (t.start_date && t.end_date) spans.set(t.id, { start: t.start_date, end: t.end_date });
+    const fb = state.tasks.length ? before.schedule.finish : null;
+    const fa = state.tasks.length ? moved.schedule.finish : null;
+    const days = fb && fa ? workingShift(fb, fa, holidays) : 0;
+    const clashes = conflictChanges(before, moved, impactContextOf(state)).added;
+    if (days !== 0 || clashes.length) out.push({ project_id: q, name: state.project.name, finish_before: fb, finish_after: fa, days, clashes_added: clashes });
+  }
+  return out;
+}
+
+/** What planImpact and conflictChanges read for one project: its team's bookings and accepted clashes. */
+export function impactContextOf(state: PlanState): ImpactContext {
+  const teamId = state.project.team_id;
+  return {
+    project: { id: state.project.id, name: state.project.name, priority: state.project.priority, target_date: state.project.target_date },
+    teamBookings: listBookings({ teamId }),
+    environments: listEnvironments(teamId),
+    resolved: new Set(all<{ key: string }>(
+      'SELECT r.key FROM conflict_resolution r JOIN environment e ON e.id = r.environment_id WHERE e.team_id = ?', teamId,
+    ).map((r) => r.key)),
+    holidays: holidaySet(),
+  };
 }
 
 // ---------------------------------------------------------------- changes
@@ -427,19 +542,21 @@ export function previewChange(projectId: number, change: Change): PlanImpact {
   if ('cycle' in before) throw new PlanError(cycleMessage(before.cycle, state.tasks));
   const after = outcomeOf(applyChange(state, change));
 
-  const teamId = state.project.team_id;
-  return planImpact(before, after, {
-    project: { id: projectId, name: state.project.name, priority: state.project.priority, target_date: state.project.target_date },
-    teamBookings: listBookings({ teamId }),
-    environments: listEnvironments(teamId),
-    resolved: new Set(all<{ key: string }>(
-      'SELECT r.key FROM conflict_resolution r JOIN environment e ON e.id = r.environment_id WHERE e.team_id = ?', teamId,
-    ).map((r) => r.key)),
-    holidays: holidaySet(),
+  const impact = planImpact(before, after, {
+    ...impactContextOf(state),
     deletedTaskIds: change.op === 'delete'
       ? [change.id, ...(change.children === 'delete' ? descendants(state.tasks, change.id) : [])]
       : undefined,
   });
+  return withDownstream(projectId, impact, after);
+}
+
+/** A preview's impact with what it does to the plans linked after this one. */
+export function withDownstream(projectId: number, impact: PlanImpact, after: PlanOutcome | { cycle: number[] }): PlanImpact {
+  if ('cycle' in after) return impact;
+  const downstream = downstreamImpact(projectId, after);
+  if (!downstream.length) return impact;
+  return { ...impact, downstream, risk: downstream.some((d) => d.clashes_added.length || d.days > 0) ? 'high' : impact.risk };
 }
 
 export const TASK_STATUS_VALUES: readonly TaskStatus[] = ['todo', 'in_progress', 'blocked', 'done'];

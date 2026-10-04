@@ -321,4 +321,34 @@ export type PlanImpact = {
   conflicts_cleared: { env_name: string; start_date: ISODate; end_date: ISODate; projects: string[] }[];
   /** Set when the change would make a dependency loop; the change is then refused. */
   cycle?: string[];
+  /** What the change does to projects linked after this one (reqs/pm_features.md §7). */
+  downstream?: DownstreamEffect[];
+};
+
+/** One downstream project a change moves: its finish before and after, and double-bookings it would open. */
+export type DownstreamEffect = {
+  project_id: number;
+  name: string;
+  finish_before: ISODate | null;
+  finish_after: ISODate | null;
+  /** Working days the finish moves; positive is later. */
+  days: number;
+  clashes_added: { env_name: string; start_date: ISODate; end_date: ISODate; projects: string[] }[];
+};
+
+/** A link to or from another project's task, as a plan shows it. */
+export type ExternalLink = {
+  id: number;
+  predecessor_id: number;
+  successor_id: number;
+  type: LinkType;
+  lag: number;
+  /** The task in the other project, and that project. */
+  other_task_id: number;
+  other_code: number | null;
+  other_name: string;
+  other_start: ISODate | null;
+  other_end: ISODate | null;
+  project_id: number;
+  project_name: string;
 };

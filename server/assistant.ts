@@ -6,7 +6,7 @@
  */
 import { all, run, transaction } from './db.ts';
 import { compareBaseline, holidaySet, listBookings, listEnvironments, listTasks, resolvedKeys, workElsewhere } from './queries.ts';
-import { applyChange, loadState, outcomeOf, PlanError, projectStart, replan, writeState, type Change, type PlanState, type TaskFields } from './plan.ts';
+import { applyChange, downstreamImpact, loadState, outcomeOf, PlanError, projectStart, replanWithDownstream, withDownstream, writeState, type Change, type PlanState, type TaskFields } from './plan.ts';
 import { conflictChanges, planImpact } from '../shared/plan.ts';
 import { CREATED_ID, predecessorsOf, type OpFields, type PlanOp } from '../shared/assistant/moves.ts';
 import { createSearch, planVersion, suggest, type SearchContext, type Suggestion, type SuggestionReport } from '../shared/assistant/optimise.ts';
@@ -19,7 +19,7 @@ import { ask, RUBRIC } from './llm/orchestrate.ts';
 import { applyResolutions, detectConflicts } from '../shared/conflicts.ts';
 import { isValidISODate, today } from '../shared/dates.ts';
 import { planFacts } from '../shared/assistant/facts.ts';
-import { assess, type AssistantReport } from '../shared/assistant/rules.ts';
+import { assess, day, type AssistantReport } from '../shared/assistant/rules.ts';
 import { mergeSettings, type AssistantSettings } from '../shared/assistant/settings.ts';
 import { providerFor } from './llm/index.ts';
 import type { ISODate, LinkType, PlanImpact, Task, TaskDependency } from '../shared/types.ts';
@@ -167,6 +167,7 @@ export function searchContext(projectId: number, statusDate: ISODate = today()) 
     longTaskDays: settings.long_task_days,
     forecastRuns: Math.min(settings.forecast_runs, 300),
     elsewhere: elsewhereWork(projectId),
+    external: state.external,
     names: new Map(all<{ id: number; name: string }>('SELECT id, name FROM resource').map((r) => [r.id, r.name])),
     apply: (s, op) => {
       const next = applyChange({ ...state, tasks: s.tasks as Task[], deps: s.deps as TaskDependency[] }, changeOf(op, null));
@@ -199,7 +200,8 @@ export function previewOps(projectId: number, ops: PlanOp[]): PlanImpact {
   if ('cycle' in before) throw new PlanError('This plan has a dependency loop. Remove one of its links.');
   let s: PlanState = state;
   for (const op of ops) s = applyChange(s, changeOf(op, null));
-  return planImpact(before, outcomeOf(s), ctx.impact);
+  const after = outcomeOf(s);
+  return withDownstream(projectId, planImpact(before, after, ctx.impact), after);
 }
 
 /**
@@ -220,6 +222,18 @@ export function reviewOps(projectId: number, ops: PlanOp[], version: string | nu
   const rates = new Map(all<{ id: number; rate: number | null }>('SELECT id, rate FROM resource').map((r) => [r.id, r.rate]));
   const review = buildReview(ctx, state, ops, { version: now, elsewhere, names, rates, currency: state.project.currency ?? 'EUR' });
   if ('refused' in review) throw new PlanError(review.refused);
+  // Plans linked after this one, planned on copies with the moved dates (reqs/pm_features.md §7).
+  let s: PlanState = state;
+  for (const op of ops) s = applyChange(s, changeOf(op, null));
+  const after = outcomeOf(s);
+  const downstream = 'cycle' in after ? [] : downstreamImpact(projectId, after);
+  review.diff.downstream = downstream;
+  const wd = (n: number) => `${Math.abs(n)} working day${Math.abs(n) === 1 ? '' : 's'}`;
+  for (const d of downstream) {
+    if (d.days > 0) review.verdict.worse.push(`Moves ${d.name}’s finish ${wd(d.days)} later.`);
+    for (const c of d.clashes_added) review.verdict.worse.push(`Double-books ${c.env_name} in ${d.name}, ${day(c.start_date)} – ${day(c.end_date)}.`);
+    if (d.days < 0) review.verdict.better.push(`${d.name} finishes ${wd(d.days)} sooner.`);
+  }
   return review;
 }
 
@@ -254,7 +268,7 @@ export function applyOps(projectId: number, ops: PlanOp[], version: string | nul
         undo.unshift({ op: 'delete', id: id! });
       }
     }
-    replan(projectId);
+    replanWithDownstream(projectId);
     return undo;
   });
 }

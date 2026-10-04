@@ -1,7 +1,8 @@
 import type {
   Booking, Conflict, Environment, Holiday, ISODate, PlanImpact, Project, Resource, Task, TaskDependency, TaskHold, TaskSchedule, Team,
 } from '../shared/types.ts';
-import type { Baseline, BaselineTask, BookingView, ElsewhereTask, LinkType } from '../shared/types.ts';
+import type { Baseline, BaselineTask, BookingView, ElsewhereTask, ExternalLink, LinkType } from '../shared/types.ts';
+import type { ProjectLink } from '../shared/projectLinks.ts';
 import type { OutlinePlacement } from '../shared/wbs.ts';
 import type { ImportRow } from './planIO.ts';
 import type { AssistantReport } from '../shared/assistant/rules.ts';
@@ -39,6 +40,12 @@ export type PlanData = {
   baseline: { task_id: number; start_date: ISODate; end_date: ISODate; duration: number | null }[];
   /** Every saved baseline, oldest first (reqs/pm_features.md §4). */
   baselines: Baseline[];
+  /** Links to and from other plans' tasks (reqs/pm_features.md §7). */
+  external: { incoming: ExternalLink[]; outgoing: ExternalLink[] };
+  /** The floors those links set now, by task id, for the chart's drag preview. */
+  external_floors: [number, ISODate][];
+  /** The team's plans, for After's project tags. */
+  link_projects: { id: number; name: string }[];
   /** Every person, for names and the Who suggestions; tasks name them by `resource_ids`. */
   resources: Resource[];
   /** This plan's people's open work in other plans, for the overlap warning. */
@@ -46,6 +53,9 @@ export type PlanData = {
 };
 
 /** Every plan of a team, for the portfolio chart. Read-only. */
+/** One thing a task waits on in another plan, as the link route takes it. */
+export type ExternalLinkInput = ({ task_id: number } | { project_id: number; code: number }) & { type: LinkType; lag: number };
+
 export type PortfolioData = {
   projects: {
     project: Project;
@@ -55,6 +65,8 @@ export type PortfolioData = {
     finish: ISODate | null;
     late_by: number;
   }[];
+  /** Links between the team's plans. */
+  links?: ProjectLink[];
 };
 
 /** A network arrow's shape as saved; see `Route` in client/network.ts. */
@@ -154,6 +166,9 @@ export const api = {
   resetLayout: (projectId: number) => request<void>(`/api/projects/${projectId}/layout/reset`, { method: 'POST' }),
   outlineTasks: (projectId: number, placements: OutlinePlacement[]) =>
     request<{ plan: PlanData }>('/api/tasks/outline', { method: 'POST', body: JSON.stringify({ project_id: projectId, placements }) }),
+  /** Replace what a task waits on in other plans; a task by id, or by its plan and TaskID. */
+  setExternalLinks: (taskId: number, links: ExternalLinkInput[]) =>
+    request<{ plan: PlanData }>(`/api/tasks/${taskId}/external-links`, { method: 'PUT', body: JSON.stringify({ links }) }),
   saveBaseline: (projectId: number, name: string) =>
     request<{ plan: PlanData }>(`/api/projects/${projectId}/baselines`, { method: 'POST', body: JSON.stringify({ name }) }),
   updateBaseline: (id: number, patch: { name?: string; compare?: true }) =>

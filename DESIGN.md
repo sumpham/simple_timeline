@@ -286,10 +286,13 @@ Four things in my first pass were defaults rather than choices, and I changed th
 **In MVP**: swimlane/environment mode, promoted from V2 per §1 above.
 **Built since**: full CRUD (§13), drag-to-edit (§14), conflict resolution, task management (§16),
 the smart assistant (§17) and its review page for suggestions (`reqs/pm_features.md` §8).
-**Still open**: sub-project roll-ups, saved views, bulk shift. For tasks: cross-project links
-(the portfolio shows plans side by side, but a replan does not cascade between them), resource
-levelling, start-to-finish links, more than one baseline, and a virtualised chart for plans of
-several hundred rows.
+**Built since, for project management** (`reqs/pm_features.md`): deadlines, named baselines
+with a slip chart, earned value, levelling people as a suggestion, and links between projects
+that replan downstream.
+
+**Still open**: sub-project roll-ups, saved views, bulk shift. For tasks: a backward pass across
+projects (links between plans are forward only), resource allocation (`Mai[50%]`), start-to-finish
+links, saved "what if" scenarios, and a virtualised chart for plans of several hundred rows.
 
 ## 13. Built beyond the original MVP list
 

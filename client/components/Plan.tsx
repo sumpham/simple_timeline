@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { api, type BoardData, type PlanData, type SavedLayout, type TaskChange, type TaskInput } from '../api.ts';
+import { api, type BoardData, type ExternalLinkInput, type PlanData, type PortfolioData, type SavedLayout, type TaskChange, type TaskInput } from '../api.ts';
+import { formatExternal, isExternalToken, parseExternal, projectTags, type ExternalRef } from '../../shared/projectLinks.ts';
 import type {
   BookingView, Environment, ISODate, LinkType, PlanImpact, Project, Resource, Task, TaskDependency, TaskSchedule, TaskStatus,
 } from '../../shared/types.ts';
@@ -63,7 +64,10 @@ type Tab = 'tasks' | 'network' | 'budget' | 'portfolio';
 
 /** Tasks in outline order, so row numbers, the table and the chart all agree. */
 function normalize(p: PlanData): PlanData {
-  return { ...p, tasks: inOutlineOrder(p.tasks), baseline: p.baseline ?? [], baselines: p.baselines ?? [], elsewhere: p.elsewhere ?? [] };
+  return {
+    ...p, tasks: inOutlineOrder(p.tasks), baseline: p.baseline ?? [], baselines: p.baselines ?? [], elsewhere: p.elsewhere ?? [],
+    external: p.external ?? { incoming: [], outgoing: [] }, external_floors: p.external_floors ?? [], link_projects: p.link_projects ?? [],
+  };
 }
 
 export function PlanView({
@@ -405,6 +409,16 @@ export function PlanView({
       predecessors: [...current.map((d) => ({ id: d.predecessor_id, lag: d.lag, type: d.type ?? 'FS' })), { id: predId, lag: 0, type: 'FS' }],
     }, `${succ.name} now comes after ${pred.name}`);
   };
+  /** What a task waits on in other plans, replaced; replans this plan and every plan after it. */
+  const setExternal = async (t: Task, links: ExternalLinkInput[]): Promise<boolean> => {
+    setSaving(true);
+    try {
+      accept((await api.setExternalLinks(t.id, links)).plan);
+      setNotice(links.length ? `${t.name} now waits on ${links.length} task${links.length === 1 ? '' : 's'} in other plans; plans after this one moved with it.` : `${t.name} no longer waits on other plans.`);
+      onChanged();
+      return true;
+    } catch (err) { fail(err); return false; } finally { setSaving(false); }
+  };
   const changeLink = (dep: TaskDependency, next: { type: LinkType; lag: number } | null) => {
     if (!plan) return Promise.resolve(null);
     const succ = plan.tasks.find((t) => t.id === dep.successor_id)!;
@@ -433,6 +447,8 @@ export function PlanView({
     deps: plan!.dependencies,
     bookings: plan!.bookings.filter((b) => isManaged(b)) as unknown as ReconcileBooking[],
     holidays,
+    // Floors from other plans' tasks, held as they stand: a drag here never moves those plans.
+    external: new Map(plan!.external_floors),
   });
   const baseOutcome = useMemo(() => (plan ? planProject(planInput(plan.tasks)) : null), [plan, holidays]);
 
@@ -780,6 +796,7 @@ export function PlanView({
             onFocused={() => setFocusTask(null)}
             onLink={addLink}
             onLinkChange={changeLink}
+            onSetExternal={setExternal}
             onOpen={setEditing}
             onError={setError}
             onRelease={async (b) => { await onRelease(b); await load(); }}
@@ -889,6 +906,7 @@ export function PlanView({
             if (await save({ op: 'delete', id: editingTask.id, bridge, children: summary ? children : undefined }, title)) setEditing(null);
           }}
           onAddSub={() => { const parent = editingTask; setEditing(null); void addSubTask(parent).then((id) => id != null && setFocusTask(id)); }}
+          onSetExternal={setExternal}
         />
       )}
     </section>
@@ -977,7 +995,7 @@ const SHOW_HINT: Record<keyof GanttShow, string> = {
 function TaskTable({
   plan, schedule, rowOf, codeOf, outlineRows, environments, holidays, today, saving, addRef, board, preview,
   onUpdate, onSetStart, onSetFinish, onSetStartEdge, onAdd, onMove, onMoveTo, onIndent, onOutdent, onAddSub, focusTask, onFocused,
-  onLink, onLinkChange, onOpen, onError, onRelease, onSaveBaseline, onExportCsv, onExportXml, onImport,
+  onLink, onLinkChange, onSetExternal, onOpen, onError, onRelease, onSaveBaseline, onExportCsv, onExportXml, onImport,
   overdue, spotlight,
 }: {
   plan: PlanData;
@@ -1006,6 +1024,8 @@ function TaskTable({
   onFocused: () => void;
   onLink: (predecessorId: number, successorId: number) => Promise<unknown>;
   onLinkChange: (dep: TaskDependency, next: { type: LinkType; lag: number } | null) => Promise<unknown>;
+  /** Replace what a task waits on in other plans (reqs/pm_features.md §7). */
+  onSetExternal: (t: Task, links: ExternalLinkInput[]) => Promise<boolean>;
   onOpen: (id: number) => void;
   onError: (msg: string | null) => void;
   onRelease: (b: BookingView) => Promise<void>;
@@ -1026,6 +1046,11 @@ function TaskTable({
   const idOfCode = useMemo(() => taskIdsByCode(plan.tasks), [plan.tasks]);
   const choices = useMemo(() => plan.tasks.map((t) => ({ id: t.id, code: codeOf.get(t.id)!, name: t.name })), [plan.tasks, codeOf]);
   const people = useMemo(() => new Map(plan.resources.map((r) => [r.id, r])), [plan.resources]);
+  /** Each team plan's tag in After (shared/projectLinks.ts), and a task's links to other plans written that way. */
+  const tags = useMemo(() => projectTags(plan.link_projects), [plan.link_projects]);
+  const externalText = (id: number) => plan.external.incoming.filter((l) => l.successor_id === id)
+    .map((l) => formatExternal(tags.get(l.project_id) ?? l.project_name, l.other_code, l.type, l.lag)).join(', ');
+  const afterText = (id: number) => [formatPredecessors(plan.dependencies, id, codeOf), externalText(id)].filter(Boolean).join(', ');
   const tableRef = useRef<HTMLTableElement>(null);
   const splitRef = useRef<HTMLDivElement>(null);
   /** The two sides of the split: each scrolls sideways on its own, and up and down together. */
@@ -1829,14 +1854,28 @@ function TaskTable({
                 )}
                 <td className="c-after" data-label="After">
                   <AfterCell
-                    value={formatPredecessors(plan.dependencies, t.id, codeOf)}
+                    value={afterText(t.id)}
                     choices={choices}
                     ownId={t.id}
-                    onCommit={(v) => {
-                      const parsed = parseAfter(v, idOfCode, t.id);
+                    onCommit={async (v) => {
+                      // Links inside the plan and to other plans' tasks (Refund:12) share the column.
+                      const tokens = v.split(/[,;\s]+/).filter(Boolean);
+                      const inside = tokens.filter((x) => !isExternalToken(x)).join(', ');
+                      const outside = tokens.filter(isExternalToken);
+                      const parsed = parseAfter(inside, idOfCode, t.id);
                       if (!parsed.ok) { onError(parsed.error); return false; }
-                      if (v.trim() === formatPredecessors(plan.dependencies, t.id, codeOf)) return undefined;
-                      return onUpdate(t, { predecessors: parsed.links });
+                      const refs: ExternalRef[] = [];
+                      for (const x of outside) {
+                        const r = parseExternal(x, plan.link_projects, plan.project.id);
+                        if (!r.ok) { onError(r.error); return false; }
+                        refs.push(r.ref);
+                      }
+                      const insideChanged = inside !== formatPredecessors(plan.dependencies, t.id, codeOf);
+                      const outsideChanged = refs.map((r) => formatExternal(tags.get(r.project_id) ?? '', r.code, r.type, r.lag)).join(', ') !== externalText(t.id);
+                      if (!insideChanged && !outsideChanged) return undefined;
+                      if (insideChanged && !(await onUpdate(t, { predecessors: parsed.links }))) return false;
+                      if (outsideChanged) return onSetExternal(t, refs.map((r) => ({ project_id: r.project_id, code: r.code, type: r.type, lag: r.lag })));
+                      return true;
                     }}
                   />
                 </td>
@@ -2001,6 +2040,7 @@ function TaskTable({
           people={people}
           strip={strip}
           peopleStrip={peopleStrip}
+          external={plan.external.incoming.length || plan.external.outgoing.length ? { ...plan.external, tags } : null}
           command={command}
           preview={preview}
           onOpen={onOpen}
@@ -2384,7 +2424,8 @@ function AfterCell({ value, choices, ownId, onCommit }: {
   value: string;
   choices: readonly { id: number; code: number; name: string }[];
   ownId: number;
-  onCommit: (v: string) => Promise<boolean> | boolean | undefined;
+  /** False keeps the text marked wrong; undefined (nothing changed) puts the saved text back. */
+  onCommit: (v: string) => Promise<boolean | undefined> | boolean | undefined;
 }) {
   const [text, setText] = useState(value);
   const [invalid, setInvalid] = useState(false);
@@ -2601,6 +2642,88 @@ function VarianceCells({ now, task, summary, saved, savedDays, holidays }: {
   return <>{cell('Start var', v.start)}{cell('Finish var', v.finish)}{cell('Days var', v.duration)}</>;
 }
 
+/**
+ * What a task waits on in other plans of its team (reqs/pm_features.md §7): the
+ * list, Remove, and Add by plan and task. Saved as it changes, apart from the
+ * editor's Save, because it replans other plans too.
+ */
+function ExternalLinksField({ task, plan, saving, onSave }: {
+  task: Task;
+  plan: PlanData;
+  saving: boolean;
+  onSave: (links: ExternalLinkInput[]) => Promise<boolean>;
+}) {
+  const mine = plan.external.incoming.filter((l) => l.successor_id === task.id);
+  const others = plan.link_projects.filter((p) => p.id !== plan.project.id);
+  const [adding, setAdding] = useState(false);
+  const [targets, setTargets] = useState<PortfolioData | null>(null);
+  const [projectId, setProjectId] = useState<number | null>(null);
+  const [taskId, setTaskId] = useState<number | null>(null);
+  const [type, setType] = useState<LinkType>('FS');
+  const [lag, setLag] = useState('0');
+  useEffect(() => {
+    if (!adding || targets) return;
+    let live = true;
+    api.portfolio(plan.project.team_id).then((d) => { if (live) setTargets(d); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [adding, targets, plan.project.team_id]);
+
+  const keep = mine.map((l) => ({ task_id: l.predecessor_id, type: l.type, lag: l.lag }));
+  const target = targets?.projects.find((p) => p.project.id === projectId);
+  const working = target ? target.tasks.filter((t) => !target.schedule.find((s) => s.id === t.id)?.summary) : [];
+  const lagN = Number(lag);
+  const add = async () => {
+    if (taskId == null || !Number.isInteger(lagN)) return;
+    if (await onSave([...keep.filter((k) => k.task_id !== taskId), { task_id: taskId, type, lag: lagN }])) {
+      setAdding(false); setTaskId(null); setLag('0'); setType('FS');
+    }
+  };
+
+  if (!others.length) return null;
+  return (
+    <div className="stack external-field">
+      <span>Waits on other plans</span>
+      {mine.length > 0 && (
+        <ul className="external-list">
+          {mine.map((l) => (
+            <li key={l.id}>
+              <span className="external-chip" title={`${l.other_name} in ${l.project_name}${l.other_end ? `, finishes ${formatDate(l.other_end)}` : ''}`}>
+                {l.project_name} · {l.other_code != null ? `T${l.other_code} ` : ''}{l.other_name}
+              </span>
+              <span className="field-hint">{l.type === 'SS' ? 'starts with it' : l.type === 'FF' ? 'finishes with it' : 'after it ends'}{l.lag ? `, ${l.lag > 0 ? '+' : ''}${l.lag}d` : ''}</span>
+              <button type="button" className="link-button" disabled={saving}
+                onClick={() => void onSave(keep.filter((k) => k.task_id !== l.predecessor_id))}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {adding ? (
+        <div className="external-add">
+          <select aria-label="Plan" value={projectId ?? ''} onChange={(e) => { setProjectId(Number(e.target.value) || null); setTaskId(null); }}>
+            <option value="">Plan…</option>
+            {others.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <select aria-label="Task" value={taskId ?? ''} disabled={!target} onChange={(e) => setTaskId(Number(e.target.value) || null)}>
+            <option value="">{targets || !projectId ? 'Task…' : 'Loading…'}</option>
+            {working.map((t) => <option key={t.id} value={t.id}>{t.code != null ? `${t.code} · ` : ''}{t.name}</option>)}
+          </select>
+          <select aria-label="How it waits" value={type} onChange={(e) => setType(e.target.value as LinkType)}>
+            <option value="FS">after it ends</option>
+            <option value="SS">starts with it</option>
+            <option value="FF">finishes with it</option>
+          </select>
+          <input aria-label="Lag in working days" inputMode="numeric" value={lag} onChange={(e) => setLag(e.target.value)} />
+          <button type="button" className="btn" disabled={saving || taskId == null || !Number.isInteger(lagN)} onClick={() => void add()}>Add</button>
+          <button type="button" className="btn quiet" onClick={() => setAdding(false)}>Cancel</button>
+        </div>
+      ) : (
+        <div><button type="button" className="chip" disabled={saving} onClick={() => setAdding(true)}>Add a task from another plan</button></div>
+      )}
+      <span className="field-hint">Saved straight away: its plan and every plan after it move with it. In After you can also write {projectTags(plan.link_projects).get(others[0].id)}:12.</span>
+    </div>
+  );
+}
+
 /** What a deadline in the editor means for this task, in the plan's own working days. */
 function deadlineHint(deadline: string, schedule: TaskSchedule | undefined, summary: boolean, holidays: ReadonlySet<ISODate>): string {
   const base = summary ? 'Holds every task under it. ' : '';
@@ -2701,7 +2824,7 @@ function DateCell({ field, label, value, onCommit }: {
 // ---------------------------------------------------------------- task editor
 
 function TaskEditor({
-  task, plan, rowOf, codeOf, outlineRows, schedule, environments, envName, saving, today, holidays, onClose, onSave, onDelete, onAddSub,
+  task, plan, rowOf, codeOf, outlineRows, schedule, environments, envName, saving, today, holidays, onClose, onSave, onDelete, onAddSub, onSetExternal,
 }: {
   task: Task;
   plan: PlanData;
@@ -2718,8 +2841,11 @@ function TaskEditor({
   onSave: (fields: TaskInput) => void;
   onDelete: (bridge: boolean, children: 'lift' | 'delete') => void;
   onAddSub: () => void;
+  onSetExternal: (t: Task, links: ExternalLinkInput[]) => Promise<boolean>;
 }) {
   const [name, setName] = useState(task.name);
+  /** Tasks in other plans that wait on this one, or on a task it deletes with it: the delete says so. */
+  const waitedOn = plan.external.outgoing.filter((l) => l.predecessor_id === task.id || descendants(plan.tasks, task.id).has(l.predecessor_id));
   const [envId, setEnvId] = useState<number | null>(task.environment_id);
   const [duration, setDuration] = useState(String(task.duration));
   const [after, setAfter] = useState(formatPredecessors(plan.dependencies, task.id, codeOf));
@@ -2832,7 +2958,8 @@ function TaskEditor({
         <>
           <DangerButton
             label={summary && children === 'delete' ? `Delete with ${under.size} sub-task${under.size === 1 ? '' : 's'}` : 'Delete task'}
-            confirmLabel={deleteImpact && deleteImpact.risk === 'high' ? 'Delete anyway?' : summary && children === 'delete' ? `Delete all ${under.size + 1}?` : 'Delete it?'}
+            confirmLabel={waitedOn.length ? `Also unlinks ${waitedOn.length} task${waitedOn.length === 1 ? '' : 's'} in other plans. Delete?`
+              : deleteImpact && deleteImpact.risk === 'high' ? 'Delete anyway?' : summary && children === 'delete' ? `Delete all ${under.size + 1}?` : 'Delete it?'}
             onConfirm={() => onDelete(bridge, children)}
             disabled={saving}
           />
@@ -2944,6 +3071,9 @@ function TaskEditor({
             {summary && <span className="field-hint">Holds every task under it.</span>}
           </label>
         </div>
+        {!summary && (
+          <ExternalLinksField task={task} plan={plan} saving={saving} onSave={(links) => onSetExternal(task, links)} />
+        )}
         <div className="stack deadline-field">
           <label htmlFor="task-deadline">Deadline</label>
           <div className="deadline-row">
@@ -3079,6 +3209,13 @@ function impactLines(i: PlanImpact): { text: string; alarm?: boolean }[] {
   }
   for (const c of i.conflicts_cleared) lines.push({ text: `clear the ${c.env_name} double-booking with ${c.projects.join(' and ')}` });
   if (i.critical_added.length) lines.push({ text: `put ${i.critical_added.map((c) => c.name).join(', ')} on the critical path` });
+  // Plans linked after this one (reqs/pm_features.md §7).
+  for (const d of i.downstream ?? []) {
+    if (d.days) lines.push({ text: `move ${d.name}’s finish ${Math.abs(d.days)} working day${Math.abs(d.days) === 1 ? '' : 's'} ${d.days > 0 ? 'later' : 'earlier'}${d.finish_after ? `, to ${formatDate(d.finish_after)}` : ''}` });
+    for (const c of d.clashes_added) {
+      lines.push({ text: `double-book ${c.env_name} in ${d.name} with ${c.projects.filter((p) => p !== d.name).join(' and ')}, ${formatRange(c.start_date, c.end_date)}`, alarm: true });
+    }
+  }
   return lines;
 }
 

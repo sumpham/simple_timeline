@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type {
-  BookingView, Conflict, Environment, ISODate, LinkType, Resource, Task, TaskDependency, TaskSchedule,
+  BookingView, Conflict, Environment, ExternalLink, ISODate, LinkType, Resource, Task, TaskDependency, TaskSchedule,
 } from '../../shared/types.ts';
 import type { OutlineRow } from '../../shared/wbs.ts';
 import { occupancyByDay } from '../../shared/conflicts.ts';
@@ -92,7 +92,7 @@ type Live = { id: number; fields: TaskInput; date: ISODate; mode: BarMode; resul
 
 export function Gantt({
   tasks, outline, deps, schedule, environments, holidays, today, start, target, rows, head, height, zoom, show,
-  baseline, bookings, progress, people, strip, peopleStrip = null, command, preview, onOpen, onSetStart, onSetFinish, onSetStartEdge, onLink, onLinkChange, onRelease,
+  baseline, bookings, progress, people, strip, peopleStrip = null, external = null, command, preview, onOpen, onSetStart, onSetFinish, onSetStartEdge, onLink, onLinkChange, onRelease,
 }: {
   tasks: readonly Task[];
   outline: ReadonlyMap<number, OutlineRow>;
@@ -117,6 +117,8 @@ export function Gantt({
   people: ReadonlyMap<number, Resource>;
   strip: StripData | null;
   peopleStrip?: PeopleStripData | null;
+  /** Links to and from other plans' tasks, with each plan's tag (reqs/pm_features.md §7). */
+  external?: { incoming: readonly ExternalLink[]; outgoing: readonly ExternalLink[]; tags: ReadonlyMap<number, string> } | null;
   command: GanttCommand | null;
   preview: (t: Task, fields: TaskInput) => GanttPreview | null;
   onOpen: (id: number) => void;
@@ -434,6 +436,11 @@ export function Gantt({
             <title>{`${g.summary ? 'Owner' : 'Who'}: ${who.join(', ')}`}</title>
           </tspan>
         )}
+        {(external?.outgoing ?? []).filter((l) => l.predecessor_id === t.id).map((l) => (
+          <tspan key={l.id} className="gantt-external-out"> → {external!.tags.get(l.project_id) ?? l.project_name}:{l.other_code ?? '?'}
+            <title>{`${l.other_name} in ${l.project_name} waits on this`}</title>
+          </tspan>
+        ))}
         {s.deadline_slack != null && s.deadline_slack < 0 && (
           <tspan className="gantt-variance"> {-s.deadline_slack}d late<title>{`Finishes ${-s.deadline_slack} working day${s.deadline_slack === -1 ? '' : 's'} after its deadline of ${formatDate(s.deadline!)}`}</title></tspan>
         )}
@@ -605,6 +612,20 @@ export function Gantt({
               <path d={`M${x - 5} ${top - 9}h10l-5 6z`} />
               {over && <path className="gantt-overrun" d={`M${x} ${top - 1}v-3H${g.x1}v3`} />}
               <title>{`Deadline ${formatDate(s.deadline)}${t.deadline ? '' : ', from the summary above'}${over ? `: finishes ${-s.deadline_slack!} working day${s.deadline_slack === -1 ? '' : 's'} after it` : ''}`}</title>
+            </g>
+          );
+        })}
+
+        {/* Incoming from another plan: a stub arrow into the bar, never a line to a row that is not here. */}
+        {(external?.incoming ?? []).map((l) => {
+          const g = shapes.get(l.successor_id);
+          if (!g) return null;
+          const x = g.x0 - (g.milestone ? 6 : 1);
+          return (
+            <g key={`ext${l.id}`} className="gantt-external-in">
+              <line x1={x - 22} x2={x - 2} y1={g.mid} y2={g.mid} markerEnd="url(#gantt-arrow)" />
+              <text x={x - 25} y={g.mid + 4} textAnchor="end">{external!.tags.get(l.project_id) ?? l.project_name}:{l.other_code ?? '?'}</text>
+              <title>{`Waits on ${l.other_name} in ${l.project_name}${l.other_end ? `, which finishes ${formatDate(l.other_end)}` : ''}`}</title>
             </g>
           );
         })}

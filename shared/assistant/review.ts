@@ -7,7 +7,7 @@ import { planOverlaps, workItems, type PersonOverlap, type WorkItem } from '../w
 import { createSearch, type Evaluation, type PlanState, type SearchContext } from './optimise.ts';
 import { day, label } from './rules.ts';
 import type { PlanOp } from './moves.ts';
-import type { BookingView, Conflict, ISODate, PlanImpact, TaskDependency } from '../types.ts';
+import type { BookingView, Conflict, DownstreamEffect, ISODate, PlanImpact, TaskDependency } from '../types.ts';
 
 /**
  * Review a suggestion before applying it (reqs/pm_features.md §8): the plan as
@@ -98,6 +98,8 @@ export type ReviewDiff = {
   environment_ids: number[];
   /** People whose overlaps differ, or who are on a task that moves, for the People view. */
   resource_ids: number[];
+  /** Plans linked after this one that the change moves (server-side; shared/projectLinks.ts). */
+  downstream?: DownstreamEffect[];
   /** What the plan costs bottom-up, before and after, and the tasks whose cost changes; null when nothing is costed. */
   cost: { before: number; after: number; currency: string; tasks: { id: number; label: string; before: number | null; after: number | null }[] } | null;
 };

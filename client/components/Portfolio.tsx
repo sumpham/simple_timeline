@@ -7,14 +7,17 @@ import {
   dayColumn, DAY_WIDTH, ganttDays, ganttScale, gridLines, headerBands, minWeeksFor, spanX, ZOOM_LABEL, ZOOMS, type Zoom,
 } from '../gantt.ts';
 import { linkPath } from './Gantt.tsx';
+import { portfolioCritical } from '../../shared/projectLinks.ts';
 
 /**
  * Every plan of the team on one chart: each project as a summary bar from its
  * first task to its last, its target and how late it runs, and its tasks
  * underneath when opened. Read-only; a project's name opens its plan.
  *
- * Links between projects are not modelled yet, so each project's arrows stay
- * inside it.
+ * Links between projects (reqs/pm_features.md §7) are drawn as arrows between
+ * them, to a task when its project is open and to the project's bar when not.
+ * "Critical path across projects" plans every plan as one network
+ * (`portfolioCritical`, read-only) and outlines what drives the latest finish.
  */
 
 const ROW = 30;
@@ -36,6 +39,7 @@ export function Portfolio({ teamId, currentId, holidays, today, onOpen }: {
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState<Zoom>('week');
   const [open, setOpen] = useState<Set<number>>(() => new Set([currentId]));
+  const [acrossProjects, setAcrossProjects] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -78,6 +82,18 @@ export function Portfolio({ teamId, currentId, holidays, today, onOpen }: {
   const grid = useMemo(() => gridLines(days, zoom), [days, zoom]);
   const dayW = DAY_WIDTH[zoom];
 
+  /** The tasks and links that drive the latest finish of all the team's plans, when asked for. */
+  const across = useMemo(() => {
+    if (!acrossProjects || !data) return null;
+    const earliest = (p: PortfolioData['projects'][number]) => p.project.start_date ?? p.schedule.reduce((m, s) => (s.start < m ? s.start : m), p.schedule[0]?.start ?? today);
+    const r = portfolioCritical(
+      data.projects.filter((p) => p.tasks.length).map((p) => ({ id: p.project.id, start: earliest(p), tasks: p.tasks, deps: p.dependencies })),
+      data.links ?? [], holidays,
+    );
+    return 'cycle' in r ? null : r;
+  }, [acrossProjects, data, holidays, today]);
+  const projectOfTask = useMemo(() => new Map((data?.projects ?? []).flatMap((p) => p.tasks.map((t) => [t.id, p.project.id] as const))), [data]);
+
   const toToday = () => {
     if (!scale || !scroller.current) return;
     scroller.current.scrollTo({ left: Math.max(0, (dayColumn(scale, today, 'start') - 10) * dayW), behavior: 'smooth' });
@@ -98,8 +114,13 @@ export function Portfolio({ teamId, currentId, holidays, today, onOpen }: {
     return n;
   });
 
-  // Where each task sits, for drawing its project's links.
+  // Where each task sits, for drawing its project's links; a closed project's links end at its bar.
   const at = new Map<number, { x0: number; x1: number; mid: number; milestone: boolean }>();
+  const projectAt = new Map<number, { x0: number; x1: number; mid: number; milestone: boolean }>();
+  rows.forEach((r, i) => {
+    if (r.kind !== 'project' || !r.start || !r.end) return;
+    projectAt.set(r.id, { ...spanX(scale, r.start, r.end, dayW), mid: i * ROW + ROW / 2, milestone: false });
+  });
   rows.forEach((r, i) => {
     if (r.kind !== 'task') return;
     const mid = i * ROW + ROW / 2;
@@ -118,7 +139,11 @@ export function Portfolio({ teamId, currentId, holidays, today, onOpen }: {
         <button type="button" className="btn quiet" onClick={toToday}>Today</button>
         <button type="button" className="btn quiet" onClick={() => setOpen(new Set(data.projects.map((p) => p.project.id)))}>Open all</button>
         <button type="button" className="btn quiet" onClick={() => setOpen(new Set())}>Close all</button>
-        <span className="toolbar-note">Each project runs from its first task to its last. Links between projects are not tracked yet.</span>
+        <label className="check" title="Plan every plan as one network and outline the work that drives the latest finish">
+          <input type="checkbox" checked={acrossProjects} onChange={(e) => setAcrossProjects(e.target.checked)} />
+          Critical path across projects
+        </label>
+        <span className="toolbar-note">Each project runs from its first task to its last. Arrows between projects are tasks waiting on another plan.</span>
       </div>
       <div className="task-split portfolio-split" ref={scroller}>
         <div className="task-split-table portfolio-names">
@@ -183,6 +208,16 @@ export function Portfolio({ teamId, currentId, holidays, today, onOpen }: {
                 );
               });
             })}
+            {(data.links ?? []).map((l) => {
+              const a = at.get(l.predecessor_id) ?? projectAt.get(projectOfTask.get(l.predecessor_id) ?? -1);
+              const b = at.get(l.successor_id) ?? projectAt.get(projectOfTask.get(l.successor_id) ?? -1);
+              if (!a || !b) return null;
+              const onPath = across?.links.has(l.id) ?? false;
+              return (
+                <path key={`x${l.id}`} className={`gantt-link pf-cross${onPath ? ' is-critical' : ''}`}
+                  d={linkPath(a, b, l.type)} markerEnd={`url(#pf-arrow${onPath ? '-critical' : ''})`} />
+              );
+            })}
             {rows.map((r, i) => {
               const mid = i * ROW + ROW / 2;
               if (r.kind === 'project') {
@@ -199,7 +234,8 @@ export function Portfolio({ teamId, currentId, holidays, today, onOpen }: {
                 );
               }
               const { x0, x1 } = at.get(r.id)!;
-              const cls = `gantt-task pf-task${r.s.critical ? ' is-critical' : ''}${r.summary ? ' is-summary' : ''}`;
+              const critical = across ? across.critical.has(r.id) : r.s.critical;
+              const cls = `gantt-task pf-task${critical ? ' is-critical' : ''}${r.summary ? ' is-summary' : ''}`;
               return (
                 <g key={`t${r.id}`} className={cls}>
                   <title>{`${r.name}: ${formatRange(r.s.start, r.s.end)}`}</title>

@@ -6,7 +6,8 @@ import { isValidISODate, isWorkingDay, snapToWorkingDay } from '../shared/dates.
 import { effectiveKind } from '../shared/bookings.ts';
 import { baselineTasks, compareBaseline, holidaySet, listBaselines, listTasks } from './queries.ts';
 import { plannedCosts, projectEarnedValue } from './money.ts';
-import { applyChange, checkOutline, loadState, outcomeOf, PlanError, previewChange, replan, replanAll, writeState, type Change, type TaskFields } from './plan.ts';
+import { applyChange, checkOutline, loadState, outcomeOf, PlanError, downstreamProjects, previewChange, projectEdges, projectNames, replanAll, replanWithDownstream, writeState, type Change, type TaskFields } from './plan.ts';
+import { projectOrder } from '../shared/projectLinks.ts';
 import { lateBy } from '../shared/schedule.ts';
 import { TASK_CODE_MAX } from '../shared/taskCode.ts';
 import { ESTIMATE_MAX, estimateError, type Estimate } from '../shared/estimates.ts';
@@ -15,7 +16,7 @@ import { providerStatus } from './llm/index.ts';
 import { advisorReply, applyOps, assistantReport, assistantSettings, opsFrom, previewOps, reviewOps, StaleError, suggestionReport } from './assistant.ts';
 import { cleanResourceName, formatResources, parseResources, RESOURCE_NAME_MAX, resourceKey } from '../shared/resources.ts';
 import {
-  BASELINE_NAME_MAX, BASELINES_MAX, LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
+  BASELINE_NAME_MAX, BASELINES_MAX, LINK_TYPES, MARKERS, TASK_STATUSES, type ExternalLink, type LinkType, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
   type Task,
 } from '../shared/types.ts';
 
@@ -335,7 +336,7 @@ router.patch('/projects/:id', handle((req, res) => {
     // Moving the start moves every task that is not pinned by a predecessor or its actual dates.
     if (next.start_date !== (existing.start_date ?? null)) {
       audit('project', id, 'start_date', existing.start_date, next.start_date);
-      replan(id);
+      replanWithDownstream(id);
     }
   });
   res.json(get('SELECT * FROM project WHERE id = ?', id));
@@ -431,7 +432,7 @@ router.post('/bookings', handle((req, res) => {
       start, end,
     );
     // A new manual booking may take over a hold that an auto booking was serving.
-    replan(projectId!);
+    replanWithDownstream(projectId!);
     return Number(lastInsertRowid);
   });
 
@@ -494,7 +495,7 @@ router.patch('/bookings/:id', handle((req, res) => {
       envId, kind, auto && !datesGiven ? existing.start_date : start, auto && !datesGiven ? existing.end_date : end,
       confidence, optional, note, marker, timelineText, manualStart, manualEnd, id,
     );
-    replan(existing.project_id);
+    replanWithDownstream(existing.project_id);
   });
   res.json({ ...get('SELECT * FROM booking WHERE id = ?', id), adjusted });
 }));
@@ -515,7 +516,7 @@ router.delete('/bookings/:id', handle((req, res) => {
   transaction(() => {
     run('DELETE FROM booking WHERE id = ?', id);
     // Tasks it covered now need an auto booking of their own.
-    replan(existing.project_id);
+    replanWithDownstream(existing.project_id);
   });
   res.status(204).end();
 }));
@@ -533,7 +534,7 @@ router.post('/bookings/:id/release', handle((req, res) => {
     const start = existing.manual_start && existing.manual_start < existing.hold_end! ? existing.manual_start : existing.hold_start;
     audit('booking', id, 'manual_end', previousEnd, existing.hold_end);
     run('UPDATE booking SET manual_start = ?, manual_end = ? WHERE id = ?', start, existing.hold_end, id);
-    replan(existing.project_id);
+    replanWithDownstream(existing.project_id);
   });
   res.json({ ...get('SELECT * FROM booking WHERE id = ?', id), previous_end: previousEnd });
 }));
@@ -564,6 +565,11 @@ function planResponse(projectId: number) {
     resources: listResources(),
     // Their work in other plans, so a person on two tasks at once is warned about here.
     elsewhere: workElsewhere(projectId),
+    // Links to and from other plans (reqs/pm_features.md §7), the floors they set now,
+    // for the chart's drag preview, and the team's plans, for After's tags.
+    external: externalLinksOf(projectId),
+    external_floors: [...(state.external ?? new Map())],
+    link_projects: all<{ id: number; name: string }>('SELECT id, name FROM project WHERE team_id = ? ORDER BY name', state.project.team_id),
   };
 }
 
@@ -759,8 +765,9 @@ function commit(projectId: number, change: Change, extras: Extras = {}): number 
       return null;
     }
     const before = loadState(projectId);
+    const downstream = downstreamProjects(projectId);
     const created = writeState(before, applyChange(before, change));
-    replan(projectId);
+    replanWithDownstream(projectId, downstream);
     const taskId = change.op === 'create' ? created : change.op === 'update' ? change.id : null;
     if (who && taskId != null) assign(taskId, who);
     if (estimate && taskId != null) setEstimate(taskId, estimate);
@@ -1048,7 +1055,7 @@ router.post('/projects/:id/import', handle((req, res) => {
     const state = loadState(projectId);
     const checked = checkOutline(state.tasks, state.deps);
     for (const t of checked.tasks) if (t.environment_id == null) run('UPDATE task SET environment_id = NULL WHERE id = ?', t.id);
-    replan(projectId);
+    replanWithDownstream(projectId);
   });
   res.status(201).json({ plan: planResponse(projectId), created: parsed.length, warnings });
 }));
@@ -1128,7 +1135,76 @@ router.get('/teams/:id/portfolio', handle((req, res) => {
       late_by: lateBy(finish, p.target_date, holidays),
     };
   });
-  res.json({ projects });
+  // Links between the team's plans, for the portfolio's arrows and its critical path across them.
+  const links = all<{ id: number; predecessor_id: number; successor_id: number; type: LinkType; lag: number }>(
+    `SELECT l.id, l.predecessor_id, l.successor_id, l.type, l.lag FROM project_link l
+     JOIN task t ON t.id = l.predecessor_id JOIN project p ON p.id = t.project_id WHERE p.team_id = ?`, teamId,
+  );
+  res.json({ projects, links });
+}));
+
+// ---------------------------------------------------------------- links between projects
+
+/** A plan's links to and from other projects' tasks, with the other side named. */
+function externalLinksOf(projectId: number): { incoming: ExternalLink[]; outgoing: ExternalLink[] } {
+  const select = (other: 'predecessor_id' | 'successor_id', own: 'predecessor_id' | 'successor_id') => all<ExternalLink>(
+    `SELECT l.id, l.predecessor_id, l.successor_id, l.type, l.lag,
+            o.id AS other_task_id, o.code AS other_code, o.name AS other_name, o.start_date AS other_start, o.end_date AS other_end,
+            op.id AS project_id, op.name AS project_name
+     FROM project_link l JOIN task me ON me.id = l.${own} JOIN task o ON o.id = l.${other} JOIN project op ON op.id = o.project_id
+     WHERE me.project_id = ? ORDER BY op.name, o.code`, projectId,
+  );
+  return { incoming: select('predecessor_id', 'successor_id'), outgoing: select('successor_id', 'predecessor_id') };
+}
+
+/**
+ * Set what a task waits on in other plans of its team: the whole list,
+ * replacing what it had. Refused for a summary, a task in its own plan, another
+ * team's task, and a loop between plans, naming it. Replans the task's plan and
+ * every plan after it, in one transaction.
+ */
+router.put('/tasks/:id/external-links', handle((req, res) => {
+  const id = Number(req.params.id);
+  const project = taskProject(id);
+  const raw = req.body?.links;
+  if (!Array.isArray(raw) || raw.length > 50) throw bad('links must be a list of at most 50');
+  if (get('SELECT id FROM task WHERE parent_id = ? LIMIT 1', id) && raw.length) {
+    throw bad('A summary waits on nothing itself: link the tasks under it');
+  }
+  const links = raw.map((l) => {
+    // A task by its id, or as After writes it: its plan and its TaskID.
+    const o = (l ?? {}) as { task_id?: unknown; project_id?: unknown; code?: unknown };
+    const predId = intParam(o.task_id) ?? (intParam(o.project_id) != null && intParam(o.code) != null
+      ? get<{ id: number }>('SELECT id FROM task WHERE project_id = ? AND code = ?', intParam(o.project_id), intParam(o.code))?.id
+      : undefined);
+    const pred = predId != null ? get<Task & { team_id: number; project_name: string }>(
+      'SELECT t.*, p.team_id, p.name AS project_name FROM task t JOIN project p ON p.id = t.project_id WHERE t.id = ?', predId,
+    ) : undefined;
+    if (!pred) {
+      const p = intParam(o.project_id) != null ? get<{ name: string }>('SELECT name FROM project WHERE id = ?', intParam(o.project_id)) : undefined;
+      throw bad(p ? `${p.name} has no task with ID ${o.code}` : 'Each link needs a task that exists');
+    }
+    if (pred.project_id === project.id) throw bad('That task is in this plan: write its ID alone in After');
+    if (pred.team_id !== project.team_id) throw bad('Plans can only wait on plans of the same team');
+    if (get('SELECT id FROM task WHERE parent_id = ? LIMIT 1', pred.id)) throw bad(`${pred.name} in ${pred.project_name} is a summary: link one of the tasks under it`);
+    const lag = intParam((l as { lag?: unknown })?.lag ?? 0);
+    if (lag == null || lag < -1000 || lag > 1000) throw bad('A lag is a whole number of working days');
+    return { pred: pred.id, type: oneOf((l as { type?: unknown })?.type ?? 'FS', LINK_TYPES, 'link type'), lag };
+  });
+  transaction(() => {
+    const before = all<{ predecessor_id: number; type: string; lag: number }>('SELECT predecessor_id, type, lag FROM project_link WHERE successor_id = ?', id);
+    run('DELETE FROM project_link WHERE successor_id = ?', id);
+    for (const l of links) {
+      run('INSERT OR REPLACE INTO project_link (predecessor_id, successor_id, type, lag) VALUES (?, ?, ?, ?)', l.pred, id, l.type, l.lag);
+    }
+    const projects = all<{ id: number }>('SELECT id FROM project WHERE team_id = ?', project.team_id).map((p) => p.id);
+    const order = projectOrder(projects, projectEdges(project.team_id));
+    if ('cycle' in order) throw bad(`Plans would wait on each other in a loop: ${projectNames(order.cycle)}`);
+    const show = (rows: readonly { predecessor_id: number; type: string; lag: number }[]) => rows.map((r) => `${r.predecessor_id}${r.type}${r.lag}`).sort().join(',') || null;
+    audit('task', id, 'external_links', show(before), show(links.map((l) => ({ predecessor_id: l.pred, type: l.type, lag: l.lag }))));
+    replanWithDownstream(project.id);
+  });
+  res.json({ plan: planResponse(project.id) });
 }));
 
 router.post('/tasks/reorder', handle((req, res) => {

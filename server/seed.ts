@@ -169,10 +169,10 @@ const HOLIDAYS = [
 ];
 
 transaction(() => {
-  for (const table of ['audit_log', 'task_baseline', 'baseline', 'task_resource', 'resource', 'task_dependency', 'task', 'booking', 'project', 'environment', 'holiday', 'team']) {
+  for (const table of ['audit_log', 'project_link', 'task_baseline', 'baseline', 'task_resource', 'resource', 'task_dependency', 'task', 'booking', 'project', 'environment', 'holiday', 'team']) {
     run(`DELETE FROM ${table}`);
   }
-  db.exec("DELETE FROM sqlite_sequence WHERE name IN ('team','environment','project','booking','task','resource','baseline')");
+  db.exec("DELETE FROM sqlite_sequence WHERE name IN ('team','environment','project','booking','task','resource','baseline','project_link')");
 
   for (const h of HOLIDAYS) run('INSERT OR REPLACE INTO holiday (date, name) VALUES (?, ?)', h.date, h.name);
 
@@ -259,6 +259,16 @@ transaction(() => {
         run('UPDATE project SET compare_baseline_id = COALESCE(compare_baseline_id, ?) WHERE id = ?', id, projectId);
       }
     }
+  }
+
+  // A link between plans (reqs/pm_features.md §7): the refund API needs the card vault's
+  // regression done first. It has room today, so it shows without moving anything.
+  const taskNamed = (name: string) => (db.prepare('SELECT id, project_id FROM task WHERE name = ?').get(name) as { id: number; project_id: number } | undefined);
+  const vault = taskNamed('Vault regression in SIT');
+  const refund = taskNamed('Refund endpoints');
+  if (vault && refund) {
+    run("INSERT INTO project_link (predecessor_id, successor_id, type, lag) VALUES (?, ?, 'FS', 0)", vault.id, refund.id);
+    replan(refund.project_id);
   }
 });
 

@@ -32,6 +32,12 @@ export type ScheduleInput = {
   deps: readonly TaskDependency[];
   projectStart: ISODate;
   holidays?: HolidaySet;
+  /**
+   * Floors from links to tasks in other projects (shared/projectLinks.ts), by task
+   * id: a start no earlier than, worked out from the predecessor's dates. Never
+   * stored in `not_before`, so removing the link removes the floor.
+   */
+  external?: ReadonlyMap<number, ISODate>;
 };
 
 export type ScheduleResult = {
@@ -117,7 +123,13 @@ function prepare(input: ScheduleInput): Prepared | ScheduleFailure {
   const summaries = summaryIds(outlineTasks);
   // A summary's "start no earlier than" holds every task under it.
   const floors = inheritedFloors(outlineTasks);
-  const byId = new Map(input.tasks.filter((t) => !summaries.has(t.id)).map((t) => [t.id, { ...t, not_before: floors.get(t.id) ?? null }]));
+  // A link from another project holds the task the same way, whichever is later.
+  const floorOf = (id: number) => {
+    const own = floors.get(id) ?? null;
+    const ext = input.external?.get(id) ?? null;
+    return own && ext ? (own > ext ? own : ext) : own ?? ext;
+  };
+  const byId = new Map(input.tasks.filter((t) => !summaries.has(t.id)).map((t) => [t.id, { ...t, not_before: floorOf(t.id) }]));
   const deps = expandLinks(outlineTasks, input.deps, summaries)
     .filter((d) => byId.has(d.predecessor_id) && byId.has(d.successor_id));
 

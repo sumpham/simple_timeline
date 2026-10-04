@@ -161,6 +161,22 @@ CREATE TABLE IF NOT EXISTS task_dependency (
 
 CREATE INDEX IF NOT EXISTS idx_dep_successor ON task_dependency(successor_id);
 
+-- A link between tasks of two projects of one team (reqs/pm_features.md §7). Its
+-- own table, never task_dependency: writeState rewrites a project's links on every
+-- edit, which would wipe these from either side. Forward only: it floors the
+-- successor's start (shared/projectLinks.ts), recomputed on every replan.
+CREATE TABLE IF NOT EXISTS project_link (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  predecessor_id INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  successor_id   INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  type           TEXT    NOT NULL DEFAULT 'FS' CHECK (type IN ('FS','SS','FF')),
+  lag            INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (predecessor_id, successor_id),
+  CHECK (predecessor_id <> successor_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_link_successor ON project_link(successor_id);
+
 -- A project's saved baselines (reqs/pm_features.md §4): up to ten named
 -- snapshots of the plan as it stood. For comparison only; scheduling and replan
 -- never read them. `finish` is the plan's finish when saved, for the slip chart.

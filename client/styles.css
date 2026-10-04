@@ -3629,3 +3629,27 @@ path.gantt-summary.review-was { fill: none; }
 .assistant-level { padding: 10px 16px 12px; display: grid; gap: 8px; justify-items: start; border-bottom: 1px solid var(--rule-soft); }
 .assistant-level .drawer-empty { padding: 0; margin: 0; }
 .better-filtered { padding: 0 16px 10px; }
+
+/* ---------------------------------------------------------------- links between plans (reqs/pm_features.md §7)
+   Ink, by weight: another plan's task is named, never coloured. Critical ones take the
+   critical outline, as lines only, like every other critical link. */
+.gantt-external-in line { stroke: var(--ink); stroke-width: 1.25; }
+.gantt-external-in text { font: 600 10.5px 'Archivo Narrow', 'Archivo', sans-serif; fill: var(--ink); }
+.gantt-external-out { font-weight: 600; fill: var(--ink); }
+.pf-cross { stroke: var(--ink); stroke-width: 1.4; stroke-dasharray: 5 3; }
+.pf-cross.is-critical { stroke: var(--critical-outline); stroke-dasharray: none; }
+
+.external-field { display: grid; gap: 6px; }
+.external-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.external-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.external-chip {
+  font-size: 12.5px; font-weight: 500; color: var(--ink); padding: 1px 8px;
+  border: 1.5px solid var(--ink); border-radius: 3px; background: var(--lane);
+}
+.external-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.external-add select, .external-add input {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 5px 6px; min-width: 0;
+}
+.external-add input { width: 64px; }
+@media (max-width: 640px) { .external-add select, .external-add input { font-size: 16px; } }

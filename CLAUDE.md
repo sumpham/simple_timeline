@@ -296,6 +296,16 @@ plans' work), and the search ranks fewer `overlapDays` right after "no new doubl
 like any other; nothing levels on save. H7 reports an overlap; two critical tasks of this plan
 stay S5's. The People strip counts with `loadByDay`, never its own loop.
 
+**Links between projects live in `project_link`, never `task_dependency`** (`reqs/pm_features.md`
+§7), because `writeState` rewrites a project's links on every edit. A link is forward only: it
+becomes a floor on its successor (`linkFloor`, `externalFloors` in shared/projectLinks.ts), passed
+to `scheduleProject` as `external` and never written into `not_before`. `loadState` loads the
+floors; the browser's drag preview takes them from `external_floors`. **Every write that can move
+a plan ends in `replanWithDownstream`**, in one transaction, upstream first (`projectOrder`); a
+write that removes a link passes the plans that were downstream before it. Previews and reviews
+plan downstream on copies (`downstreamImpact`). A loop between plans is refused, naming it.
+Same team only.
+
 **Best/Worst estimates are not plan state**, like people: `duration_low`/`duration_high` are
 not in `TaskFields`; the task routes take them as extras (`estimateFrom`, `setEstimate`), and an
 edit touching only them skips `replan`, so it cannot move a date or un-accept a double-booking.
@@ -404,7 +414,7 @@ is correctly hidden — see `buildRows`.
 
 ## Still to build
 
-Sub-project roll-ups, saved views, bulk shift; for tasks, cross-project links (the portfolio is
-read-only side by side), resource workload and levelling (`reqs/resources.md` §7). `DESIGN.md` §12 has the order.
+Sub-project roll-ups, saved views, bulk shift; for tasks, a backward pass across projects and
+resource allocation (`reqs/resources.md` §7). `DESIGN.md` §12 has the order.
 For the assistant: a first live run of a chosen provider and the token measurement
 (`reqs/smart_assistant.md` §10, Phase 6).
