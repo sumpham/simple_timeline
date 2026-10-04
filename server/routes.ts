@@ -11,7 +11,7 @@ import { TASK_CODE_MAX } from '../shared/taskCode.ts';
 import { ESTIMATE_MAX, estimateError, type Estimate } from '../shared/estimates.ts';
 import { cleanSettingsPatch } from '../shared/assistant/settings.ts';
 import { providerStatus } from './llm/index.ts';
-import { advisorReply, applyOps, assistantReport, assistantSettings, opsFrom, previewOps, StaleError, suggestionReport } from './assistant.ts';
+import { advisorReply, applyOps, assistantReport, assistantSettings, opsFrom, previewOps, reviewOps, StaleError, suggestionReport } from './assistant.ts';
 import { cleanResourceName, formatResources, parseResources, RESOURCE_NAME_MAX, resourceKey } from '../shared/resources.ts';
 import {
   LINK_TYPES, MARKERS, TASK_STATUSES, type Booking, type BookingKind, type Environment, type ISODate, type Marker, type Project,
@@ -591,6 +591,7 @@ function taskFields(body: Record<string, unknown> | undefined, teamId: number): 
   }
   if (body.status !== undefined) f.status = oneOf(body.status, TASK_STATUSES, 'status');
   if (body.not_before !== undefined) f.not_before = optionalDate(body.not_before, 'not_before');
+  if (body.deadline !== undefined) f.deadline = optionalDate(body.deadline, 'deadline');
   if (body.actual_start !== undefined) f.actual_start = optionalDate(body.actual_start, 'actual_start');
   if (body.actual_end !== undefined) f.actual_end = optionalDate(body.actual_end, 'actual_end');
   if (body.note !== undefined) f.note = noteValue(body.note);
@@ -891,6 +892,7 @@ router.post('/projects/:id/import', handle((req, res) => {
       code: code != null && code >= 1 && code <= TASK_CODE_MAX ? code : null,
       status: r.status ? oneOf(r.status, TASK_STATUSES, 'status') : 'todo' as const,
       not_before: optionalDate(r.not_before, 'not_before'),
+      deadline: optionalDate(r.deadline, 'deadline'),
       resources: resourcesOfRow(r, at),
       note: noteValue(r.note),
     };
@@ -914,10 +916,10 @@ router.post('/projects/:id/import', handle((req, res) => {
       }
       ids.push(Number(run(
         `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, note, sort_order, parent_id, progress, code,
-                           duration_low, duration_high)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                           duration_low, duration_high, deadline)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         projectId, t.environment_id, t.name, t.duration, t.status, t.not_before, t.note, base + i,
-        t.parent != null ? ids[t.parent - 1] : null, t.progress, code, t.duration_low, t.duration_high,
+        t.parent != null ? ids[t.parent - 1] : null, t.progress, code, t.duration_low, t.duration_high, t.deadline,
       ).lastInsertRowid));
     });
     parsed.forEach((t, i) => { if (t.resources.length) assign(ids[i], t.resources); });
@@ -1219,6 +1221,17 @@ router.get('/projects/:id/assistant/suggestions', handle((req, res) => {
 router.post('/projects/:id/assistant/preview', handle((req, res) => {
   const id = assistantProject(req);
   res.json(previewOps(id, opsFrom(req.body?.ops)));
+}));
+
+/**
+ * The plan as it is and as a suggestion would leave it, for the review page.
+ * Writes nothing; 409 when the plan has changed since the suggestion's version.
+ */
+router.post('/projects/:id/assistant/review', handle((req, res) => {
+  const id = assistantProject(req);
+  const version = req.body?.version == null ? null : String(req.body.version);
+  const date = req.body?.date == null ? undefined : requireDate(req.body.date, 'date');
+  res.json(reviewOps(id, opsFrom(req.body?.ops), version, date));
 }));
 
 /** Apply a suggestion through the plan's write path. Returns the plan and the ops that undo it. */

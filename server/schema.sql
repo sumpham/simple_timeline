@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS task (
   status         TEXT    NOT NULL DEFAULT 'todo'
                          CHECK (status IN ('todo','in_progress','blocked','done')),
   not_before     TEXT,
+  -- Finish by this date: it seeds the late finish, so float counts down to it.
+  -- Never moves the task. On a summary it holds every task under it.
+  deadline       TEXT,
   note           TEXT,
   sort_order     INTEGER NOT NULL DEFAULT 0,
   actual_start   TEXT,

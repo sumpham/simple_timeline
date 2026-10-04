@@ -28,6 +28,8 @@ export type ImportRow = {
   status?: TaskStatus;
   progress?: number | null;
   not_before?: string | null;
+  /** Finish by this date (shared/schedule.ts): never moves the task, uses up its float. */
+  deadline?: string | null;
   note?: string | null;
   /** Best and worst case in working days, for the forecast (shared/estimates.ts). */
   duration_low?: number | null;
@@ -50,7 +52,7 @@ const STATUS_WORDS: Record<TaskStatus, string> = { todo: 'To do', in_progress: '
 
 // ---------------------------------------------------------------- CSV
 
-const CSV_HEAD = ['ID', 'WBS', 'Task', 'Summary', 'Environment', 'Days', 'Best', 'Worst', 'After', 'Start', 'Finish', 'Float', 'Status', 'Progress', 'Resources', 'Note'];
+const CSV_HEAD = ['ID', 'WBS', 'Task', 'Summary', 'Environment', 'Days', 'Best', 'Worst', 'After', 'Start', 'Finish', 'Deadline', 'Float', 'Status', 'Progress', 'Resources', 'Note'];
 
 function csvCell(v: string | number | null | undefined): string {
   const s = v == null ? '' : String(v);
@@ -71,7 +73,7 @@ export function toCsv(plan: Plan): string {
       plan.environments.find((e) => e.id === t.environment_id)?.name ?? '',
       o?.summary ? '' : t.duration, o?.summary ? '' : t.duration_low, o?.summary ? '' : t.duration_high,
       formatPredecessors(plan.deps, t.id, rowOf),
-      s?.start, s?.end, s ? s.total_float : '', STATUS_WORDS[t.status], t.progress ?? '', formatResources(t.resource_ids, people), t.note,
+      s?.start, s?.end, t.deadline ?? '', s ? s.total_float : '', STATUS_WORDS[t.status], t.progress ?? '', formatResources(t.resource_ids, people), t.note,
     ].map(csvCell).join(','));
   }
   return `${lines.join('\r\n')}\r\n`;
@@ -117,6 +119,7 @@ const ALIASES: Record<string, string[]> = {
   status: ['status'],
   progress: ['progress', '% complete', 'percent complete', '%'],
   not_before: ['start no earlier than', 'not before', 'snet'],
+  deadline: ['deadline', 'due', 'due date', 'finish by'],
   resources: ['resources', 'who', 'assignee', 'assigned to', 'owner', 'resource', 'resource names'],
   note: ['note', 'notes'],
 };
@@ -192,6 +195,7 @@ export function fromCsv(text: string): ImportResult {
     const status = statusFrom(cell(r, 'status'));
     if (cell(r, 'status') && !status) warnings.push(`Row ${n}: status “${cell(r, 'status')}” was not understood, so it is To do`);
     const nb = cell(r, 'not_before');
+    const dl = cell(r, 'deadline');
     const code = Number(cell(r, 'row'));
     rows.push({
       code: Number.isInteger(code) && code > 0 ? code : null,
@@ -201,10 +205,12 @@ export function fromCsv(text: string): ImportResult {
       status: status ?? 'todo',
       progress,
       not_before: /^\d{4}-\d{2}-\d{2}$/.test(nb) ? nb : null,
+      deadline: /^\d{4}-\d{2}-\d{2}$/.test(dl) ? dl : null,
       note: cell(r, 'note') || null,
       ...range,
     });
     if (nb && !/^\d{4}-\d{2}-\d{2}$/.test(nb)) warnings.push(`Row ${n}: “${nb}” is not a YYYY-MM-DD date, so it was left out`);
+    if (dl && !/^\d{4}-\d{2}-\d{2}$/.test(dl)) warnings.push(`Row ${n}: deadline “${dl}” is not a YYYY-MM-DD date, so it was left out`);
   }
   return { ok: true, rows, warnings };
 }
@@ -260,6 +266,7 @@ export function toMspdi(plan: Plan & { projectName: string; projectStart: string
       ...(summary ? [] : [tag('Duration', `PT${days * 8}H0M0S`), tag('DurationFormat', 7)]),
       tag('PercentComplete', t.progress ?? (t.status === 'done' ? 100 : 0)),
       ...(t.not_before ? [tag('ConstraintType', 4), tag('ConstraintDate', `${t.not_before}T08:00:00`)] : []),
+      ...(t.deadline ? [tag('Deadline', `${t.deadline}T17:00:00`)] : []),
       ...(t.note ? [tag('Notes', t.note)] : []),
       ...(!summary ? ([[FIELD_BEST, t.duration_low], [FIELD_WORST, t.duration_high]] as const).flatMap(([field, v]) => (v == null ? [] : [
         '<ExtendedAttribute>', tag('FieldID', field), tag('Value', hoursOf(v)), tag('DurationFormat', 7), '</ExtendedAttribute>',
@@ -307,7 +314,7 @@ export function fromMspdi(xml: string): ImportResult {
   const warnings: string[] = [];
   type Raw = {
     uid: string; name: string; level: number; hours: number; progress: number | null; links: { uid: string; type: number; lag: number }[];
-    note: string | null; nb: string | null; best: number | null; worst: number | null;
+    note: string | null; nb: string | null; deadline: string | null; best: number | null; worst: number | null;
   };
   const raws: Raw[] = [];
   for (const b of blocks) {
@@ -338,6 +345,7 @@ export function fromMspdi(xml: string): ImportResult {
       progress: pc != null ? Math.max(0, Math.min(100, Math.round(Number(pc)))) : null,
       links, note: first(b, 'Notes'),
       nb: (ct === '4' || ct === '2') && cd ? cd.slice(0, 10) : null,
+      deadline: /^\d{4}-\d{2}-\d{2}/.test(first(b, 'Deadline') ?? '') ? first(b, 'Deadline')!.slice(0, 10) : null,
       best: daysOf(attrs.get(FIELD_BEST)),
       worst: daysOf(attrs.get(FIELD_WORST)),
     });
@@ -376,7 +384,7 @@ export function fromMspdi(xml: string): ImportResult {
     return {
       name: r.name.slice(0, 200), duration: Math.max(0, Math.round(r.hours / 8)), parent, predecessors,
       progress: r.progress ? r.progress : null, status: r.progress === 100 ? 'done' as const : 'todo' as const,
-      note: r.note, not_before: r.nb,
+      note: r.note, not_before: r.nb, deadline: r.deadline,
       resources: whoOfTask.get(r.uid)?.join(', ') ?? null,
       ...estimateFor(r, Math.max(0, Math.round(r.hours / 8)), warnings),
     };

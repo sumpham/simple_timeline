@@ -1,6 +1,6 @@
 import { addDays, workingDays, type HolidaySet } from '../dates.ts';
 import type { PlanOutcome } from '../plan.ts';
-import { earliestStart, expandLinks, forwardPass, indexNetwork, lateBy } from '../schedule.ts';
+import { earliestStart, expandLinks, forwardPass, indexNetwork, lateBy, scheduleProject } from '../schedule.ts';
 import type { Conflict, ISODate, Priority, TaskDependency, TaskStatus } from '../types.ts';
 import { forecast, type Forecast } from './forecast.ts';
 
@@ -44,6 +44,11 @@ export type TaskFacts = {
   /** Its start is held by a "start no earlier than" (its own or a summary's), not by its links. */
   driven_by_constraint: boolean;
   not_before: ISODate | null;
+  /** The deadline that counts (its own or a summary's) and working days to spare; null with none. */
+  deadline: ISODate | null;
+  deadline_slack: number | null;
+  /** Its negative float comes from a deadline (its own or one after it), not from a fixed date. */
+  deadline_driven: boolean;
   baseline_end: ISODate | null;
   environment_id: number | null;
   people: number[];
@@ -110,6 +115,22 @@ export type FactsInput = {
   forecastRuns?: number;
 };
 
+/**
+ * Tasks whose negative float is a deadline's doing: negative with deadlines, not
+ * without them. One more schedule, and only when a deadline has made float negative.
+ */
+function negativeFromDeadlines(input: FactsInput): Set<number> {
+  const { outcome } = input;
+  const negative = [...outcome.schedule.tasks.values()].filter((s) => s.total_float < 0);
+  if (!negative.length || !outcome.tasks.some((t) => t.deadline)) return new Set();
+  const without = scheduleProject({
+    tasks: outcome.tasks.map((t) => ({ ...t, deadline: null })), deps: outcome.deps,
+    projectStart: input.projectStart, holidays: input.holidays,
+  });
+  if ('cycle' in without) return new Set();
+  return new Set(negative.filter((s) => (without.tasks.get(s.id)?.total_float ?? 0) >= 0).map((s) => s.id));
+}
+
 /** Working days strictly after `from`, up to and including `to`; 0 when `to` is not later. */
 export function workingDaysAfter(from: ISODate, to: ISODate, holidays?: HolidaySet): number {
   return to > from ? workingDays(addDays(from, 1), to, holidays) : 0;
@@ -130,6 +151,7 @@ export function planFacts(input: FactsInput): PlanFacts {
   }
 
   const driven = constraintDriven(input);
+  const deadlineDriven = negativeFromDeadlines(input);
 
   const tasks: TaskFacts[] = outcome.tasks.map((t) => {
     const s = sched.get(t.id)!;
@@ -158,6 +180,9 @@ export function planFacts(input: FactsInput): PlanFacts {
       slip: pace.slip,
       driven_by_constraint: driven.has(t.id),
       not_before: t.not_before,
+      deadline: s.deadline ?? null,
+      deadline_slack: s.deadline_slack ?? null,
+      deadline_driven: deadlineDriven.has(t.id),
       baseline_end: input.baseline.get(t.id)?.end ?? null,
       environment_id: summary ? null : t.environment_id,
       people: [...(input.people.get(t.id) ?? [])],

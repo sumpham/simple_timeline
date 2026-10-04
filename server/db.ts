@@ -54,6 +54,9 @@ if (!taskColumns.has('duration_low')) {
   db.exec('ALTER TABLE task ADD COLUMN duration_low INTEGER CHECK (duration_low IS NULL OR duration_low >= 0)');
   db.exec('ALTER TABLE task ADD COLUMN duration_high INTEGER CHECK (duration_high IS NULL OR duration_high >= 0)');
 }
+if (!taskColumns.has('deadline')) {
+  db.exec('ALTER TABLE task ADD COLUMN deadline TEXT');
+}
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS task_code ON task (project_id, code)');
 const depColumns = new Set(
   db.prepare('PRAGMA table_info(task_dependency)').all().map((c) => (c as { name: string }).name),

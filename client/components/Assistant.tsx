@@ -3,7 +3,7 @@ import type { Forecast } from '../../shared/assistant/forecast.ts';
 import type { ISODate, PlanImpact } from '../../shared/types.ts';
 import type { Advice, Suggestion, SuggestionReport } from '../../shared/assistant/optimise.ts';
 import type { PlanOp } from '../../shared/assistant/moves.ts';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { AdvisorReply } from '../../shared/assistant/validate.ts';
 import { DEFAULT_ASSISTANT_SETTINGS, type AssistantSettings } from '../../shared/assistant/settings.ts';
 import { api } from '../api.ts';
@@ -42,6 +42,10 @@ export type BetterPlansProps = {
   onFind: () => void;
   onPreview: (ops: PlanOp[]) => Promise<PlanImpact | null>;
   onApply: (ops: PlanOp[], version: string, title: string) => void;
+  /** Open the review page: the to-be plan in full, before Apply (reqs/pm_features.md §8). */
+  onReview: (s: Suggestion) => void;
+  /** The card last reviewed, brought back into view when the review closes. */
+  reviewedId: string | null;
   renderImpact: (impact: PlanImpact) => ReactNode;
 };
 
@@ -219,7 +223,7 @@ function ForecastCard({ forecast: f, target, taskLabel, onShowTasks }: {
   );
 }
 
-const PROFILE_WORD: Record<Suggestion['profile'], string> = {
+export const PROFILE_WORD: Record<Suggestion['profile'], string> = {
   safe: 'Safe', balanced: 'Balanced', aggressive: 'Aggressive', tidy: 'Tidy-up', advisor: 'Advisor',
 };
 
@@ -230,7 +234,7 @@ const PROFILE_WORD: Record<Suggestion['profile'], string> = {
  * with Undo. A single move can be taken on its own.
  */
 function BetterPlans({
-  report, searching, error, busy, onFind, onPreview, onApply, renderImpact, onShowTasks,
+  report, searching, error, busy, onFind, onPreview, onApply, onReview, reviewedId, renderImpact, onShowTasks,
 }: BetterPlansProps & { busy: boolean; onShowTasks: (ids: number[]) => void }) {
   return (
     <section className="better" aria-label="Better plans">
@@ -254,13 +258,13 @@ function BetterPlans({
         )}
       </div>
       {report?.suggestions.map((s) => (
-        <SuggestionCard key={s.id} s={s} busy={busy} onPreview={onPreview} onApply={onApply} renderImpact={renderImpact} onShowTasks={onShowTasks} />
+        <SuggestionCard key={s.id} s={s} busy={busy} onPreview={onPreview} onApply={onApply} onReview={onReview} focused={reviewedId === s.id} renderImpact={renderImpact} onShowTasks={onShowTasks} />
       ))}
       {report && report.tidy.length > 0 && (
         <>
           <h4 className="better-sub">Tidy-ups <span className="drawer-sub">No date moves</span></h4>
           {report.tidy.map((s) => (
-            <SuggestionCard key={s.id} s={s} busy={busy} onPreview={onPreview} onApply={onApply} renderImpact={renderImpact} onShowTasks={onShowTasks} />
+            <SuggestionCard key={s.id} s={s} busy={busy} onPreview={onPreview} onApply={onApply} onReview={onReview} focused={reviewedId === s.id} renderImpact={renderImpact} onShowTasks={onShowTasks} />
           ))}
         </>
       )}
@@ -286,11 +290,13 @@ function effectLine(s: Suggestion): string[] {
   return out;
 }
 
-function SuggestionCard({ s, busy, onPreview, onApply, renderImpact, onShowTasks }: {
+function SuggestionCard({ s, busy, onPreview, onApply, onReview, focused, renderImpact, onShowTasks }: {
   s: Suggestion;
   busy: boolean;
   onPreview: BetterPlansProps['onPreview'];
   onApply: BetterPlansProps['onApply'];
+  onReview: BetterPlansProps['onReview'];
+  focused: boolean;
   renderImpact: BetterPlansProps['renderImpact'];
   onShowTasks: (ids: number[]) => void;
 }) {
@@ -302,6 +308,13 @@ function SuggestionCard({ s, busy, onPreview, onApply, renderImpact, onShowTasks
   };
   const whole = -1;
   const effect = effectLine(s);
+  const reviewRef = useRef<HTMLButtonElement>(null);
+  // Back from the review page: the card it came from, in view with Review focused.
+  useEffect(() => {
+    if (!focused) return;
+    reviewRef.current?.scrollIntoView({ block: 'nearest' });
+    reviewRef.current?.focus();
+  }, [focused]);
   return (
     <article className="suggestion" data-profile={s.profile}>
       <div className="finding-top">
@@ -330,8 +343,12 @@ function SuggestionCard({ s, busy, onPreview, onApply, renderImpact, onShowTasks
         <button type="button" className="btn quiet" disabled={busy} onClick={() => void preview(whole, s.ops)} aria-pressed={impact?.at === whole}>
           Preview{s.moves.length > 1 ? ' all' : ''}
         </button>
-        <button type="button" className="btn" disabled={busy} onClick={() => onApply(s.ops, s.version, s.title)}>
+        <button type="button" className="btn quiet" disabled={busy} onClick={() => onApply(s.ops, s.version, s.title)}>
           Apply{s.moves.length > 1 ? ` all ${s.moves.length}` : ''}
+        </button>
+        <button type="button" className="btn" ref={reviewRef} disabled={busy} onClick={() => onReview(s)}
+          title="See the whole plan as it would be, then apply">
+          Review
         </button>
       </div>
     </article>
@@ -430,7 +447,7 @@ function AdvisorSection({
             </ol>
           )}
           {reply.suggestions.map((s) => (
-            <SuggestionCard key={s.id} s={s} busy={busy} onPreview={better.onPreview} onApply={better.onApply} renderImpact={better.renderImpact} onShowTasks={onShowTasks} />
+            <SuggestionCard key={s.id} s={s} busy={busy} onPreview={better.onPreview} onApply={better.onApply} onReview={better.onReview} focused={better.reviewedId === s.id} renderImpact={better.renderImpact} onShowTasks={onShowTasks} />
           ))}
           {reply.rejected.length > 0 && (
             <details className="advisor-rejected">

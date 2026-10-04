@@ -60,7 +60,8 @@ const TEAMS = [
         tasks: [
           { key: 'api', name: 'Refund endpoints', dur: 5, who: ['Linh', 'Tuan'] },
           { key: 'load', name: 'Refund load test', env: 'NFT', dur: 5, after: ['api'], not_before: 16 },
-          { key: 'docs', name: 'Partner docs', dur: 3, after: ['api'], who: ['Linh'] },
+          // Promised to partners before the work allows: a missed deadline on load.
+          { key: 'docs', name: 'Partner docs', dur: 3, after: ['api'], who: ['Linh'], deadline: 16 },
         ],
         bookings: [
           { env: 'SIT', kind: 'SIT', start: 16, end: 23 },
@@ -148,6 +149,7 @@ const TEAMS = [
 type SeedTask = {
   key: string; name: string; dur: number; env?: string; status?: string; who?: readonly string[];
   after?: readonly (string | readonly [string, number])[]; not_before?: number; actual?: readonly number[];
+  deadline?: number;
 };
 
 const HOLIDAYS = [
@@ -210,10 +212,11 @@ transaction(() => {
         const actual = t.actual ?? [];
         taskIds.set(t.key, Number(run(
           `INSERT INTO task (project_id, environment_id, name, duration, status, not_before, sort_order,
-                             actual_start, actual_end, code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             actual_start, actual_end, code, deadline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           projectId, t.env ? envIds.get(t.env) : null, t.name, t.dur, t.status ?? 'todo',
           t.not_before != null ? d(t.not_before) : null, i,
           actual[0] != null ? d(actual[0]) : null, actual[1] != null ? d(actual[1]) : null, i + 1,
+          t.deadline != null ? d(t.deadline) : null,
         ).lastInsertRowid));
       });
       for (const t of project.tasks as readonly SeedTask[]) {

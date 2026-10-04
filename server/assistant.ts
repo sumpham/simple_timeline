@@ -5,7 +5,7 @@
  * applied through the ordinary task routes, so it goes through replan.
  */
 import { all, run, transaction } from './db.ts';
-import { holidaySet, listBookings, listEnvironments, listTasks, resolvedKeys } from './queries.ts';
+import { holidaySet, listBookings, listEnvironments, listTasks, resolvedKeys, workElsewhere } from './queries.ts';
 import { applyChange, loadState, outcomeOf, PlanError, projectStart, replan, writeState, type Change, type PlanState, type TaskFields } from './plan.ts';
 import { conflictChanges, planImpact } from '../shared/plan.ts';
 import { CREATED_ID, predecessorsOf, type OpFields, type PlanOp } from '../shared/assistant/moves.ts';
@@ -14,6 +14,7 @@ import { offsetOf, unmaskText } from '../shared/assistant/digest.ts';
 import { estimateTokens, fitDigest } from '../shared/assistant/budget.ts';
 import { checkMove, judgeMoves, opsOfMove, type AdvisorReply } from '../shared/assistant/validate.ts';
 import { seedOf } from '../shared/assistant/random.ts';
+import { buildReview, type PlanReview } from '../shared/assistant/review.ts';
 import { ask, RUBRIC } from './llm/orchestrate.ts';
 import { applyResolutions, detectConflicts } from '../shared/conflicts.ts';
 import { isValidISODate, today } from '../shared/dates.ts';
@@ -189,6 +190,26 @@ export function previewOps(projectId: number, ops: PlanOp[]): PlanImpact {
   let s: PlanState = state;
   for (const op of ops) s = applyChange(s, changeOf(op, null));
   return planImpact(before, outcomeOf(s), ctx.impact);
+}
+
+/**
+ * The plan as it is and as `ops` would leave it, for the review page
+ * (reqs/pm_features.md §8). Read-only, and built by the same functions as the
+ * search and the save, so what it shows is what Apply writes. Refused like
+ * Apply when the plan has changed since `version`.
+ */
+export function reviewOps(projectId: number, ops: PlanOp[], version: string | null, statusDate?: ISODate): PlanReview {
+  const { state, ctx, version: now } = searchContext(projectId, statusDate);
+  if (version != null && version !== now) {
+    throw new StaleError('The plan has changed since this was worked out. Find a better plan again.');
+  }
+  const names = new Map(all<{ id: number; name: string }>('SELECT id, name FROM resource').map((r) => [r.id, r.name]));
+  const elsewhere = workElsewhere(projectId).map((t) => ({
+    task_id: t.task_id, project_id: t.project_id, resource_ids: t.resource_ids, start: t.start, end: t.end,
+  }));
+  const review = buildReview(ctx, state, ops, { version: now, elsewhere, names });
+  if ('refused' in review) throw new PlanError(review.refused);
+  return review;
 }
 
 /**

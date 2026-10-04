@@ -66,3 +66,36 @@ export function personOverlaps(items: readonly WorkItem[], holidays: HolidaySet 
   }
   return out;
 }
+
+/** A plan's own work, as `personOverlaps` reads it: leaf tasks with people and dates, by the scheduled span. */
+export function workItems(
+  tasks: readonly { id: number; project_id: number; status: string; duration: number }[],
+  schedule: ReadonlyMap<number, { start: ISODate; end: ISODate; summary?: boolean }>,
+  peopleOf: (taskId: number) => readonly number[] | undefined,
+): WorkItem[] {
+  const out: WorkItem[] = [];
+  for (const t of tasks) {
+    const s = schedule.get(t.id);
+    const people = peopleOf(t.id);
+    if (!s || !people?.length || !countsAsWork({ ...t, start_date: s.start, end_date: s.end }, !!s.summary)) continue;
+    out.push({ task_id: t.id, project_id: t.project_id, resource_ids: people, start: s.start, end: s.end });
+  }
+  return out;
+}
+
+/** The overlaps that involve at least one task of this plan, counting people's work in other plans. */
+export function planOverlaps(here: readonly WorkItem[], elsewhere: readonly WorkItem[], holidays: HolidaySet = new Set()): Map<number, PersonOverlap[]> {
+  const ours = new Set(here.map((w) => w.task_id));
+  const all = personOverlaps([...here, ...elsewhere], holidays);
+  for (const [r, list] of all) {
+    const kept = list.filter((o) => ours.has(o.a) || ours.has(o.b));
+    if (kept.length) all.set(r, kept); else all.delete(r);
+  }
+  return all;
+}
+
+/** How many of a person's work items cover each of `days`: 0 free, 1 busy, 2 or more on two things at once. */
+export function loadByDay(items: readonly WorkItem[], resourceId: number, days: readonly ISODate[]): number[] {
+  const mine = items.filter((it) => it.resource_ids.includes(resourceId));
+  return days.map((d) => mine.filter((it) => it.start <= d && d <= it.end).length);
+}

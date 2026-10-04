@@ -126,3 +126,30 @@ describe('MS Project XML', () => {
     expect(r.warnings[0]).toMatch(/start-to-finish/);
   });
 });
+
+describe('deadlines in files', () => {
+  const due = tasks.map((t) => (t.id === 12 ? { ...t, deadline: '2026-03-06' } : t.id === 10 ? { ...t, deadline: '2026-03-13' } : t));
+
+  it('round-trip through CSV, beside Finish', () => {
+    const csv = toCsv({ ...plan, tasks: due });
+    expect(csv.split('\r\n')[0]).toContain('Start,Finish,Deadline,Float');
+    const back = fromCsv(csv);
+    if (!back.ok) throw new Error(back.error);
+    expect(back.rows.map((r) => r.deadline)).toEqual(['2026-03-13', null, '2026-03-06', null]);
+  });
+
+  it('read a Due column, and leave out what is not a date, saying so', () => {
+    const r = fromCsv('Task,Days,Due\nA,2,2026-04-01\nB,1,next week\n');
+    if (!r.ok) throw new Error(r.error);
+    expect(r.rows.map((x) => x.deadline)).toEqual(['2026-04-01', null]);
+    expect(r.warnings).toEqual(['Row 2: deadline “next week” is not a YYYY-MM-DD date, so it was left out']);
+  });
+
+  it('round-trip through MS Project XML as <Deadline>', () => {
+    const xml = toMspdi({ ...plan, tasks: due, projectName: 'P', projectStart: '2026-03-02' });
+    expect(xml).toContain('<Deadline>2026-03-06T17:00:00</Deadline>');
+    const back = fromMspdi(xml);
+    if (!back.ok) throw new Error(back.error);
+    expect(back.rows.map((r) => r.deadline)).toEqual(['2026-03-13', null, '2026-03-06', null]);
+  });
+});

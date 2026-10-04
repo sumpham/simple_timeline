@@ -7,6 +7,7 @@ import type { ImportRow } from './planIO.ts';
 import type { AssistantReport } from '../shared/assistant/rules.ts';
 import type { SuggestionReport } from '../shared/assistant/optimise.ts';
 import type { PlanOp } from '../shared/assistant/moves.ts';
+import type { PlanReview } from '../shared/assistant/review.ts';
 import type { AdvisorReply } from '../shared/assistant/validate.ts';
 import type { AssistantSettings } from '../shared/assistant/settings.ts';
 
@@ -68,7 +69,7 @@ export type SavedLayout = {
  */
 export type TaskInput = Partial<Pick<Task,
   'name' | 'environment_id' | 'duration' | 'status' | 'not_before' | 'note' | 'actual_start' | 'actual_end'
-  | 'parent_id' | 'progress' | 'code' | 'duration_low' | 'duration_high'>>
+  | 'parent_id' | 'progress' | 'code' | 'duration_low' | 'duration_high' | 'deadline'>>
   & { predecessors?: { id: number; lag: number; type?: LinkType }[]; resources?: string };
 
 export type TaskChange =
@@ -178,6 +179,8 @@ export const api = {
   suggestions: (projectId: number) => request<SuggestionReport>(`/api/projects/${projectId}/assistant/suggestions`),
   previewOps: (projectId: number, ops: PlanOp[]) =>
     request<PlanImpact>(`/api/projects/${projectId}/assistant/preview`, { method: 'POST', body: JSON.stringify({ ops }) }),
+  reviewOps: (projectId: number, ops: PlanOp[], version: string | null) =>
+    request<PlanReview>(`/api/projects/${projectId}/assistant/review`, { method: 'POST', body: JSON.stringify({ ops, version }) }),
   applyOps: (projectId: number, ops: PlanOp[], version: string | null) =>
     request<{ plan: PlanData; undo: PlanOp[] }>(`/api/projects/${projectId}/assistant/apply`, { method: 'POST', body: JSON.stringify({ ops, version }) }),
   ask: (projectId: number, body: { question: string | null; mode: 'brief' | 'replan' }) =>

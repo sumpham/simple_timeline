@@ -175,6 +175,12 @@ export type Task = {
   /** Start no earlier than this date, whatever the dependencies allow. */
   not_before: ISODate | null;
   /**
+   * Finish by this date. It never moves the task: it sets the task's late finish,
+   * so float counts down to it and a task past it has negative float. On a
+   * summary it holds every task under it (`inheritedDeadlines`).
+   */
+  deadline?: ISODate | null;
+  /**
    * Who does it, in the order typed (`task_resource`, shared/resources.ts). On a
    * summary, who is accountable: its Owner. Read-only here; never plan state.
    */
@@ -242,6 +248,13 @@ export type TaskSchedule = {
   total_float: number;
   free_float: number;
   critical: boolean;
+  /**
+   * Working days from the finish to the deadline (its own or a summary's): negative
+   * when it finishes after it. Absent with no deadline.
+   */
+  deadline_slack?: number;
+  /** The deadline that counts: the earliest of its own and every summary's above it. */
+  deadline?: ISODate;
   /** Rolled up from the tasks under it rather than scheduled. */
   summary?: boolean;
 };

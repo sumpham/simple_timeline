@@ -284,7 +284,8 @@ Four things in my first pass were defaults rather than choices, and I changed th
 7. Responsive pass, keyboard nav, reduced motion, dark theme
 
 **In MVP**: swimlane/environment mode, promoted from V2 per §1 above.
-**Built since**: full CRUD (§13), drag-to-edit (§14), conflict resolution, task management (§16).
+**Built since**: full CRUD (§13), drag-to-edit (§14), conflict resolution, task management (§16),
+the smart assistant (§17) and its review page for suggestions (`reqs/pm_features.md` §8).
 **Still open**: sub-project roll-ups, saved views, bulk shift. For tasks: cross-project links
 (the portfolio shows plans side by side, but a replan does not cascade between them), resource
 levelling, start-to-finish links, more than one baseline, and a virtualised chart for plans of

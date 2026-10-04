@@ -3,6 +3,7 @@ import { rangeOf } from '../estimates.ts';
 import { earliestStart, forwardPass, indexNetwork, type IndexNetwork } from '../schedule.ts';
 import type { ISODate, Task, TaskDependency } from '../types.ts';
 import { seededRandom, seedOf, type Random } from './random.ts';
+import { inheritedDeadlines } from '../wbs.ts';
 
 /**
  * Schedule risk analysis by Monte Carlo (reqs/smart_assistant.md §5.3; AACE RP
@@ -55,6 +56,12 @@ export type Forecast = {
   defaulted: number;
   /** Of those on defaults, how many are critical in the plan. */
   defaulted_critical: number[];
+  /**
+   * Each working task with a deadline (its own or a summary's): the finish there is
+   * an 80% chance of meeting, and the share of runs finishing on or before the
+   * deadline. Only these tasks' finishes are kept, so the cost is bounded by them.
+   */
+  deadlines: { id: number; deadline: ISODate; p80: ISODate; on_time: number }[];
 };
 
 /** A triangular sample on [low, high] peaking at mode, by the inverse of its distribution. */
@@ -118,6 +125,11 @@ export function forecast(input: ForecastInput, critical: ReadonlySet<number> = n
 
   const n = base.ids.length;
   const finishes = new Float64Array(runs);
+  // Tasks with a deadline: their finish in every run, for their own P80 and chance.
+  const limits = inheritedDeadlines(input.tasks.map((t) => ({ ...t, sort_order: t.sort_order ?? 0 })));
+  const watched = base.ids.map((id, i) => ({ id, i, deadline: limits.get(id) ?? null }))
+    .filter((x): x is { id: number; i: number; deadline: ISODate } => x.deadline != null);
+  const watchedEf = watched.map(() => new Float64Array(runs));
   const onPath = new Uint32Array(n);
   const sx = new Float64Array(n);
   const sxx = new Float64Array(n);
@@ -133,6 +145,7 @@ export function forecast(input: ForecastInput, critical: ReadonlySet<number> = n
     }
     const f = forwardPass(net, durations);
     finishes[r] = f.finish;
+    for (let w = 0; w < watched.length; w++) watchedEf[w][r] = f.ef[watched[w].i];
     sf += f.finish;
     sff += f.finish * f.finish;
     for (let i = 0; i < n; i++) {
@@ -181,6 +194,12 @@ export function forecast(input: ForecastInput, critical: ReadonlySet<number> = n
     estimated: open.length - defaulted.length,
     defaulted: defaulted.length,
     defaulted_critical: defaulted.filter((x) => critical.has(x.id)).map((x) => x.id),
+    deadlines: watched.map((w, k) => {
+      const ef = [...watchedEf[k]].sort((a, b) => a - b);
+      let met = 0;
+      for (const x of ef) if (dateOfFinish(x) <= w.deadline) met++;
+      return { id: w.id, deadline: w.deadline, p80: dateOfFinish(ef[Math.min(runs - 1, Math.max(0, Math.ceil(0.8 * runs) - 1))]), on_time: round2(met / runs) };
+    }),
   };
 }
 

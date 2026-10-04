@@ -13,7 +13,7 @@ import { workingDaysAfter, type PlanFacts, type TaskFacts } from './facts.ts';
 export type FindingGroup = 'progress' | 'structure' | 'hygiene';
 
 export type RuleId =
-  | 'P1' | 'P2' | 'P3' | 'P4' | 'P5' | 'P6' | 'P7'
+  | 'P1' | 'P2' | 'P3' | 'P4' | 'P5' | 'P6' | 'P7' | 'P8'
   | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6'
   | 'H1' | 'H2' | 'H3' | 'H4' | 'H5' | 'H6';
 
@@ -59,7 +59,7 @@ export const HIGH_FLOAT_DAYS = 44;
 const LAG_SHARE = 0.05;
 
 export const RULE_GROUP: Record<RuleId, FindingGroup> = {
-  P1: 'progress', P2: 'progress', P3: 'progress', P4: 'progress', P5: 'progress', P6: 'progress', P7: 'progress',
+  P1: 'progress', P2: 'progress', P3: 'progress', P4: 'progress', P5: 'progress', P6: 'progress', P7: 'progress', P8: 'progress',
   S1: 'structure', S2: 'structure', S3: 'structure', S4: 'structure', S5: 'structure', S6: 'structure',
   H1: 'hygiene', H2: 'hygiene', H3: 'hygiene', H4: 'hygiene', H5: 'hygiene', H6: 'hygiene',
 };
@@ -135,9 +135,12 @@ function targetAtRisk(f: PlanFacts): Finding[] {
   })];
 }
 
-/** P2: negative float. Something the plan has fixed (an actual start, a constraint) cannot be met. */
+/**
+ * P2: negative float. Something the plan has fixed (an actual start, a constraint)
+ * cannot be met. Float a deadline took negative is P8's, which names the deadline.
+ */
 function negativeFloat(f: PlanFacts): Finding[] {
-  const neg = f.tasks.filter((t) => open(t) && t.total_float < 0);
+  const neg = f.tasks.filter((t) => open(t) && t.total_float < 0 && !t.deadline_driven);
   if (!neg.length) return [];
   const worst = Math.min(...neg.map((t) => t.total_float));
   return [finding('P2', ids(neg), {
@@ -148,6 +151,40 @@ function negativeFloat(f: PlanFacts): Finding[] {
     likelihood: 5,
     impact: impactOf(-worst, f),
   })];
+}
+
+/**
+ * P8: a deadline at risk (reqs/pm_features.md §3.4). A working task past its
+ * deadline in the plan, or likely to be: its forecast P80 lands after it. Keyed on
+ * the days late at P80, so a dismissed warning comes back if it gets worse.
+ */
+function deadlineAtRisk(f: PlanFacts): Finding[] {
+  const fc = new Map((f.forecast?.deadlines ?? []).map((d) => [d.id, d]));
+  return f.tasks
+    .filter((t) => open(t) && t.deadline != null && t.deadline_slack != null)
+    .flatMap((t) => {
+      const d = fc.get(t.id);
+      const planned = Math.max(0, -t.deadline_slack!);
+      const p80Late = d ? lateBy(d.p80, t.deadline!, f.holidays) : 0;
+      const late = Math.max(planned, p80Late);
+      if (!late) return [];
+      const text = planned > 0
+        ? `${label(t)} finishes on ${day(t.end)}, ${wd(planned)} after its deadline of ${day(t.deadline!)}.`
+        : `${label(t)} finishes on ${day(t.end)}, before its deadline of ${day(t.deadline!)}, but it has only a ${pct(d!.on_time)} chance of making it: at 80% confidence it finishes on ${day(d!.p80)}.`;
+      return [finding('P8', [t.id, late], {
+        title: 'Deadline at risk',
+        text,
+        evidence: [
+          `Finishes ${day(t.end)}`,
+          ...(d ? [`P80 ${day(d.p80)}`] : []),
+          `Deadline ${day(t.deadline!)}`,
+          ...(d ? [`Chance on time ${pct(d.on_time)}`] : []),
+        ],
+        task_ids: [t.id],
+        likelihood: planned > 0 ? 5 : d!.on_time < 0.2 ? 5 : d!.on_time < 0.5 ? 4 : 3,
+        impact: impactOf(late, f),
+      })];
+    });
 }
 
 /** P3: not started, and its scheduled start has passed. */
@@ -460,7 +497,7 @@ const GROUP_ORDER: Record<FindingGroup, number> = { progress: 0, structure: 1, h
  */
 export function assess(f: PlanFacts, settings: RuleSettings, people: ReadonlyMap<number, string> = new Map()): Finding[] {
   const out = [
-    ...targetAtRisk(f), ...negativeFloat(f), ...shouldHaveStarted(f), ...slipping(f), ...blockedCritical(f),
+    ...targetAtRisk(f), ...deadlineAtRisk(f), ...negativeFloat(f), ...shouldHaveStarted(f), ...slipping(f), ...blockedCritical(f),
     ...floatErosion(f), ...baselineSlip(f),
     ...nearCritical(f), ...mergePoints(f), ...thinMargin(f), ...clashOnPath(f), ...overloadedOnCritical(f, people),
     ...unassignedCritical(f),

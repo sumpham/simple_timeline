@@ -63,6 +63,23 @@ describe('forecast', () => {
     expect(f.sensitivity).toEqual([]);
   });
 
+  it('gives each deadline its own P80 and chance, the CPM finish at zero width', () => {
+    // T1 Mon–Fri 6 Mar, T2 after it Mon–Wed 11 Mar.
+    const tasks = [exact(1, 5, { deadline: '2026-03-06' }), exact(2, 3, { deadline: '2026-03-10' })];
+    const f = run({ tasks, deps: [dep(1, 2)] });
+    expect(f.deadlines).toEqual([
+      { id: 1, deadline: '2026-03-06', p80: '2026-03-06', on_time: 1 },
+      { id: 2, deadline: '2026-03-10', p80: '2026-03-11', on_time: 0 },
+    ]);
+  });
+
+  it('leaves the finish alone when deadlines are added', () => {
+    const plain = run({ tasks: [task(1, 5), task(2, 8)], deps: [dep(1, 2)] });
+    const held = run({ tasks: [task(1, 5, { deadline: '2026-03-03' }), task(2, 8)], deps: [dep(1, 2)] });
+    expect({ ...held, deadlines: [] }).toEqual(plain);
+    expect(held.deadlines[0].on_time).toBe(0);
+  });
+
   it('gives the same answer for the same plan and date, run after run', () => {
     const tasks = [task(1, 5), task(2, 8), task(3, 3)];
     const deps = [dep(1, 3), dep(2, 3)];

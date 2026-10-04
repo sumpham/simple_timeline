@@ -7,18 +7,19 @@
 
 export type ColumnKey =
   | 'row' | 'code' | 'wbs' | 'name' | 'env' | 'days' | 'best' | 'worst'
-  | 'after' | 'who' | 'start' | 'finish' | 'float' | 'status';
+  | 'after' | 'who' | 'start' | 'finish' | 'deadline' | 'float' | 'status';
 
 export interface ColumnShow {
   wbs: boolean;
   estimates: boolean;
   who: boolean;
+  deadline?: boolean;
 }
 
 /** Widths before anything is measured, and the floor for the fixed columns. */
 export const DEFAULT_WIDTH: Readonly<Record<ColumnKey, number>> = {
   row: 44, code: 48, wbs: 56, name: 220, env: 120, days: 52, best: 52, worst: 52,
-  after: 72, who: 120, start: 114, finish: 114, float: 52, status: 140,
+  after: 72, who: 120, start: 114, finish: 114, deadline: 196, float: 52, status: 140,
 };
 
 /** The columns a person can resize, and how far; the rest hold fixed values. */
@@ -34,7 +35,7 @@ export function columnsFor(show: ColumnShow): ColumnKey[] {
   return [
     'row', 'code', ...(show.wbs ? ['wbs' as const] : []), 'name', 'env', 'days',
     ...(show.estimates ? ['best' as const, 'worst' as const] : []),
-    'after', ...(show.who ? ['who' as const] : []), 'start', 'finish', 'float', 'status',
+    'after', ...(show.who ? ['who' as const] : []), 'start', 'finish', ...(show.deadline ? ['deadline' as const] : []), 'float', 'status',
   ];
 }
 

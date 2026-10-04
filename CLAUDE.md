@@ -156,6 +156,12 @@ The After column, the chart and the files only write and draw it.
 the bookings exactly as the server does. Do not compute a span, a hold or a clash in
 `Gantt.tsx`; the environments strip counts with `occupancyByDay` from shared/conflicts.ts.
 
+**A deadline changes float, never dates** (`reqs/pm_features.md` §3). `task.deadline` seeds the
+task's late finish in the backward pass of `scheduleProject`; `forwardPass` never reads it, so
+the forecast's zero-width test still pins the CPM finish. A summary's deadline holds every task
+under it (`inheritedDeadlines`, like `inheritedFloors`). Negative float a deadline caused is P8's
+to report, not P2's (`deadline_driven` in `planFacts`). Draw a deadline in ink, never red.
+
 **Baselines are snapshots.** `task_baseline` is written only by the baseline routes and never
 read by scheduling or replan. Progress (`task.progress`) never moves a date either.
 
@@ -240,6 +246,12 @@ late). Dismissed warnings are listed, greyed, and stop counting.
 
 **"Should have started" is rule P3.** The row mark in the task table shows for open P3
 findings from the report, not from its own check. Change the rule, not the table.
+
+**The review page reads `PlanReview`, never rows** (`reqs/pm_features.md` §8). `buildReview`
+(shared/assistant/review.ts) builds both plans with the search's own `createSearch` → `tryOps`,
+which run `ctx.apply`, the save's `applyChange`; its Apply is the drawer's `applyOps`. Never
+give the review its own way of working out a to-be plan, and never compare two plans anywhere
+but `diffPlans`: the page would show a plan the save does not make.
 
 **The assistant never writes a task, link or booking.** A suggestion is a list of the existing
 change ops; it previews through `POST /api/tasks/preview` and applies through the same routes,

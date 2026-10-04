@@ -9,6 +9,8 @@ describe('task table columns', () => {
       ['row', 'code', 'name', 'env', 'days', 'after', 'start', 'finish', 'float', 'status']);
     expect(columnsFor({ wbs: true, estimates: true, who: true })).toEqual(
       ['row', 'code', 'wbs', 'name', 'env', 'days', 'best', 'worst', 'after', 'who', 'start', 'finish', 'float', 'status']);
+    expect(columnsFor({ wbs: false, estimates: false, who: false, deadline: true })).toEqual(
+      ['row', 'code', 'name', 'env', 'days', 'after', 'start', 'finish', 'deadline', 'float', 'status']);
   });
 
   it('fits to the widest entry, inside the column range', () => {

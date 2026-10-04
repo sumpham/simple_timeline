@@ -3296,3 +3296,162 @@ kbd {
 .settings-field input, .settings-field select { font: inherit; font-size: 13px; }
 .settings-privacy { border: 1px solid var(--rule-soft); border-radius: 3px; padding: 8px 10px; display: grid; gap: 4px; margin: 0; }
 .settings-privacy legend { font-size: 12px; font-weight: 600; padding: 0 4px; }
+
+/* ---------------------------------------------------------------- review a suggestion
+   (reqs/pm_features.md §8). The to-be plan before Apply. Worse things are said first and
+   in weight; red only where it already lives: a double-booking's hatch and critical outlines. */
+
+.review { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--lane); }
+.review-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: 10px 16px; border-bottom: 1px solid var(--rule); background: var(--lane-alt);
+}
+.review-head h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.005em; outline: none; }
+.review-sub { color: var(--muted); font-size: 13px; }
+
+.review-verdict { padding: 12px 18px; display: grid; gap: 3px; border-bottom: 1px solid var(--rule-soft); }
+.review-line { margin: 0; font-size: 14px; line-height: 1.45; max-width: 90ch; display: flex; gap: 8px; align-items: baseline; }
+.review-line.is-worse { font-weight: 600; }
+/* The word, not a colour, says which way it went. */
+.review-word {
+  flex: none; min-width: 48px;
+  font-family: 'Archivo Narrow', 'Archivo', sans-serif; font-size: 12px; font-weight: 600; color: var(--muted);
+}
+.review-line.is-worse .review-word { color: var(--ink); }
+.review-same { margin: 0; font-size: 13px; color: var(--muted); }
+.review-error { margin: 0; font-size: 13.5px; font-weight: 600; }
+
+.review-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); }
+.review-rail {
+  border-right: 1px solid var(--rule); overflow: auto; padding: 12px 14px 16px;
+  display: grid; align-content: start; gap: 16px; font-size: 13px;
+}
+.review-rail h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.review-moves { margin: 0; padding: 0; list-style: none; display: grid; }
+.review-moves li { padding: 7px 0; display: grid; gap: 2px; }
+.review-moves li + li { border-top: 1px solid var(--rule-soft); }
+.review-move { display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
+.review-move input { accent-color: var(--ink); margin: 0; flex: none; transform: translateY(2px); }
+.review-move-title { font-weight: 600; }
+.review-move-why { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.review-move .review-move-title + .review-move-why { padding-left: 21px; }
+.review-changes { margin: 0; padding: 0; list-style: none; display: grid; gap: 1px; }
+.review-changes button {
+  width: 100%; display: grid; gap: 1px; text-align: left; font: inherit; color: inherit;
+  background: none; border: 0; border-radius: 3px; padding: 5px 8px; cursor: pointer;
+}
+.review-changes button:hover, .review-changes button[aria-pressed='true'] { background: var(--lane-alt); box-shadow: inset 2px 0 0 var(--ink); }
+.review-change-who { font-weight: 500; }
+.review-change-what { font-size: 12.5px; color: var(--muted); }
+.review-change-what.is-worse { color: var(--ink); font-weight: 600; }
+
+.review-view { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+/* Its own toolbar and chart classes: the plan's phone rules hide .gantt and .gantt-toolbar. */
+.review-tools {
+  flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
+  padding: 8px 14px; border-bottom: 1px solid var(--rule-soft); font-size: 13px;
+}
+.review-chart { position: relative; background: var(--lane); font-size: 11.5px; color: var(--muted); }
+.review-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
+
+/* Names held at the left while the time grid scrolls under them. */
+.review-split { display: flex; width: max-content; min-width: 100%; }
+.review-names {
+  position: sticky; left: 0; z-index: 2; flex: none; width: 300px;
+  background: var(--lane); border-right: 1px solid var(--rule);
+}
+.review-names-head {
+  position: sticky; top: 0; z-index: 1;
+  display: grid; grid-template-columns: 34px 1fr 58px; align-items: end; gap: 6px; padding: 0 10px 6px;
+  background: var(--lane-alt); border-bottom: 1px solid var(--rule);
+  font-family: 'Archivo Narrow', 'Archivo', sans-serif; font-size: 12px; color: var(--muted);
+}
+.review-row {
+  display: grid; grid-template-columns: 34px 1fr 58px; align-items: center; gap: 6px; padding: 0 10px;
+  border-bottom: 1px solid var(--rule-soft); font-size: 13px; cursor: default;
+}
+.review-row.is-changed { box-shadow: inset 3px 0 0 var(--ink); cursor: pointer; }
+.review-row.is-focus { background: var(--lane-alt); }
+.review-row.is-summary .review-task { font-weight: 600; }
+.review-code { color: var(--muted); font-variant-numeric: tabular-nums; }
+.review-task { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: calc(var(--depth, 0) * 12px); }
+.review-finish { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.review-tag {
+  margin-left: 6px; padding: 0 5px; border: 1px solid var(--rule); border-radius: 3px;
+  font-size: 11px; font-weight: 600; color: var(--ink); white-space: nowrap;
+}
+.review-tag.is-worse { border-color: var(--ink); }
+.review-chart { flex: none; }
+.review-chart .gantt-task { cursor: default; }
+.review-block + .review-block { border-top: 1px solid var(--rule); }
+.review-block-title { margin: 0; padding: 8px 12px; font-size: 12.5px; font-weight: 600; background: var(--lane-alt); border-bottom: 1px solid var(--rule-soft); position: sticky; left: 0; }
+
+/* Where a task is now: a dashed outline behind the bar it becomes. */
+.review-was { fill: none; stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 4 3; }
+path.gantt-summary.review-was { fill: none; }
+.review-focus { fill: var(--ink); opacity: 0.05; }
+.review-delta { font-weight: 600; }
+.review-legend { margin: 0; padding: 10px 14px 16px; font-size: 12.5px; color: var(--muted); position: sticky; left: 0; max-width: 80ch; }
+
+/* Environments and people: now and after as paired lanes on one time scale. */
+.review-lane { display: block; border-bottom: 1px solid var(--rule-soft); }
+.review-lane.is-after, .review-lane-name.is-after { border-bottom-color: var(--rule); }
+.review-lane-name.is-after .review-task { overflow: visible; }
+.review-booking rect { fill: var(--rule); }
+.review-booking.is-mine rect { fill: var(--env-color); }
+.review-booking text { font-size: 11px; font-family: 'Archivo Narrow', 'Archivo', sans-serif; fill: var(--ink); font-weight: 600; pointer-events: none; }
+.review-booking.is-mine text { fill: #fff; }
+.review-clash { stroke: var(--alarm); stroke-width: 1.5; }
+.review-clash.is-resolved { fill: var(--resolved-soft); fill-opacity: 0.5; stroke: var(--resolved); }
+.review-hatch-line { fill: var(--alarm); }
+.review-load rect { fill: var(--rule); }
+.review-load.is-over rect { fill: var(--ink); }
+.review-load text { font-size: 10px; font-weight: 700; fill: var(--lane); text-anchor: middle; }
+
+.review-bar {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--rule); background: var(--lane);
+}
+.review-bar-note { font-size: 12.5px; color: var(--muted); }
+.review-bar-note.is-stale { color: var(--ink); font-weight: 600; }
+.review-bar-actions { display: flex; gap: 8px; margin-left: auto; }
+
+/* Narrow: one column that scrolls as a whole, the action bar held at the bottom. */
+@media (max-width: 820px) {
+  .review { overflow-y: auto; }
+  .review-body { display: block; flex: none; }
+  .review-rail { border-right: 0; border-bottom: 1px solid var(--rule); overflow: visible; }
+  .review-view { display: block; }
+  .review-scroll { overflow-x: auto; overflow-y: visible; }
+  .review-names { width: 170px; }
+  .review-names-head, .review-row { grid-template-columns: 24px 1fr 46px; padding: 0 8px; gap: 4px; }
+  .review-bar { position: sticky; bottom: 0; z-index: 3; }
+  .review-head { padding: 10px 14px; }
+  .review-verdict { padding: 10px 14px; }
+}
+
+/* ---------------------------------------------------------------- deadlines (reqs/pm_features.md §3)
+   Ink only: a deadline is a commitment, not a double-booking. Past it, the bar gets a
+   bracket and the label says by how much. */
+
+.gantt-deadline line { stroke: var(--ink); stroke-width: 1; opacity: 0.35; }
+.gantt-deadline path { fill: var(--ink); }
+.gantt-deadline .gantt-overrun { fill: none; stroke: var(--ink); stroke-width: 1.5; }
+.gantt-deadline.is-faded { opacity: 0.22; }
+
+.deadline-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.deadline-cell input { min-width: 0; flex: 1 1 auto; }
+.deadline-cell .late-tag { flex: none; font-size: 11px; padding: 0 4px; }
+
+.deadline-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.deadline-row input {
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 3px;
+  padding: 7px 9px; font-size: 13.5px; color: var(--ink); flex: 0 1 220px; min-width: 0;
+}
+@media (max-width: 640px) { .deadline-row input { font-size: 16px; } }
+.chip {
+  font: inherit; font-size: 12px; line-height: 1.5; padding: 1px 9px; cursor: pointer;
+  color: var(--ink); background: var(--lane); border: 1px solid var(--rule); border-radius: 999px;
+}
+.chip:hover { border-color: var(--ink); }

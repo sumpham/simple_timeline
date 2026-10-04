@@ -116,7 +116,7 @@ const FINALISTS = 3;
 export function planVersion(state: PlanState, project: { start_date?: ISODate | null; target_date?: ISODate | null }): string {
   const tasks = [...state.tasks].sort((a, b) => a.id - b.id).map((t) => [
     t.id, t.duration, t.status, t.not_before, t.environment_id, t.actual_start, t.actual_end, t.parent_id ?? null, t.progress ?? null,
-    t.duration_low ?? null, t.duration_high ?? null, t.name,
+    t.duration_low ?? null, t.duration_high ?? null, t.name, t.deadline ?? null,
   ]);
   const deps = [...state.deps].map((d) => [d.predecessor_id, d.successor_id, d.lag, d.type ?? 'FS']).sort();
   return seedOf(JSON.stringify([tasks, deps, project.start_date ?? null, project.target_date ?? null])).toString(36);

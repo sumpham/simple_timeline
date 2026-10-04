@@ -210,6 +210,28 @@ export function rolledUp(leaves: readonly Rolled[]): Rolled {
 }
 
 /**
+ * A task's deadline as scheduling feels it: the earliest of its own and every
+ * summary above it, since a summary's deadline holds all its tasks.
+ */
+export function inheritedDeadlines(tasks: readonly (Node & { deadline?: string | null })[]): Map<number, string | null> {
+  const parent = parentOf(tasks);
+  const own = new Map(tasks.map((t) => [t.id, t.deadline ?? null]));
+  const out = new Map<number, string | null>();
+  for (const t of tasks) {
+    let limit = own.get(t.id) ?? null;
+    let cur = parent.get(t.id) ?? null;
+    let guard = 0;
+    while (cur != null && guard++ <= tasks.length) {
+      const d = own.get(cur) ?? null;
+      if (d && (!limit || d < limit)) limit = d;
+      cur = parent.get(cur) ?? null;
+    }
+    out.set(t.id, limit);
+  }
+  return out;
+}
+
+/**
  * A task's "start no earlier than" as scheduling feels it: the latest of its own
  * and every summary above it, since a summary's constraint holds all its tasks.
  */

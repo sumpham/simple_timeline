@@ -14,10 +14,12 @@ import { NetworkDiagram } from './NetworkDiagram.tsx';
 import { Gantt, STRIP_HEAD, STRIP_LANE, type GanttCommand, type GanttPreview, type GanttShow, type RowBox, type StripData } from './Gantt.tsx';
 import { Portfolio } from './Portfolio.tsx';
 import { PeoplePanel, type PersonRow } from './People.tsx';
-import { countsAsWork, personOverlaps, type PersonOverlap, type WorkItem } from '../../shared/workload.ts';
+import { planOverlaps, workItems, type PersonOverlap } from '../../shared/workload.ts';
 import { AssistantDrawer, openFindings } from './Assistant.tsx';
 import type { AssistantReport, Finding } from '../../shared/assistant/rules.ts';
-import { planVersion, type SuggestionReport } from '../../shared/assistant/optimise.ts';
+import { planVersion, type Suggestion, type SuggestionReport } from '../../shared/assistant/optimise.ts';
+import { ReviewPage } from './Review.tsx';
+import { workingShift } from '../../shared/assistant/review.ts';
 import type { PlanOp } from '../../shared/assistant/moves.ts';
 import type { AdvisorReply } from '../../shared/assistant/validate.ts';
 import { edgeKey, type Route } from '../network.ts';
@@ -51,7 +53,7 @@ const STATUSES: TaskStatus[] = ['todo', 'in_progress', 'blocked', 'done'];
 
 /** Fields that move dates. Changing only a name or a note needs no impact check. */
 const SCHEDULE_FIELDS: (keyof TaskInput)[] = [
-  'duration', 'environment_id', 'predecessors', 'status', 'not_before', 'actual_start', 'actual_end', 'parent_id',
+  'duration', 'environment_id', 'predecessors', 'status', 'not_before', 'actual_start', 'actual_end', 'parent_id', 'deadline',
 ];
 
 type Tab = 'tasks' | 'network' | 'portfolio';
@@ -104,6 +106,10 @@ export function PlanView({
   const [better, setBetter] = useState<SuggestionReport | null>(null);
   const [searching, setSearching] = useState(false);
   const [betterError, setBetterError] = useState<string | null>(null);
+  /** The suggestion open on the review page, which replaces the plan body until Back or Apply. */
+  const [reviewing, setReviewing] = useState<Suggestion | null>(null);
+  /** The card the last review came from, so Back lands on it. */
+  const [reviewedId, setReviewedId] = useState<string | null>(null);
   const [advice, setAdvice] = useState<AdvisorReply | null>(null);
   const [asking, setAsking] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
@@ -145,7 +151,7 @@ export function PlanView({
       .catch((err) => { if (live) setReportError(err instanceof Error ? err.message : 'The assistant could not read this plan'); });
     return () => { live = false; };
   }, [plan, projectId]);
-  useEffect(() => { setReport(null); setSpotlight(null); setBetter(null); setBetterError(null); setAdvice(null); setAskError(null); }, [projectId]);
+  useEffect(() => { setReport(null); setSpotlight(null); setBetter(null); setBetterError(null); setAdvice(null); setAskError(null); setReviewing(null); setReviewedId(null); }, [projectId]);
   const askAdvisor = async (question: string | null, mode: 'brief' | 'replan') => {
     setAsking(true);
     setAskError(null);
@@ -171,8 +177,11 @@ export function PlanView({
   const previewOps = async (ops: PlanOp[]) => {
     try { return await api.previewOps(projectId, ops); } catch (err) { fail(err); return null; }
   };
-  /** Apply through the plan's write path, then say what it did, with Undo, as a hand edit does. */
-  const applyOps = async (ops: PlanOp[], version: string | null, title: string) => {
+  /**
+   * Apply through the plan's write path, then say what it did, with Undo, as a
+   * hand edit does. Resolves to null when applied, or to why it was not.
+   */
+  const applyOps = async (ops: PlanOp[], version: string | null, title: string): Promise<string | null> => {
     setSaving(true);
     setNotice(null);
     try {
@@ -185,9 +194,15 @@ export function PlanView({
         try { accept((await api.applyOps(projectId, res.undo, null)).plan); setOutcome(null); } catch (err) { fail(err); }
       };
       setOutcome({ title: `Applied: ${title}`, impact, undo });
+      setReviewing(null);
+      setReviewedId(null);
+      return null;
     } catch (err) {
-      fail(err);
-      if (err instanceof Error && /changed since/.test(err.message)) setBetter(null);
+      const message = err instanceof Error ? err.message : 'Could not apply it';
+      // On the review page the page says why; elsewhere the plan's error bar does.
+      if (!reviewing) fail(err);
+      if (/changed since/.test(message)) setBetter(null);
+      return message;
     } finally { setSaving(false); }
   };
   useEffect(() => {
@@ -648,6 +663,20 @@ export function PlanView({
       )}
 
       <div className="plan-main">
+      {reviewing && plan ? (
+        <ReviewPage
+          key={reviewing.id}
+          projectId={projectId}
+          suggestion={reviewing}
+          environments={environments}
+          holidays={holidays}
+          today={today}
+          people={people}
+          onBack={() => { setReviewedId(reviewing.id); setReviewing(null); setAssistantOpen(true); }}
+          onApply={applyOps}
+          onFindAgain={() => { setReviewing(null); setAssistantOpen(true); void findBetter(); }}
+        />
+      ) : (<>
       <div className="plan-body">
         {tab === 'portfolio' ? (
           teamId != null || project ? (
@@ -757,6 +786,8 @@ export function PlanView({
             onFind: () => void findBetter(),
             onPreview: previewOps,
             onApply: (ops, version, title) => void applyOps(ops, version, title),
+            onReview: (s) => { setReviewedId(null); setReviewing(s); },
+            reviewedId,
             renderImpact: (impact) => <ImpactList title="Applying would" impact={impact} />,
           }}
           advisor={{
@@ -770,6 +801,7 @@ export function PlanView({
           onRestore={(f) => void setAside(f, true)}
         />
       )}
+      </>)}
       </div>
 
       {plan && tab !== 'portfolio' && <Holds bookings={plan.bookings} environments={environments} onRelease={async (b) => { await onRelease(b); await load(); }} />}
@@ -828,6 +860,8 @@ type ChartPrefs = {
   who: boolean;
   /** The table's Best and Worst columns: each task's range for the forecast. */
   estimates: boolean;
+  /** The table's Deadline column. */
+  deadline: boolean;
 };
 const PREFS_KEY = 'plan.chart';
 const DEFAULT_PREFS: ChartPrefs = {
@@ -836,13 +870,14 @@ const DEFAULT_PREFS: ChartPrefs = {
   wbs: false,
   who: true,
   estimates: false,
+  deadline: false,
 };
 
 function readPrefs(): ChartPrefs {
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? 'null');
     if (!raw || !ZOOMS.includes(raw.zoom)) return DEFAULT_PREFS;
-    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true, who: raw.who !== false, estimates: raw.estimates === true };
+    return { zoom: raw.zoom, show: { ...DEFAULT_PREFS.show, ...raw.show }, wbs: raw.wbs === true, who: raw.who !== false, estimates: raw.estimates === true, deadline: raw.deadline === true };
   } catch {
     return DEFAULT_PREFS;
   }
@@ -987,20 +1022,10 @@ function TaskTable({
 
   /** Pairs of tasks someone is on at once, counting their work in other plans; at least one task is here. */
   const overlaps = useMemo(() => {
-    const here: WorkItem[] = [];
-    for (const t of plan.tasks) {
-      const s = schedule.get(t.id);
-      if (!t.resource_ids?.length || !countsAsWork({ ...t, start_date: s?.start ?? null, end_date: s?.end ?? null }, !!outlineRows.get(t.id)?.summary)) continue;
-      here.push({ task_id: t.id, project_id: t.project_id, resource_ids: t.resource_ids, start: s!.start, end: s!.end });
-    }
-    const ours = new Set(here.map((w) => w.task_id));
-    const all = personOverlaps([...here, ...plan.elsewhere], holidays);
-    for (const [r, list] of all) {
-      const kept = list.filter((o) => ours.has(o.a) || ours.has(o.b));
-      if (kept.length) all.set(r, kept); else all.delete(r);
-    }
-    return { byPerson: all, here };
-  }, [plan.tasks, plan.elsewhere, schedule, outlineRows, holidays]);
+    const byId = new Map(plan.tasks.map((t) => [t.id, t]));
+    const here = workItems(plan.tasks, schedule, (id) => byId.get(id)?.resource_ids);
+    return { byPerson: planOverlaps(here, plan.elsewhere, holidays), here };
+  }, [plan.tasks, plan.elsewhere, schedule, holidays]);
   /** For each task here, the overlaps of the people on it that involve it. */
   const overlapsOfTask = useMemo(() => {
     const out = new Map<number, PersonOverlap[]>();
@@ -1049,7 +1074,7 @@ function TaskTable({
     void document.fonts?.ready.then(() => { if (live) setFontsReady((n) => n + 1); });
     return () => { live = false; };
   }, []);
-  const colKeys = useMemo(() => columnsFor(prefs), [prefs.wbs, prefs.estimates, prefs.who]);
+  const colKeys = useMemo(() => columnsFor(prefs), [prefs.wbs, prefs.estimates, prefs.who, prefs.deadline]);
   const fitted = useMemo(() => measureColumns(plan.tasks.map((t) => {
     const o = outlineRows.get(t.id);
     const leaves = o?.summary ? leavesOf(plan.tasks, t.id) : [];
@@ -1426,6 +1451,10 @@ function TaskTable({
               <input type="checkbox" checked={prefs.estimates} onChange={(e) => setPrefs((p) => ({ ...p, estimates: e.target.checked }))} />
               <span>Best and Worst columns<small>Each task’s range in working days, for the forecast; blank uses the default</small></span>
             </label>
+            <label className="check" title="The date each task must finish by">
+              <input type="checkbox" checked={prefs.deadline} onChange={(e) => setPrefs((p) => ({ ...p, deadline: e.target.checked }))} />
+              <span>Deadline column<small>The date a task must finish by; it never moves the task, it uses up its float</small></span>
+            </label>
           </div>
         </details>
         {deepest > 0 && (
@@ -1552,6 +1581,7 @@ function TaskTable({
             {prefs.who && <th scope="col" className="c-who" title="Who does the task, with commas between names. A new name adds that person; a summary's people are its owners.">Who{colGrip('who', 'Who')}</th>}
             <th scope="col" className="c-date">Start</th>
             <th scope="col" className="c-date">Finish</th>
+            {prefs.deadline && <th scope="col" className="c-date c-deadline" title="The date it must finish by. It never moves the task; a task past it has negative float. A summary's deadline holds every task under it.">Deadline</th>}
             <th scope="col" className="c-num">Float</th>
             <th scope="col" className="c-status">Status</th>
           </tr>
@@ -1729,6 +1759,11 @@ function TaskTable({
                   {!s ? '—' : summary ? <span className="cell-quiet">{formatDate(s.end)}</span>
                     : <DateCell field="finish" label={`Finish of ${t.name}`} value={s.end} onCommit={(d) => onSetFinish(t, d)} />}
                 </td>
+                {prefs.deadline && (
+                  <td className="c-date c-deadline" data-label="Deadline">
+                    <DeadlineCell task={t} schedule={s} onUpdate={onUpdate} />
+                  </td>
+                )}
                 <td className="c-num c-float" data-label="Float">
                   {s ? (s.critical ? <strong>critical</strong> : `${s.total_float}d`) : '—'}
                 </td>
@@ -1771,7 +1806,7 @@ function TaskTable({
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRef.current?.focus(); } }}
               />
             </td>
-            <td colSpan={8 + (prefs.wbs ? 1 : 0) + (prefs.estimates ? 2 : 0)}>
+            <td colSpan={8 + (prefs.wbs ? 1 : 0) + (prefs.estimates ? 2 : 0) + (prefs.deadline ? 1 : 0)}>
               <input
                 ref={addRef}
                 value={draft}
@@ -2387,6 +2422,57 @@ function ResourceCell({ value, resources, label, onCommit }: {
  * until the date is whole (a four-digit year) and the caret has rested, so a
  * half-typed year never reschedules the plan.
  */
+/** What a deadline in the editor means for this task, in the plan's own working days. */
+function deadlineHint(deadline: string, schedule: TaskSchedule | undefined, summary: boolean, holidays: ReadonlySet<ISODate>): string {
+  const base = summary ? 'Holds every task under it. ' : '';
+  if (!deadline || !isValidISODate(deadline)) return `${base}The date it must finish by. It never moves the task: it uses up its float, and past it the float goes negative.`;
+  if (!schedule) return base;
+  const late = workingShift(deadline, schedule.end, holidays);
+  const wd = (n: number) => `${n} working day${n === 1 ? '' : 's'}`;
+  if (late > 0) return `${base}Finishes ${formatDate(schedule.end)}, ${wd(late)} after this. Nothing moves; it shows as late and its float goes negative.`;
+  if (late === 0) return `${base}Finishes on it, ${formatDate(schedule.end)}: no float left before the deadline.`;
+  return `${base}Finishes ${formatDate(schedule.end)}, ${wd(-late)} before this.`;
+}
+
+/**
+ * A task's deadline: typed, or cleared to none. A deadline from a summary above
+ * shows quietly in its place. Past it, the cell says by how much in words and
+ * weight; red is spent on double-bookings.
+ */
+function DeadlineCell({ task, schedule, onUpdate }: {
+  task: Task;
+  schedule: TaskSchedule | undefined;
+  onUpdate: (t: Task, f: TaskInput) => Promise<boolean>;
+}) {
+  const own = task.deadline ?? '';
+  const [text, setText] = useState(own);
+  useEffect(() => { setText(own); }, [own]);
+  const commit = (d: string) => {
+    if (d === own || (d !== '' && (!isValidISODate(d) || d < '2000-01-01'))) return;
+    void onUpdate(task, { deadline: d || null });
+  };
+  const slack = schedule?.deadline_slack;
+  const inherited = !own && schedule?.deadline ? schedule.deadline : null;
+  return (
+    <div className="deadline-cell">
+      <input
+        type="date"
+        data-field="deadline"
+        aria-label={`Deadline of ${task.name}`}
+        value={text}
+        title={inherited ? `From the summary above: ${formatDate(inherited)}` : undefined}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => commit(text)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); commit(text); }
+          if (e.key === 'Escape') setText(own);
+        }}
+      />
+      {slack != null && slack < 0 && <span className="late-tag" title={`Finishes ${-slack} working day${slack === -1 ? '' : 's'} after its deadline`}>{-slack}d late</span>}
+    </div>
+  );
+}
+
 function DateCell({ field, label, value, onCommit }: {
   field: string;
   label: string;
@@ -2460,6 +2546,7 @@ function TaskEditor({
   const [after, setAfter] = useState(formatPredecessors(plan.dependencies, task.id, codeOf));
   const [codeText, setCodeText] = useState(String(codeOf.get(task.id) ?? ''));
   const [notBefore, setNotBefore] = useState(task.not_before ?? '');
+  const [deadline, setDeadline] = useState(task.deadline ?? '');
   const [status, setStatus] = useState<TaskStatus>(task.status);
   const [actualStart, setActualStart] = useState(task.actual_start ?? '');
   const [actualEnd, setActualEnd] = useState(task.actual_end ?? '');
@@ -2505,6 +2592,7 @@ function TaskEditor({
     if (parentId !== (task.parent_id ?? null)) f.parent_id = parentId;
     if (progressOk && progressN !== (task.progress ?? null)) f.progress = progressN;
     if ((notBefore || null) !== task.not_before) f.not_before = notBefore || null;
+    if ((deadline || null) !== (task.deadline ?? null)) f.deadline = deadline || null;
     if (status !== task.status) f.status = status;
     if ((actualStart || null) !== task.actual_start && status !== 'todo') f.actual_start = actualStart || null;
     if ((actualEnd || null) !== task.actual_end && status === 'done') f.actual_end = actualEnd || null;
@@ -2515,7 +2603,7 @@ function TaskEditor({
       if (worst !== (task.duration_high ?? null)) f.duration_high = worst;
     }
     return f;
-  }, [name, envId, days, after, code, codeError, notBefore, status, actualStart, actualEnd, who, note, parentId, progressN, progressOk, task, plan, codeOf, people, best, worst, estimateProblem, summary]);
+  }, [name, envId, days, after, code, codeError, notBefore, deadline, status, actualStart, actualEnd, who, note, parentId, progressN, progressOk, task, plan, codeOf, people, best, worst, estimateProblem, summary]);
 
   const dirty = Object.keys(fields).length > 0;
   const key = JSON.stringify(fields);
@@ -2651,6 +2739,18 @@ function TaskEditor({
             <input type="date" value={notBefore} onChange={(e) => setNotBefore(e.target.value)} />
             {summary && <span className="field-hint">Holds every task under it.</span>}
           </label>
+        </div>
+        <div className="stack deadline-field">
+          <label htmlFor="task-deadline">Deadline</label>
+          <div className="deadline-row">
+            <input id="task-deadline" type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} />
+            {schedule && (
+              <button type="button" className="chip" onClick={() => setDeadline(schedule.end)}
+                title="Commit to the finish the plan gives it now">Use current finish</button>
+            )}
+            {deadline && <button type="button" className="chip" onClick={() => setDeadline('')}>Clear</button>}
+          </div>
+          <span className="field-hint">{deadlineHint(deadline, schedule, summary, holidays)}</span>
         </div>
         <div className="pair">
           {summary ? (

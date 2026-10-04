@@ -67,6 +67,46 @@ describe('facts', () => {
 });
 
 describe('progress rules', () => {
+  it('P8: a task past its deadline, named with the deadline, and not again as P2', () => {
+    // T1 Mon–Fri 6 Mar, due Wed 4 Mar: two working days late.
+    const fs = run(facts([task(1, 5, { deadline: '2026-03-04' })]));
+    const [p8] = of(fs, 'P8');
+    expect(p8.key).toBe('P8:1:2');
+    expect(p8.text).toBe('T1 (T1) finishes on 6 Mar, 2 working days after its deadline of 4 Mar.');
+    expect(p8.likelihood).toBe(5);
+    expect(p8.task_ids).toEqual([1]);
+    expect(of(fs, 'P2')).toEqual([]);
+  });
+
+  it('P8 alone when a deadline downstream takes a predecessor’s float negative', () => {
+    const f = facts([task(1, 3), task(2, 3, { deadline: '2026-03-06' })], [dep(1, 2)]);
+    expect(f.byId.get(1)!.deadline_driven).toBe(true);
+    const fs = run(f);
+    expect(of(fs, 'P8').map((x) => x.task_ids)).toEqual([[2]]);
+    expect(of(fs, 'P2')).toEqual([]);
+  });
+
+  it('P2 still names negative float a fixed date causes, deadline or not', () => {
+    // T2 started Monday, before T1 (which it waits on) has even begun: T1 is short of float with or without the deadline.
+    const f = facts([task(1, 3), task(2, 2, { status: 'in_progress', actual_start: MON, deadline: '2026-03-20' })], [dep(1, 2)]);
+    expect(f.byId.get(1)!.total_float).toBeLessThan(0);
+    expect(f.byId.get(1)!.deadline_driven).toBe(false);
+    expect(of(run(f), 'P2').map((x) => x.task_ids)).toEqual([[1]]);
+  });
+
+  it('P8: on time in the plan but unlikely to stay so, on the forecast', () => {
+    const f = facts([task(1, 10, { duration_low: 9, duration_high: 20, deadline: '2026-03-13' })], [], { runs: 400 });
+    const [p8] = of(run(f), 'P8');
+    expect(p8.text).toMatch(/^T1 \(T1\) finishes on 13 Mar, before its deadline of 13 Mar, but it has only a \d+% chance of making it: at 80% confidence it finishes on /);
+    expect(p8.key).toMatch(/^P8:1:\d+$/);
+  });
+
+  it('P8: quiet with room to spare, for done work, and with no deadline', () => {
+    expect(of(run(facts([task(1, 3, { deadline: '2026-03-13' })])), 'P8')).toEqual([]);
+    expect(of(run(facts([task(1, 5, { deadline: '2026-03-04', status: 'done', actual_start: MON, actual_end: '2026-03-06' })])), 'P8')).toEqual([]);
+    expect(of(run(facts([task(1, 5)])), 'P8')).toEqual([]);
+  });
+
   it('P1: finish after target', () => {
     const tasks = [task(1, 5), task(2, 5)];
     const late = of(run(facts(tasks, [dep(1, 2)], { target: '2026-03-11' })), 'P1');

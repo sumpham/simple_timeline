@@ -4,6 +4,7 @@ import type {
 } from '../../shared/types.ts';
 import type { OutlineRow } from '../../shared/wbs.ts';
 import { occupancyByDay } from '../../shared/conflicts.ts';
+import { snapToWorkingDay } from '../../shared/dates.ts';
 import { formatDate, formatRange } from '../layout.ts';
 import {
   chainOf, dayColumn, DAY_WIDTH, draggedFinish, draggedStart, draggedStartEdge, finishFields, finishVariance, ganttDays, ganttScale,
@@ -124,7 +125,7 @@ export function Gantt({
   // The scale follows the saved plan, never a drag, so the ground does not move under the pointer.
   const scale = useMemo(() => ganttScale([
     start, target,
-    ...[...schedule.values()].flatMap((s) => [s.start, s.end, s.late_end]),
+    ...[...schedule.values()].flatMap((s) => [s.start, s.end, s.late_end, s.deadline]),
     ...[...baseline.values()].flatMap((b) => [b.start, b.end]),
     ...bookings.flatMap((b) => [b.start_date, b.end_date]),
   ], minWeeksFor(zoom)), [schedule, start, target, baseline, bookings, zoom]);
@@ -426,6 +427,9 @@ export function Gantt({
             <title>{`${g.summary ? 'Owner' : 'Who'}: ${who.join(', ')}`}</title>
           </tspan>
         )}
+        {s.deadline_slack != null && s.deadline_slack < 0 && (
+          <tspan className="gantt-variance"> {-s.deadline_slack}d late<title>{`Finishes ${-s.deadline_slack} working day${s.deadline_slack === -1 ? '' : 's'} after its deadline of ${formatDate(s.deadline!)}`}</title></tspan>
+        )}
         {variance !== 0 && (
           <tspan className="gantt-variance"> {variance > 0 ? '+' : '−'}{Math.abs(variance)}d<title>{`Finishes ${Math.abs(variance)} working day${Math.abs(variance) === 1 ? '' : 's'} ${variance > 0 ? 'later' : 'sooner'} than the baseline`}</title></tspan>
         )}
@@ -575,6 +579,25 @@ export function Gantt({
               <line x1={g.x1} x2={x} y1={y} y2={y} />
               <line x1={x - 0.5} x2={x - 0.5} y1={y - 3} y2={y + 3} />
               <title>{`${s.total_float} working days of float: it can finish by ${formatDate(s.late_end)} without moving the finish`}</title>
+            </g>
+          );
+        })}
+
+        {/* Deadlines: an ink chevron hanging over the last day it may finish, and a
+            bracket over any part of the bar past it. Never a hatch: that is a double-booking. */}
+        {tasks.map((t) => {
+          const g = shapes.get(t.id);
+          const s = shown.get(t.id);
+          if (!g || !s?.deadline) return null;
+          const x = colX(snapToWorkingDay(s.deadline, holidays, -1), 'end');
+          const top = g.mid - BAR_H / 2;
+          const over = s.deadline_slack != null && s.deadline_slack < 0 && g.x1 > x;
+          return (
+            <g key={`dl${t.id}`} className={`gantt-deadline${over ? ' is-over' : ''}${chain && !chain.has(t.id) ? ' is-faded' : ''}`}>
+              <line x1={x - 0.5} x2={x - 0.5} y1={top - 6} y2={g.mid + BAR_H / 2 + 1} />
+              <path d={`M${x - 5} ${top - 9}h10l-5 6z`} />
+              {over && <path className="gantt-overrun" d={`M${x} ${top - 1}v-3H${g.x1}v3`} />}
+              <title>{`Deadline ${formatDate(s.deadline)}${t.deadline ? '' : ', from the summary above'}${over ? `: finishes ${-s.deadline_slack!} working day${s.deadline_slack === -1 ? '' : 's'} after it` : ''}`}</title>
             </g>
           );
         })}

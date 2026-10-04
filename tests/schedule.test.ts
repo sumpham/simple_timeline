@@ -233,3 +233,63 @@ describe('indexNetwork and forwardPass', () => {
       .toHaveProperty('cycle');
   });
 });
+
+describe('deadlines', () => {
+  // T1 (5d) and T2 (3d) in parallel; T1 sets the finish, Fri 6 Mar.
+  const plan = (t2: Partial<Task> = {}, t1: Partial<Task> = {}) => ok(scheduleProject({
+    tasks: [task(1, 5, t1), task(2, 3, t2)], deps: [], projectStart: MON,
+  }));
+
+  it('never moves a task, however tight', () => {
+    const r = plan({ deadline: '2026-03-03' });
+    expect(r.tasks.get(2)).toMatchObject({ start: '2026-03-02', end: '2026-03-04' });
+    expect(r.finish).toBe('2026-03-06');
+  });
+
+  it('eats float: a task finishing on its deadline has none and is critical', () => {
+    expect(plan().tasks.get(2)).toMatchObject({ total_float: 2, critical: false });
+    const r = plan({ deadline: '2026-03-04' });
+    expect(r.tasks.get(2)).toMatchObject({ total_float: 0, critical: true, deadline_slack: 0, deadline: '2026-03-04' });
+    expect(r.critical_path).toEqual([2, 1]);
+  });
+
+  it('gives negative float past the deadline, in working days', () => {
+    // Finishes Fri 6 Mar; due Wed 4 Mar.
+    const r = plan({}, { deadline: '2026-03-04' });
+    expect(r.tasks.get(1)).toMatchObject({ total_float: -2, deadline_slack: -2, critical: true });
+  });
+
+  it('reads a weekend deadline as the Friday before', () => {
+    const r = plan({}, { deadline: '2026-03-08' });
+    expect(r.tasks.get(1)).toMatchObject({ total_float: 0, deadline_slack: 0 });
+  });
+
+  it('only tightens: a deadline after the finish leaves float alone but reports its slack', () => {
+    const r = plan({ deadline: '2026-03-20' });
+    expect(r.tasks.get(2)).toMatchObject({ total_float: 2, deadline_slack: 12 });
+  });
+
+  it('pulls float out of the predecessors too', () => {
+    const r = ok(scheduleProject({
+      tasks: [task(1, 2), task(2, 2, { deadline: '2026-03-04' }), task(3, 6)], deps: [dep(1, 2)], projectStart: MON,
+    }));
+    // T1 Mon–Tue, T2 Wed–Thu, due Wed: one day short along the whole chain.
+    expect(r.tasks.get(1)!.total_float).toBe(-1);
+    expect(r.tasks.get(2)!.total_float).toBe(-1);
+  });
+
+  it('holds every task under a summary, and rolls the tightest one up', () => {
+    const r = ok(scheduleProject({
+      tasks: [task(10, 0, { deadline: '2026-03-05' }), task(1, 5, { parent_id: 10 }), task(2, 2, { parent_id: 10, deadline: '2026-03-03' })],
+      deps: [], projectStart: MON,
+    }));
+    expect(r.tasks.get(1)).toMatchObject({ deadline: '2026-03-05', deadline_slack: -1 });
+    // Its own deadline is earlier than the summary's, so its own counts.
+    expect(r.tasks.get(2)).toMatchObject({ deadline: '2026-03-03', deadline_slack: 0 });
+    expect(r.tasks.get(10)).toMatchObject({ summary: true, deadline: '2026-03-03', deadline_slack: -1 });
+  });
+
+  it('is absent with no deadline', () => {
+    expect('deadline_slack' in plan().tasks.get(1)!).toBe(false);
+  });
+});

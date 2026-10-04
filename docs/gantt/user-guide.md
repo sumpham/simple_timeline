@@ -36,6 +36,8 @@ The line under the table says how many rows the filter or a closed summary is hi
 | Grey rule under a bar | Baseline dates; `+3d` after the label means it now finishes 3 working days later |
 | Coloured wash behind a row | The environment booking this task belongs to (Show → Bookings); dashed when tasks made it |
 | Pale block with a dashed edge at the end of a booking | Tasks are done but the booking runs on: click to release it |
+| Small black chevron over a row | The task's deadline (its own, or a summary's above it) |
+| Black bracket over the end of a bar, `2d late` after the label | It finishes that many working days after its deadline |
 | Dashed vertical line | Project target |
 | Thin red line, "Today" flag | Today |
 | Shaded column | Holiday |
@@ -145,6 +147,18 @@ Drag a row number up or down: a line shows where it will land, and it goes above
 that row's level, taking any tasks under it along. Dropping on a summary's first task puts it
 under that summary. Escape cancels. Alt+↑/↓ does the same from the keyboard.
 
+## Deadlines
+
+A deadline is the date a task must finish by. Set it in the task editor (**Use current finish**
+commits to what the plan says now), or in the **Deadline** column (Show → Deadline column).
+
+A deadline never moves the task. It uses up the task's float: finishing on its deadline makes a
+task critical, and finishing after it gives it, and the tasks it waits on, negative float. The
+row then says `2d late`, and the assistant raises **Deadline at risk** (rule P8). That warning
+also comes up when the plan makes the deadline but the forecast's P80 doesn't, with the chance of
+making it. A deadline on a summary holds every task under it. The review page for a suggestion
+names any deadline the change would make a task miss, or would let it meet.
+
 ## Progress
 
 Set **Progress, %** in the task editor, or leave it blank to work it out: done is 100, in
@@ -155,12 +169,12 @@ weighs its tasks by length. Progress never moves dates.
 
 **Export CSV** writes the table's own columns, including IDs and After, so it
 re-imports as it was. **Export MS Project XML** opens in MS Project with the outline, lengths,
-link types and lags, progress and "start no earlier than".
+link types and lags, progress, "start no earlier than" and deadlines.
 
 **Import** reads either format and adds the tasks after the plan's last row, all at once. CSV
 headers are matched loosely (`Task` or `Name`, `Days` or `Duration`, `After` or `Predecessors`,
 `Summary` or a `WBS` column like `1.2`, `Environment`, `Status`, `Progress`, `Resources` (or `Assignee`),
-`Start no earlier than`, `Note`). An environment the team does not have is left out, and the
+`Start no earlier than`, `Deadline` (or `Due`), `Note`). An environment the team does not have is left out, and the
 note after the import says so.
 
 **Print** (Export → Print or save as PDF) prints landscape without toolbars. Months zoom fits a

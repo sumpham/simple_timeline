@@ -1,6 +1,6 @@
 import { addDays, addWorkingDays, diffDays, isWorkingDay, snapToWorkingDay, workingDays, type HolidaySet } from './dates.ts';
 import type { ISODate, LinkType, Task, TaskDependency, TaskSchedule } from './types.ts';
-import { inheritedFloors, leavesOf, summaryIds } from './wbs.ts';
+import { inheritedDeadlines, inheritedFloors, leavesOf, summaryIds } from './wbs.ts';
 
 /**
  * Critical-path scheduling over one project's tasks.
@@ -20,10 +20,15 @@ import { inheritedFloors, leavesOf, summaryIds } from './wbs.ts';
  * of its working tasks, a link from it waits for all of them, its "start no
  * earlier than" holds all of them, and its dates, float and criticality roll up
  * from them afterwards.
+ *
+ * A deadline never moves a task. It seeds the task's late finish in the backward
+ * pass, so float counts down to it: a task finishing on its deadline has none and
+ * is critical, one finishing after it has negative float. `forwardPass` never
+ * reads deadlines, so the forecast's zero-width run still gives the CPM finish.
  */
 
 export type ScheduleInput = {
-  tasks: readonly (Pick<Task, 'id' | 'duration' | 'status' | 'not_before' | 'actual_start' | 'actual_end'> & { parent_id?: number | null; sort_order?: number })[];
+  tasks: readonly (Pick<Task, 'id' | 'duration' | 'status' | 'not_before' | 'actual_start' | 'actual_end'> & { parent_id?: number | null; sort_order?: number; deadline?: ISODate | null })[];
   deps: readonly TaskDependency[];
   projectStart: ISODate;
   holidays?: HolidaySet;
@@ -101,6 +106,8 @@ type Prepared = {
   order: number[];
   succs: Map<number, TaskDependency[]>;
   net: IndexNetwork;
+  /** Each working task's deadline as it counts (its own or a summary's); absent with none. */
+  deadlines: Map<number, ISODate>;
 };
 
 function prepare(input: ScheduleInput): Prepared | ScheduleFailure {
@@ -148,7 +155,9 @@ function prepare(input: ScheduleInput): Prepared | ScheduleFailure {
     dateOf: cal.dateOf,
     indexOf: cal.indexOf,
   };
-  return { cal, outlineTasks, summaries, byId, order: order.order, succs, net };
+  const deadlines = new Map<number, ISODate>();
+  for (const [id, d] of inheritedDeadlines(outlineTasks)) if (d && byId.has(id)) deadlines.set(id, d);
+  return { cal, outlineTasks, summaries, byId, order: order.order, succs, net, deadlines };
 }
 
 /** The project's working tasks as an index network, or the loop that stops one being built. */
@@ -192,7 +201,10 @@ export function forwardPass(net: IndexNetwork, durations: ArrayLike<number> = ne
 export function scheduleProject(input: ScheduleInput): ScheduleResult | ScheduleFailure {
   const prepared = prepare(input);
   if ('cycle' in prepared) return prepared;
-  const { cal, outlineTasks, summaries, byId, succs, net } = prepared;
+  const { cal, outlineTasks, summaries, byId, succs, net, deadlines } = prepared;
+  const holidays = input.holidays ?? new Set<ISODate>();
+  /** A deadline as an exclusive finish index: the end of its last working day on or before it. */
+  const deadlineIndex = new Map([...deadlines].map(([id, d]) => [id, cal.indexOf(snapToWorkingDay(d, holidays, -1)) + 1]));
   const order = { order: prepared.order };
 
   // Forward pass: early start and exclusive early finish, as indexes.
@@ -207,7 +219,8 @@ export function scheduleProject(input: ScheduleInput): ScheduleResult | Schedule
   const ls = new Map<number, number>();
   for (let i = order.order.length - 1; i >= 0; i--) {
     const id = order.order[i];
-    let finish = finishIndex;
+    // A deadline is a late finish the task may not pass, whatever its successors allow.
+    let finish = Math.min(finishIndex, deadlineIndex.get(id) ?? finishIndex);
     const own = ef.get(id)! - es.get(id)!;
     for (const d of succs.get(id) ?? []) {
       const s = d.successor_id;
@@ -246,6 +259,7 @@ export function scheduleProject(input: ScheduleInput): ScheduleResult | Schedule
       free_float: Math.max(0, free),
       // Done work cannot hold the project up any more, whatever its float says.
       critical: total <= 0 && t.status !== 'done',
+      ...(deadlineIndex.has(id) ? { deadline: deadlines.get(id)!, deadline_slack: deadlineIndex.get(id)! - finish } : {}),
     });
   }
 
@@ -265,6 +279,7 @@ export function scheduleProject(input: ScheduleInput): ScheduleResult | Schedule
       total_float: Math.min(...leaves.map((x) => x.total_float)),
       free_float: Math.min(...leaves.map((x) => x.free_float)),
       critical: leaves.some((x) => x.critical),
+      ...rolledDeadline(leaves),
       summary: true,
     });
     summaryOrder.push(sid);
@@ -281,6 +296,16 @@ export function scheduleProject(input: ScheduleInput): ScheduleResult | Schedule
     finish: all.length ? all.reduce((m, t) => (t.end > m ? t.end : m), all[0].end) : cal.base,
     critical_path,
     order: [...order.order, ...summaryOrder.sort((a, b) => a - b)],
+  };
+}
+
+/** A summary's deadline is its tightest task's: the earliest date, the least slack. */
+function rolledDeadline(leaves: readonly TaskSchedule[]): Pick<TaskSchedule, 'deadline' | 'deadline_slack'> {
+  const held = leaves.filter((x) => x.deadline_slack != null);
+  if (!held.length) return {};
+  return {
+    deadline: held.reduce((m, x) => (x.deadline! < m ? x.deadline! : m), held[0].deadline!),
+    deadline_slack: Math.min(...held.map((x) => x.deadline_slack!)),
   };
 }
 
