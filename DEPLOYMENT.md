@@ -87,10 +87,13 @@ pipeline is an ordinary commit — no need to re-run `setup-jenkins-job.sh`.
 `restore-after-minikube-recreate.sh` step `[6d]` rebuilds the image and reapplies
 everything. Two things it cannot bring back:
 
-- **The PVC, and with it `timeline.db`.** Back it up first:
+- **The PVC, and with it `timeline.db`.** Back it up first. Never `cat` the file on
+  its own: SQLite runs in WAL mode, so recent writes sit in `timeline.db-wal` and the
+  main file can be days stale. Have the pod write a consistent snapshot instead:
   ```bash
-  kubectl -n simple-timeline exec deploy/simple-timeline -- \
-    cat /app/data/timeline.db > timeline-backup.db
+  kubectl -n simple-timeline exec deploy/simple-timeline -- sh -c \
+    'rm -f /tmp/snap.db && node -e "new (require(\"node:sqlite\").DatabaseSync)(\"/app/data/timeline.db\").exec(\"VACUUM INTO '"'"'/tmp/snap.db'"'"'\")" && cat /tmp/snap.db && rm -f /tmp/snap.db' \
+    > timeline-backup.db
   ```
 - **The minikube docker TLS certs in jenkins_home**, which rotate. Re-run
   `setup-jenkins-job.sh` (safe: the job is SCM-backed, so this cannot revert the
